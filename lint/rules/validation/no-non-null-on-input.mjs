@@ -1,7 +1,7 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { calleeName, isEnvRead, isParamGet, isStorageRead, notShipped, receiverName } from "../shared.mjs";
+import { calleeName, isEnvRead, isParamGet, isRequestValue, isStorageRead, notShipped, receiverName } from "../shared.mjs";
 
 const MOUNT = /^(createRoot|hydrateRoot|render|hydrate|mount)$/;
 
@@ -12,6 +12,7 @@ const MOUNT = /^(createRoot|hydrateRoot|render|hydrate|mount)$/;
  */
 function absentable(node) {
   if (isEnvRead(node)) return "env";
+  if (isRequestValue(node)) return "input";
   if (node.type !== "CallExpression") return "";
   const name = calleeName(node);
   if (name === "get" && receiverName(node) === "env") return "env"; // Deno.env.get('X')
@@ -58,6 +59,9 @@ export const bad = [
   "const canvas = document.getElementById('chart')!; canvas.addEventListener('click', open);",
   "const draft = JSON.parse(localStorage.getItem('draft')!);",
   "const signature = request.headers.get('stripe-signature')!;",
+  "const id = req.query.id!;",
+  "const sig = req.headers['stripe-signature']!;",
+  "const auth = c.req.header('authorization')!;",
 ];
 
 export const good = [

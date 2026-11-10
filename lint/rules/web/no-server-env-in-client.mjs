@@ -23,7 +23,8 @@ export const rule = defineRule({
       },
       MemberExpression(node) {
         const property = /** @type {any} */ (node.property);
-        if (isProcessEnv(node.object) && !node.computed && !PUBLIC.test(property.name)) context.report({ node, messageId: "server" });
+        const name = node.computed ? property.value : property.name;
+        if (isProcessEnv(node.object) && typeof name === "string" && !PUBLIC.test(name)) context.report({ node, messageId: "server" });
       },
       // const { OPENAI_API_KEY } = process.env
       VariableDeclarator(node) {
@@ -38,6 +39,7 @@ export const bad = [
   "'use client';\nexport const api = process.env.API_URL;",
   "\"use client\";\nconst stripe = new Stripe(process.env.STRIPE_SECRET_KEY);",
   "'use client';\nconst { OPENAI_API_KEY } = process.env;",
+  "'use client';\nexport const key = process.env['STRIPE_SECRET_KEY'];",
 ];
 
 export const good = [

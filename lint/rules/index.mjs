@@ -5,11 +5,13 @@ import * as noChangeNarration from "./no-change-narration.mjs";
 import * as noCommentedOutCode from "./no-commented-out-code.mjs";
 import * as noConditionalAssertion from "./no-conditional-assertion.mjs";
 import * as noElidedCode from "./no-elided-code.mjs";
+import * as noEmptyCatch from "./no-empty-catch.mjs";
 import * as noLintSuppression from "./no-lint-suppression.mjs";
 import * as noMockOnlyAssertions from "./no-mock-only-assertions.mjs";
 import * as noModuleScopeLet from "./no-module-scope-let.mjs";
 import * as noSelfComparisonAssertion from "./no-self-comparison-assertion.mjs";
 import * as noSilentFallback from "./no-silent-fallback.mjs";
+import * as noSwallowedTestFailure from "./no-swallowed-test-failure.mjs";
 import * as requireAssertion from "./require-assertion.mjs";
 import asyncRules from "./async/index.mjs";
 import frameworkRules from "./frameworks/index.mjs";
@@ -26,11 +28,13 @@ export default [
   noCommentedOutCode,
   noConditionalAssertion,
   noElidedCode,
+  noEmptyCatch,
   noLintSuppression,
   noMockOnlyAssertions,
   noModuleScopeLet,
   noSelfComparisonAssertion,
   noSilentFallback,
+  noSwallowedTestFailure,
   requireAssertion,
   ...asyncRules,
   ...frameworkRules,

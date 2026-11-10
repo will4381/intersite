@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -53,14 +53,19 @@ async function shippedRules(oxlint, cacheDir) {
 
 /**
  * @param {string[]} argv
- * @param {{ cwd: string }} options
+ * @param {{ cwd: string, quiet?: boolean }} options `quiet` leaves out the success line, for `check`
  */
-export default async function lint(argv, { cwd }) {
+export default async function lint(argv, { cwd, quiet = false }) {
   const flags = argv.filter((a) => a.startsWith("--"));
   const flag = flags[0];
   const paths = argv.filter((a) => !a.startsWith("--"));
   if (flags.length > 1 || (flag && !flagsAllowed.includes(flag))) {
     console.error(`usage: intersite lint [paths...] [${flagsAllowed.join(" | ")}]`);
+    return 2;
+  }
+  const missing = paths.find((p) => !existsSync(resolve(cwd, p)));
+  if (missing) {
+    console.error(`intersite lint: ${missing} does not exist`);
     return 2;
   }
 
@@ -81,9 +86,12 @@ export default async function lint(argv, { cwd }) {
   }
 
   // A Swift-only project has no oxlint and needs none: its Swift is linted and the JavaScript side is empty.
-  const oxlint = join(cwd, "node_modules/.bin/oxlint");
+  const oxlint = findOxlint(cwd) ?? join(cwd, "node_modules/.bin/oxlint");
   const javascript = existsSync(oxlint)
-    ? writeOxlintConfig(cwd, join(cwd, config.extends), oxlint, rules).then((configFile) => runOxlint(cwd, oxlint, configFile, paths))
+    ? writeOxlintConfig(cwd, join(cwd, config.extends), oxlint, rules).then((configFile) => runOxlint(cwd, oxlint, configFile, paths), (/** @type {Error} */ error) => {
+      console.error(`intersite lint: ${error.message}`);
+      return undefined;
+    })
     : { report: { number_of_files: 0, diagnostics: [] }, listed: [] };
   const [result, swiftResult] = await Promise.all([javascript, lintSwift(cwd, swift, paths)]);
   if (!result || !swiftResult) return 2;
@@ -113,7 +121,14 @@ export default async function lint(argv, { cwd }) {
 
   const baselineFile = join(cwd, config.baseline);
   /** @type {Baseline} */
-  const baseline = existsSync(baselineFile) ? JSON.parse(readFileSync(baselineFile, "utf8")) : {};
+  let baseline = {};
+  try {
+    // --write=init replaces the file, so it is the way out of a corrupt one and need not read it.
+    if (flag !== "--write=init" && existsSync(baselineFile)) baseline = JSON.parse(readFileSync(baselineFile, "utf8"));
+  } catch {
+    console.error(`intersite lint: ${config.baseline} is not valid JSON: restore it from git, or run \`intersite lint --write=init\` to record today's findings again`);
+    return 2;
+  }
 
   if (flag === "--write=init") {
     /** @type {Baseline} */
@@ -123,7 +138,7 @@ export default async function lint(argv, { cwd }) {
       (next[file] ??= {})[rule] = list.length;
     }
     writeFileSync(baselineFile, `${JSON.stringify(sorted(next), null, 2)}\n`);
-    console.log(`ok lint: ${report.number_of_files} files, ${all.length} findings recorded in ${config.baseline}`);
+    if (!quiet) console.log(`ok lint: ${report.number_of_files} files, ${all.length} findings recorded in ${config.baseline}`);
     return 0;
   }
 
@@ -135,7 +150,7 @@ export default async function lint(argv, { cwd }) {
   } else if (failed.length) {
     for (const f of over) console.log(`${f.file}:${f.line}:${f.column} ${f.rule} ${f.message}`);
     if (flag !== "--write") for (const f of under) console.log(`${f.file} ${f.rule}: ${f.message}`);
-  } else {
+  } else if (!quiet) {
     console.log(`ok lint: ${report.number_of_files} files, 0 new findings${baselined ? `, ${baselined} baselined` : ""}`);
   }
   return failed.length ? 1 : 0;
@@ -194,6 +209,42 @@ function printRules(cwd, rules) {
 }
 
 /**
+ * The oxlint binary in the nearest node_modules at or above `cwd`: a workspace package's dependencies are often
+ * installed once at the repository root.
+ * @param {string} cwd
+ */
+export function findOxlint(cwd) {
+  for (let dir = resolve(cwd); ; dir = dirname(dir)) {
+    const bin = join(dir, "node_modules/.bin/oxlint");
+    if (existsSync(bin)) return bin;
+    if (dirname(dir) === dir) return undefined;
+  }
+}
+
+/**
+ * The project's own oxlint config. Plain JSON is read directly; oxlint also accepts comments and trailing commas, so
+ * anything else is read back through oxlint itself, which reports a broken file in its own words.
+ * @param {string} oxlint @param {string} file
+ * @returns {Promise<{ plugins?: string[] }>}
+ */
+async function ownSettings(oxlint, file) {
+  const text = readFileSync(file, "utf8");
+  let settings;
+  try {
+    settings = JSON.parse(text);
+  } catch {
+    const printed = await exec(oxlint, ["--print-config", "-c", file], { maxBuffer: Infinity }).catch((/** @type {any} */ error) => error);
+    if (printed instanceof Error) {
+      const output = `${/** @type {any} */ (printed).stdout ?? ""}${/** @type {any} */ (printed).stderr ?? ""}`;
+      const reason = output.split("\n").map((line) => line.replace(/^\s*\|\s*/, "").trim()).filter(Boolean).at(-1);
+      throw new Error(`${basename(file)} is not a valid oxlint config: ${reason ?? printed.message.split("\n")[0]}`);
+    }
+    settings = JSON.parse(printed.stdout);
+  }
+  return settings;
+}
+
+/**
  * Writes the generated oxlint config into node_modules/.cache/intersite and returns its path.
  * @param {string} cwd
  * @param {string} ownConfig the project's own oxlint config
@@ -206,7 +257,7 @@ async function writeOxlintConfig(cwd, ownConfig, oxlint, rules) {
   mkdirSync(cacheDir, { recursive: true });
   // Naming plugins replaces oxlint's default set, so start from the project's own list, or the defaults.
   /** @type {string[]} */
-  const ownPlugins = (existsSync(ownConfig) ? JSON.parse(readFileSync(ownConfig, "utf8")).plugins : undefined) ?? ["unicorn", "typescript", "oxc"];
+  const ownPlugins = (existsSync(ownConfig) ? (await ownSettings(oxlint, ownConfig)).plugins : undefined) ?? ["unicorn", "typescript", "oxc"];
   // Plugins this run adds for a pack's built-in rules. Turning a plugin on also turns on its whole "correctness"
   // set, which nobody chose, so every such rule not named by a pack is switched off again.
   const added = [...new Set(builtinRules.filter((b) => b.rule in rules).map((b) => b.rule.split("/")[0]))].filter((name) => name !== "eslint" && !ownPlugins.includes(name));
@@ -239,7 +290,8 @@ async function writeOxlintConfig(cwd, ownConfig, oxlint, rules) {
 async function runOxlint(cwd, oxlint, configFile, paths) {
   // The JSON report has no file list, so a second oxlint run lists the files it lints (its own ignores applied).
   // A Swift-only project has nothing for oxlint, which is not an error.
-  const args = ["-c", configFile, "--no-error-on-unmatched-pattern", ...(paths.length ? paths : ["."])];
+  // oxlint lints node_modules unless a .gitignore says not to, and a fresh project may have no .gitignore.
+  const args = ["-c", configFile, "--no-error-on-unmatched-pattern", "--ignore-pattern=**/node_modules/**", ...(paths.length ? paths : ["."])];
   /** @param {string[]} extra */
   const oxlintRun = (extra) => exec(oxlint, [...extra, ...args], { cwd, maxBuffer: Infinity }).catch((/** @type {any} */ e) => e);
   const [run, listed] = await Promise.all([oxlintRun(["-f", "json"]), oxlintRun(["--debug=files"])]);
@@ -255,7 +307,9 @@ async function runOxlint(cwd, oxlint, configFile, paths) {
   // A diagnostic with no rule code is a rule that threw: say which, instead of failing on it later.
   const crashed = report.diagnostics.find((d) => !d.code);
   if (crashed) {
-    console.error(`intersite lint: a lint rule crashed on ${crashed.filename}: ${crashed.message.split("\n")[0]}`);
+    // The thrown error's own line says what broke (an invalid lint.custom selector reads "SyntaxError: Expected …").
+    const reason = /^\w*Error: .*$/m.exec(crashed.message)?.[0] ?? crashed.message.split("\n")[0];
+    console.error(`intersite lint: a lint rule crashed on ${crashed.filename}: ${reason}`);
     return undefined;
   }
   return { report, listed: String(listed.stdout).split("\n").filter(Boolean) };
@@ -309,9 +363,11 @@ function compareBaseline(found, baseline, paths) {
 async function bareSuppressions(cwd, files) {
   /** @type {Finding[]} */
   const findings = [];
+  // A file oxlint listed and that is gone or unreadable by now has no suppressions to report.
+  const unreadable = () => "";
   for (let i = 0; i < files.length; i += 256) {
     const batch = files.slice(i, i + 256);
-    const texts = await Promise.all(batch.map((f) => readFile(resolve(cwd, f), "utf8").catch(() => "")));
+    const texts = await Promise.all(batch.map((f) => readFile(resolve(cwd, f), "utf8").catch(unreadable)));
     texts.forEach((text, j) => {
       if (!text.includes("-disable")) return;
       for (const m of text.matchAll(bareSuppression)) {

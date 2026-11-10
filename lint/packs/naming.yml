@@ -5,11 +5,14 @@ rules:
   # 0 of 2,236 interfaces in the tuning corpus carry an `I` prefix.
   - id: no-i-prefixed-interface
     pack: naming
-    selector: "TSInterfaceDeclaration > Identifier.id[name=/^I[A-Z][a-z]/]"
+    # IPv4Address, IFrameProps, ICalEvent and IOSConfig are words, not prefixes.
+    selector: ":matches(TSInterfaceDeclaration, TSTypeAliasDeclaration) > Identifier.id[name=/^I(?!Pv|Frame|Cal|Phone|Pad|Cloud|Mac|Pod)[A-Z][a-z]/]"
     message: "The `I` prefix is a C# habit TypeScript does not use: types and interfaces are interchangeable, and the prefix leaks into every use. Drop it (IUser -> User)."
     bad:
       - "export interface IUser { id: string }"
       - "export interface IPaymentProvider { charge(): void }"
+      - "export type IUser = { id: string };"
     good:
       - "export interface User { id: string }"
       - "export interface IOSConfig { bundleId: string }"
+      - "export interface IPv4Address { octets: number[] }\nexport type IFrameMessage = { data: string };"

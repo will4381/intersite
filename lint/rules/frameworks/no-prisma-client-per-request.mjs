@@ -6,6 +6,8 @@ import { enclosingFunction, isRequestName } from "../shared.mjs";
 /** A request handler: a function taking `req` or `request`, or one passed to `app.get(...)`, `router.post(...)`. @param {any} fn */
 function isHandler(fn) {
   if (fn.params.some(isRequestName)) return true;
+  // Remix/React Router `action` and `loader`, Next route exports.
+  if (fn.parent?.type === "ExportNamedDeclaration" && /^(action|loader|GET|POST|PUT|PATCH|DELETE)$/.test(fn.id?.name ?? "")) return true;
   const call = fn.parent;
   return call?.type === "CallExpression" && call.callee.type === "MemberExpression" && /^(get|post|put|patch|delete|all|route)$/.test(call.callee.property.name ?? "");
 }
@@ -38,6 +40,7 @@ export const rule = defineRule({
 export const bad = [
   "app.get('/users', async (req, res) => {\n  const prisma = new PrismaClient();\n  res.json(await prisma.user.findMany());\n});",
   "export async function GET(request: Request) {\n  const prisma = new PrismaClient();\n  return Response.json(await prisma.post.findMany({ take: 20 }));\n}",
+  "export async function action() {\n  const prisma = new PrismaClient();\n  await prisma.user.create({ data: {} });\n}",
   "router.post('/orders', async (ctx) => {\n  const db = new PrismaClient({ log: ['error'] });\n  ctx.body = await db.order.create({ data: ctx.request.body });\n});",
 ];
 

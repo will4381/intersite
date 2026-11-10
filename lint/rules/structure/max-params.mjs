@@ -1,6 +1,8 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
+import { isGenerated } from "../shared.mjs";
+
 const LIMIT = 5;
 
 export const id = "max-params";
@@ -17,10 +19,15 @@ export const rule = defineRule({
     /** @param {any} node */
     function check(node) {
       // A TypeScript `this` parameter is a type annotation, not an argument.
-      const count = node.params.filter((/** @type {any} */ p) => !(p.type === "Identifier" && p.name === "this")).length;
+      const params = node.params.filter((/** @type {any} */ p) => !(p.type === "Identifier" && p.name === "this"));
+      // A dependency-injected constructor (`constructor(private readonly users: UsersService, ...)`, `@Inject(TOKEN) x`)
+      // is called by the framework's container, never by hand, so its parameter list cannot become an options object.
+      if (params.every((/** @type {any} */ p) => p.type === "TSParameterProperty" || p.decorators?.length)) return;
+      const count = params.length;
       if (count > LIMIT) context.report({ node: node.id ?? node, messageId: "many", data: { count: String(count) } });
     }
-    return { FunctionDeclaration: check, FunctionExpression: check, ArrowFunctionExpression: check };
+    // Generated code is the generator's to shape.
+    return { before: () => !isGenerated(context), FunctionDeclaration: check, FunctionExpression: check, ArrowFunctionExpression: check };
   },
 });
 
@@ -34,4 +41,6 @@ export const good = [
   "export function createUser({ name, email, role, team, active, locale }) { return { name, email, role, team, active, locale }; }",
   "export function between(value: number, min: number, max: number, step: number, wrap: boolean) { return [value, min, max, step, wrap]; }",
   "export function handler(this: Window, a: number, b: number, c: number, d: number, e: number) { return a + b + c + d + e + this.length; }",
+  "@Injectable()\nexport class Billing { constructor(private readonly users: Users, private readonly plans: Plans, private readonly stripe: Stripe, private readonly mail: Mail, private readonly audit: Audit, private readonly clock: Clock) {} }",
+  "export class Billing { constructor(@Inject(USERS) users: Users, @Inject(PLANS) plans: Plans, @Inject(STRIPE) stripe: Stripe, @Inject(MAIL) mail: Mail, @Inject(AUDIT) audit: Audit, @Inject(CLOCK) clock: Clock) {} }",
 ];

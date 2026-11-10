@@ -1,15 +1,15 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { isRequestName } from "../shared.mjs";
+import { isBodyMethod, isRequestName } from "../shared.mjs";
 
 const EVENT = /^(checkout\.session|customer\.subscription|invoice|payment_intent|charge)\.[a-z_.]+$/;
 
-/** `request.json()`, `req.text()`, `req.body`. @param {any} node */
+/** `request.json()`, `req.text()`, Hono's `c.req.json()`, `req.body`. @param {any} node */
 const readsBody = (node) =>
   node.type === "MemberExpression"
     ? isRequestName(node.object) && node.property.name === "body"
-    : node.callee.type === "MemberExpression" && /^(json|text)$/.test(node.callee.property.name) && isRequestName(node.callee.object);
+    : isBodyMethod(node.callee, /^(json|text)$/);
 
 export const id = "no-unverified-stripe-webhook";
 export const pack = "security";
@@ -54,6 +54,7 @@ export const rule = defineRule({
 export const bad = [
   "export async function POST(request: Request) {\n  const event = await request.json();\n  if (event.type === 'checkout.session.completed') await markPaid(event.data.object.id);\n  return new Response('ok');\n}",
   "app.post('/stripe', async (req, res) => {\n  switch (req.body.type) { case 'invoice.paid': await extend(req.body.data.object); break; }\n  res.sendStatus(200);\n});",
+  "app.post('/stripe', async (c) => {\n  const event = await c.req.json();\n  if (event.type === 'checkout.session.completed') await markPaid(event.data.object.id);\n  return c.text('ok');\n});",
   "export async function POST(req) {\n  const { type, data } = JSON.parse(await req.text());\n  if (type === 'customer.subscription.deleted') await cancel(data.object.customer);\n  return Response.json({ ok: true });\n}",
 ];
 

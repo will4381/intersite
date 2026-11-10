@@ -20,7 +20,7 @@ export const rule = defineRule({
         const callee = /** @type {any} */ (node.callee);
         const fn = /** @type {any} */ (node.arguments[0]);
         if (callee.type !== "MemberExpression" || !/^(validator|inputValidator)$/.test(callee.property.name ?? "")) return;
-        if (fn?.type !== "ArrowFunctionExpression" || fn.params.length !== 1 || fn.params[0].type !== "Identifier") return;
+        if (!/^(Arrow)?FunctionExpression$/.test(fn?.type ?? "") || fn.params.length !== 1 || fn.params[0].type !== "Identifier") return;
         let body = fn.body;
         if (body.type === "BlockStatement" && body.body.length === 1 && body.body[0].type === "ReturnStatement") body = body.body[0].argument;
         while (body?.type === "TSAsExpression" || body?.type === "TSSatisfiesExpression") body = body.expression;
@@ -36,6 +36,7 @@ export const bad = [
   "const loadInvite = createServerFn().validator((invite: Invite) => invite).handler(({ data }) => getInvite(data.token));",
   "export const rename = createServerFn({ method: 'POST' })\n  .middleware([auth])\n  .inputValidator((input: { id: string; name: string }) => input)\n  .handler(async ({ data }) => db.update(items).set({ name: data.name }).where(eq(items.id, data.id)));",
   "const save = createServerFn({ method: 'POST' }).validator((d: unknown) => {\n  return d as Draft;\n}).handler(({ data }) => store(data));",
+  "const save = createServerFn().validator(function (d: Draft) { return d; }).handler(({ data }) => store(data));",
 ];
 
 export const good = [

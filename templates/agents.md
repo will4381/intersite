@@ -9,7 +9,7 @@ It prints one line per finding, with the command that reruns just that finding.
   `// oxlint-disable-next-line intersite/<rule> -- <why>`, where a reviewer will see it.
 - **Fix a bug by reproducing it first.** With a reference from a user or a log, run
   `npx intersite replay --id <ref> --verbose`. Otherwise write the failing test, then the fix. The new test must
-  fail without the fix: `npx intersite gate fails-on-base`.
+  fail without the fix: `npx intersite gate fails-on-base --cmd "<the project's test command>"`.
 - **Test through the API, not through mocks.** Do not mock this project's own modules. A test whose assertions
   could not fail is worse than no test.
 - **Reuse before writing.** Search for an existing helper first; `duplicates` reports pasted blocks. Do not add a

@@ -9,26 +9,29 @@ description: Check a change with Intersite before calling it done. Use whenever 
 npx intersite check
 ```
 
-This is the definition of done. It runs lint, the gates on your diff, and a replay of real recorded sessions when a
-collector is available. Success is one line starting `ok check:`. Each finding is one line; many end with
-`| rerun: <command>`, which reruns only that finding.
+This is the definition of done. It runs lint, the gates on your diff, and a replay of real recorded sessions when the
+project's server is running. Success is one line starting `ok check:`, after any `skip …:` lines that say what did
+not run and why. Each finding is one line: a gate's carries `| to accept: add { "gate": "<name>", … }`, which names
+the gate; a replay failure ends with `| rerun: <command>`, which reruns only that case.
 
 ## Fixing what it reports
 
-| Line starts with | Meaning | Do this |
+| Line | Meaning | Do this |
 | --- | --- | --- |
-| `path:line:col intersite/<rule>` | A lint rule matched new code | Fix the code as the message says |
-| `test-integrity` | A test was deleted, weakened or skipped | Restore it; fix the code instead |
-| `duplicates` | You pasted a block that already exists | Import or extract the original, named in the line |
-| `similar` | You wrote something that already exists under another name | Reuse the one named in the line; if they differ only in a few values, make one with a variant |
-| `naming` | A new file or folder does not follow its neighbours' naming | Rename it to the form the line gives |
-| `style-drift` | A new colour or size is almost an existing one | Use the token or value the line names |
-| `new-deps` | A dependency was added | Remove it if a few lines of code or the standard library do the job |
-| `artifacts` | You left a backup copy, scratch file, log or planning document | Delete it; put anything worth keeping where it belongs |
-| `unused` | You added a file or export nothing uses, or orphaned a file | Wire it in or delete it |
-| `fails-on-base` | Your new test passes without your fix | Make the test exercise the bug |
-| `mutation` | A break on a changed line went unnoticed | Add an assertion that would notice it |
-| `FAIL baseline` | The API answered differently from production | Run the rerun command with `--verbose`, then fix the code |
+| `path:line:col <rule> <message>` | A lint rule matched new code | Fix the code as the message says |
+| `path <rule>: N findings, baseline allows M` | Old findings were fixed | Lower the baseline with `npx intersite lint --write` |
+| contains `"gate": "test-integrity"` | A test was deleted, weakened or skipped | Restore it; fix the code instead |
+| contains `"gate": "duplicates"` | You pasted a block that already exists | Import or extract the original, named in the line |
+| contains `"gate": "similar"` | You wrote something that already exists under another name | Reuse the one named in the line; if they differ only in a few values, make one with a variant |
+| contains `"gate": "naming"` | A new file or folder does not follow its neighbours' naming | Rename it to the form the line gives |
+| contains `"gate": "style-drift"` | A new colour or size is almost an existing one | Use the token or value the line names |
+| contains `"gate": "new-deps"` | A dependency was added | Remove it if a few lines of code or the standard library do the job |
+| contains `"gate": "artifacts"` | You left a backup copy, scratch file, log or planning document | Delete it; put anything worth keeping where it belongs |
+| contains `"gate": "unused"` | You added a file or export nothing uses, or orphaned a file | Wire it in or delete it |
+| contains `"gate": "fails-on-base"` | Your new test passes without your fix | Make the test exercise the bug |
+| contains `"gate": "mutation"` | A break on a changed line went unnoticed | Add an assertion that would notice it |
+| `skip gates:` / `skip replay:` | That stage could not run here (no git, no adapter, no server answering) | Nothing to fix; say so if the change needed it |
+| `FAIL baseline` | The API answered differently from production, or a server error production recorded still happens | Run the rerun command with `--verbose`, then fix the code |
 | `FAIL twice` | Repeating a write caused a server error | Make the write safe to repeat |
 | `FAIL cross-tenant` | Another account could reach the record | Fix the authorization check |
 | `FAIL ui` | A page or named action broke | Run the rerun command with `--headed` to watch |

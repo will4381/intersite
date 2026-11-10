@@ -19,6 +19,11 @@ const narration = [
   /^(?:Changed|Updated|Increased|Decreased|Bumped|Reduced|Raised|Lowered)\s+(?:\S+\s+){0,3}?from\s+(?:\d[\w.]*|'[^']*'|"[^"]*"|`[^`]*`)\s+to\s+/i,
   // Matches what an edit took away: `Removed old logic`, `Replaced the legacy parser`.
   /^(?:Removed|Deleted|Dropped|Replaced|Commented out)\s+(?:the\s+)?(?:old|previous|legacy|unused|dead|original|deprecated|redundant|duplicate)\b/i,
+  // Matches a new way of working: `Updated to use the new client`, `Refactored to use hooks`, `Now uses async/await`.
+  /^(?:Changed|Updated|Refactored|Modified|Switched|Migrated|Converted|Rewritten|Rewrote)\s+(?:it\s+|this\s+)?to\s+(?:use|using|now|handle|support|call|return|async)\b/i,
+  /^(?:Now|We now|This now|It now)\s+(?:uses?|handles?|returns?|calls?|supports?|works)\b/i,
+  // Matches what the code used to do: `Previously this used a loop`.
+  /^Previously,?\s+(?:this|we|it|the code|the function)\b/i,
   // Matches tool credits: `Added by Claude`, `Generated with Copilot`.
   /^(?:Added|Generated|Written|Updated|Created|Modified)\s+(?:by|with|using)\s+(?:Claude|Copilot|ChatGPT|GPT|Cursor|Codex|Gemini|AI|an?\s+(?:AI|LLM|assistant))\b/i,
 ];
@@ -38,6 +43,9 @@ export const bad = [
   "export const timeout = 10; // Changed from 5 to 10",
   "// Fixed: was off by one\nexport const last = (a) => a[a.length - 1];",
   "// Removed old logic\nexport const run = () => 1;",
+  "// Updated to use the new API client\nexport const client = 1;",
+  "// Now uses async/await instead of callbacks\nexport const load = 1;",
+  "// Previously this used a for loop\nexport const sum = 1;",
 ];
 
 export const good = [
@@ -48,5 +56,7 @@ export const good = [
   "// Changed fields only, as one POST per object.\nexport const patch = 1;",
   "// FIX-23: a revision approved with its submission books the fee once.\nexport const fee = 1;",
   "// Updated programs drop out of the selection.\nexport const selection = [];",
+  "// Now that the session is loaded, render the shell.\nexport const shell = 1;",
+  "// Previously selected rows stay checked.\nexport const keep = 1;",
   "/**\n * removed: only in the answer to PATCH /v1/members/:id.\n */\nexport type Status = 'active' | 'removed';",
 ];

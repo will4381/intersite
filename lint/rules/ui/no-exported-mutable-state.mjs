@@ -5,7 +5,7 @@ import { isTestFile } from "../shared.mjs";
 
 /** An empty `new Map()`, `new Set()` or `[]`: a collection exported for other modules to fill. @param {any} init */
 const emptyCollection = (init) =>
-  (init?.type === "NewExpression" && /^(?:Map|Set)$/.test(init.callee.name) && !init.arguments.length) || (init?.type === "ArrayExpression" && !init.elements.length);
+  (init?.type === "NewExpression" && /^(?:Weak)?(?:Map|Set)$/.test(init.callee.name) && !init.arguments.length) || (init?.type === "ArrayExpression" && !init.elements.length);
 
 export const id = "no-exported-mutable-state";
 export const pack = "globals";
@@ -36,6 +36,7 @@ export const bad = [
   "export let config = loadConfig();\nexport function reload() { config = loadConfig(); }",
   "export const dirtySheets = new Set<string>();",
   "export const listeners: Array<() => void> = [];",
+  "export const seen = new WeakMap<object, number>();",
 ];
 
 export const good = [

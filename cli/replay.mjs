@@ -6,7 +6,7 @@ import { parseArgs } from "node:util";
 
 import { LOCAL_HOST, getCase, listSessions, postResults } from "../replay/collector.mjs";
 import { compareMetrics } from "../replay/metrics.mjs";
-import { replaySessions } from "../replay/run.mjs";
+import { answers, replaySessions } from "../replay/run.mjs";
 import { collectorTokens, loadConfig } from "../shared/config.mjs";
 
 const MODES = ["baseline", "twice", "cross-tenant", "ui"];
@@ -38,10 +38,10 @@ const USAGE = "usage: intersite replay [--id <caseId> | --seed <n> --sample <n> 
   + " [--metrics-out <file>] [--metrics-base <file>] (--metrics-base compares Server-Timing counters with a --metrics-out file;"
   + " both runs must replay the same sessions on the same local data, so it reuses that run's seed)";
 
-/** @param {string[]} argv @param {{ cwd: string }} context @returns {Promise<number>} */
-export default async function replay(argv, { cwd }) {
+/** `quiet` leaves out the success line, for `check`. @param {string[]} argv @param {{ cwd: string, quiet?: boolean }} context @returns {Promise<number>} */
+export default async function replay(argv, { cwd, quiet = false }) {
   try {
-    return await main(argv, cwd);
+    return await main(argv, cwd, quiet);
   } catch (error) {
     const usage = String(/** @type {{ code?: unknown }} */ (error)?.code).startsWith("ERR_PARSE_ARGS") ? `; ${USAGE}` : "";
     console.error(`intersite replay: ${error instanceof Error ? error.message : error}${usage}`);
@@ -49,8 +49,8 @@ export default async function replay(argv, { cwd }) {
   }
 }
 
-/** @param {string[]} argv @param {string} cwd */
-async function main(argv, cwd) {
+/** @param {string[]} argv @param {string} cwd @param {boolean} quiet */
+async function main(argv, cwd, quiet) {
   const { values: flags } = parseArgs({ args: argv, options, strict: true, allowPositionals: false });
   const config = loadConfig(cwd);
   const target = flags.target ?? config.replay.target;
@@ -73,7 +73,7 @@ async function main(argv, cwd) {
 
   const collector = { url: config.collector.url, token: collectorTokens(config).read, project: config.project };
 
-  const adapter = await import(pathToFileURL(resolve(cwd, config.replay.adapter)).href);
+  const adapter = named(await import(pathToFileURL(resolve(cwd, config.replay.adapter)).href), config.replay.adapter);
   if (typeof adapter.signIn !== "function") throw new Error(`${config.replay.adapter} does not export signIn`);
   if (concurrency > 1 && typeof adapter.reset === "function") {
     console.error(`note: --concurrency ${concurrency} ignored; sessions run one at a time because the adapter resets shared state`);
@@ -85,6 +85,9 @@ async function main(argv, cwd) {
   }
 
   const { seed, sessions } = await pickSessions(flags, String(config.replay.sample), collector, base);
+  if (sessions.length && modes.some((mode) => mode !== "ui") && !(await answers(target))) {
+    throw new Error(`nothing answers at ${target}: start the project's server there, or point replay.target in intersite.yml (or --target) at it`);
+  }
 
   if (base) {
     const names = sessions.map((session) => session.session);
@@ -119,13 +122,14 @@ async function main(argv, cwd) {
   const count = (/** @type {string} */ kind) => steps.filter((step) => step.result === kind).length;
   const failed = count("failed") + metricFailures.length;
   if (flags.json) {
-    console.log(JSON.stringify({ seed, sessions: results, ...(base && { metrics: metricFailures }) }));
+    // With --verbose, the recorded cases too: the request as production saw it, scrubbed, for writing a reproduction.
+    console.log(JSON.stringify({ seed, sessions: results, ...(base && { metrics: metricFailures }), ...(flags.verbose && { recorded: sessions }) }));
   } else {
     const extra = (flags.target ? ` --target ${flags.target}` : "") + (flags["allow-remote"] ? " --allow-remote" : "");
     const compared = base ? `; metrics: ${Object.keys(metrics).filter((id) => base[id]).length} cases compared, ${metricFailures.length} higher` : "";
     const summary = `replay: ${results.length} sessions; steps: ${count("passed")} passed, ${count("failed")} failed, ${count("skipped")} skipped${seed === undefined ? "" : `; seed ${seed}`}${compared}`;
     if (!failed) {
-      console.log(`ok ${summary}`);
+      if (!quiet) console.log(`ok ${summary}`);
       return 0;
     }
     const lines = [
@@ -145,6 +149,32 @@ async function main(argv, cwd) {
     console.log(lines.join("\n"));
   }
   return failed ? 1 : 0;
+}
+
+/**
+ * The adapter with each function's errors prefixed by where they came from: they are the project's to fix, and a bare
+ * "fetch failed" from inside `reset` says nothing.
+ * @param {Record<string, any>} module @param {string} file
+ * @returns {import("../replay/run.mjs").Adapter}
+ */
+function named(module, file) {
+  /** @param {(...args: any[]) => any} fn @param {string} name */
+  const wrap = (fn, name) => async (/** @type {any[]} */ ...args) => {
+    try {
+      return await fn(...args);
+    } catch (error) {
+      const code = /** @type {{ cause?: { code?: string } }} */ (error)?.cause?.code;
+      throw new Error(`${file} ${name}: ${error instanceof Error ? error.message : error}${code ? ` (${code})` : ""}`, { cause: error });
+    }
+  };
+  const functions = ["signIn", "resolveId", "reset"].filter((name) => typeof module[name] === "function");
+  return {
+    ...module,
+    ...Object.fromEntries(functions.map((name) => [name, wrap(module[name], name)])),
+    invariants: module.invariants?.map((/** @type {{ name: string, check: Function }} */ invariant) => ({
+      ...invariant, check: wrap(invariant.check.bind(invariant), `invariant "${invariant.name}"`),
+    })),
+  };
 }
 
 /**

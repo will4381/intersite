@@ -7,9 +7,9 @@ const always = "(?:code|implementation|logic)";
 const noun = "(?:functions?|methods?|imports?|handlers?|tests?|cases?|props|fields|properties|styles|routes|config(?:uration)?|content|body|component|class|file|setup|helpers?|exports?|types?|steps?|options)";
 const owner = "(?:the\\s+|this\\s+|your\\s+)?";
 const what = `(?:(?:the\\s+)?rest\\s+of\\s+${owner}|(?:the\\s+)?(?:existing|other|remaining|previous|original|same|unchanged)\\s+)`;
-const tail = "(?:here|goes here|as before|as is|(?:remains?|stays?|is|are)(?:\\s+(?:the\\s+same|unchanged|as\\s+(?:is|before)))?|unchanged|omitted|elided|for brevity)";
-/** `rest of the code`, `existing code here`: always a placeholder. */
-const placeholder = new RegExp(`^(?:${what}${always}(?:\\s+${tail})?|${what}${noun}\\s+${tail}|unchanged|no changes?|same as before)$`, "i");
+const tail = "(?:here|goes here|as before|as is|(?:remains?|stays?|is|are)(?:\\s+(?:the\\s+same|unchanged|as\\s+(?:is|before)))?|unchanged|(?:omitted|elided|hidden|skipped)(?:\\s+for\\s+brevity)?|for brevity)";
+/** `rest of the code`, `existing code here`, `your code here`: always a placeholder. */
+const placeholder = new RegExp(`^(?:${what}${always}(?:\\s+${tail})?|${what}${noun}\\s+${tail}|(?:(?:add|put|write|insert)\\s+)?your\\s+${always}(?:\\s+goes)?\\s+here|unchanged|no changes?|same as before)$`, "i");
 /** `existing tests`, `other methods`: a placeholder only beside an ellipsis. */
 const withEllipsis = new RegExp(`^(?:${what}${noun}|${tail})$`, "i");
 
@@ -27,6 +27,7 @@ export function isElision(value) {
 
 export const id = "no-elided-code";
 export const pack = "slop";
+export const ext = "tsx";
 
 export const rule = defineRule({
   meta: {
@@ -40,8 +41,8 @@ export const rule = defineRule({
       Program() {
         const { lines } = context.sourceCode;
         for (const comment of context.sourceCode.getAllComments()) {
-          // On a line of its own: `expect(total).toBe(121); // unchanged` describes the line it ends.
-          const ownLine = !lines[comment.loc.start.line - 1].slice(0, comment.loc.start.column).trim();
+          // On a line of its own (a JSX `{/* ... */}` included): `expect(total).toBe(121); // unchanged` describes the line it ends.
+          const ownLine = /^\s*\{?\s*$/.test(lines[comment.loc.start.line - 1].slice(0, comment.loc.start.column));
           if (ownLine && !comment.value.startsWith("*") && isElision(comment.value)) context.report({ loc: comment.loc, messageId: "elided" });
         }
       },
@@ -56,6 +57,9 @@ export const bad = [
   "export const config = {\n  port: 3000,\n  // ... existing options ...\n};",
   "export function render() {\n  // rest of the implementation remains the same\n  return null;\n}",
   "export function total(items) {\n  // (unchanged)\n  return sum(items);\n}",
+  "export const Page = () => (\n  <main>\n    {/* ...existing code... */}\n    <Footer />\n  </main>\n);",
+  "export class Store {\n  // (other methods omitted for brevity)\n  clear() { this.items = []; }\n}",
+  "export function onSubmit() {\n  // your code here\n}",
 ];
 
 export const good = [
@@ -65,5 +69,6 @@ export const good = [
   "export const placeholder = 'https://...';",
   "/** Returns the rest of the list ... after the cursor. */\nexport function rest(list) { return list.slice(1); }",
   "// … but the service's explicit policy wins.\nexport const policy = 1;",
+  "export const Page = () => (\n  <main>\n    {/* The list renders below the fold. */}\n  </main>\n);",
   "test('keeps the label', () => {\n  expect(updated.line1).toBe(body.line1); // unchanged\n});",
 ];

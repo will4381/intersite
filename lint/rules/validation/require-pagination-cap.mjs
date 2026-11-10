@@ -1,7 +1,7 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { calleeName, constInit, isRequestInput, notShipped, unwrap } from "../shared.mjs";
+import { calleeName, constInit, isRequestValue, notShipped, unwrap } from "../shared.mjs";
 
 const PAGE_KEY = /^(limit|take|first|pageSize|page_size|perPage|per_page)$/;
 const NUMBER_SCHEMA = /\b(number|int|integer|numeric|Integer|Number)\(/;
@@ -30,10 +30,10 @@ function core(node) {
 function uncapped(value, context) {
   if (CAPPED.test(context.sourceCode.getText(value))) return false;
   const inner = core(value);
-  if (isRequestInput(inner)) return true;
+  if (isRequestValue(inner)) return true;
   if (inner?.type !== "Identifier") return false;
   const init = constInit(inner, context.sourceCode);
-  if (!init || CAPPED.test(context.sourceCode.getText(init)) || !isRequestInput(core(init))) return false;
+  if (!init || CAPPED.test(context.sourceCode.getText(init)) || !isRequestValue(core(init))) return false;
   const variable = context.sourceCode.getScope(inner).references.find((/** @type {any} */ r) => r.identifier === inner)?.resolved;
   return !variable?.references.some((/** @type {any} */ r) => /^[<>]=?$/.test(r.identifier.parent.operator ?? "") || calleeName(r.identifier.parent) === "min");
 }
@@ -81,6 +81,7 @@ export const bad = [
   "const ListQuery = z.object({ cursor: z.string().optional(), limit: z.coerce.number().int().positive().default(20) });",
   "app.get('/users', async (req, res) => { res.json(await User.findAll({ limit: req.query.limit ? parseInt(req.query.limit) : undefined })); });",
   "const Query = v.object({ pageSize: v.pipe(v.string(), v.transform(Number), v.number()) });",
+  "app.get('/x', async (c) => { const limit = Number(c.req.query('limit') ?? 20); return c.json(await db.select().from(posts).limit(limit)); });",
 ];
 
 export const good = [

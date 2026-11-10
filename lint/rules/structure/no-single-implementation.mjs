@@ -34,10 +34,14 @@ export const rule = defineRule({
         implementations = new Map();
         otherUses = new Set();
         // Most files declare no interface or abstract class; skip walking their type references.
-        return /\b(?:interface|abstract)\b/.test(context.sourceCode.text);
+        return /\b(?:interface|abstract|implements)\b/.test(context.sourceCode.text);
       },
       TSInterfaceDeclaration(node) {
         if (!node.declare) abstractions.set(node.id.name, { node, kind: "interface" });
+      },
+      // `type Repo = { find(): User }` that a class implements is an interface by another name.
+      TSTypeAliasDeclaration(node) {
+        if (!node.declare && node.typeAnnotation.type === "TSTypeLiteral") abstractions.set(node.id.name, { node, kind: "type" });
       },
       "ClassDeclaration[abstract=true]"(node) {
         if (node.id && !node.declare) abstractions.set(node.id.name, { node, kind: "abstract class" });
@@ -70,6 +74,7 @@ export const bad = [
   "export interface IUserService { find(id: string): unknown; }\nexport class UserService implements IUserService { find(id: string) { return db.get(id); } }",
   "export abstract class Notifier { abstract send(text: string): void; }\nexport class NotifierImpl extends Notifier { send(text: string) { console.info(text); } }",
   "interface Logger { log(message: string): void; }\nclass ConsoleLogger implements Logger { log(message: string) { console.info(message); } }\nexport const logger = new ConsoleLogger();",
+  "type Repo = { find(id: string): unknown };\nclass PgRepo implements Repo { find(id: string) { return db.get(id); } }\nexport const repo = new PgRepo();",
 ];
 
 export const good = [
@@ -78,4 +83,5 @@ export const good = [
   "interface Store { get(key: string): string | undefined; }\nclass MemoryStore implements Store { get(key: string) { return undefined; } }\nclass KvStore implements Store { get(key: string) { return kv.get(key); } }\nexport const stores = [new MemoryStore(), new KvStore()];",
   "interface Clock { now(): number; }\nclass SystemClock implements Clock { now() { return Date.now(); } }\nexport function schedule(clock: Clock = new SystemClock()) { return clock.now() + 1000; }",
   "interface Props { name: string; }\nexport function greet(props: Props) { return props.name; }",
+  "type Point = { x: number };\nexport const origin: Point = { x: 0 };",
 ];

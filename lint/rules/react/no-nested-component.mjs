@@ -4,14 +4,18 @@ import { defineRule } from "@oxlint/plugins";
 import { walk } from "../shared.mjs";
 import { functionName } from "./hooks.mjs";
 
-/** `function Row() {}` or `const Row = () => …` as a statement of `body`: name -> declaration. @param {any} body */
+/** `() => …`, or one wrapped in `memo(…)`/`forwardRef(…)` (also as `React.memo`). @param {any} init */
+const componentValue = (init) =>
+  init?.type.endsWith("FunctionExpression") || (init?.type === "CallExpression" && /^(?:memo|forwardRef)$/.test(init.callee.name ?? init.callee.property?.name) && componentValue(init.arguments[0]));
+
+/** `function Row() {}`, `const Row = () => …` or `const Row = memo(() => …)` as a statement of `body`: name -> declaration. @param {any} body */
 function declaredComponents(body) {
   /** @type {Map<string, any>} */
   const found = new Map();
   for (const s of body.body) {
     if (s.type === "FunctionDeclaration" && /^[A-Z]/.test(s.id?.name ?? "")) found.set(s.id.name, s);
     if (s.type === "VariableDeclaration") {
-      for (const d of s.declarations) if (/^[A-Z]/.test(d.id.name ?? "") && d.init?.type.endsWith("FunctionExpression")) found.set(d.id.name, d);
+      for (const d of s.declarations) if (/^[A-Z]/.test(d.id.name ?? "") && componentValue(d.init)) found.set(d.id.name, d);
     }
   }
   return found;
@@ -51,6 +55,8 @@ export const bad = [
   "export function List({ items }) {\n  function Row({ item }) { return <li>{item.name}</li>; }\n  return <ul>{items.map((item) => <Row key={item.id} item={item} />)}</ul>;\n}",
   "export const Form = () => {\n  const [name, setName] = useState('');\n  const Field = () => <input value={name} onChange={(e) => setName(e.target.value)} />;\n  return <form><Field /></form>;\n};",
   "export default function Page() {\n  const Chart = function ({ data }) { return <svg>{data.length}</svg>; };\n  return <main><Chart data={[]} /></main>;\n}",
+  "export function List({ items }) {\n  const Row = memo(({ item }) => <li>{item.name}</li>);\n  return <ul>{items.map((item) => <Row key={item.id} item={item} />)}</ul>;\n}",
+  "export const Field = () => {\n  const Input = React.forwardRef((props, ref) => <input ref={ref} {...props} />);\n  return <form><Input /></form>;\n};",
 ];
 
 export const good = [
@@ -59,5 +65,6 @@ export const good = [
   "export function List({ items }) {\n  const Empty = () => <p>Nothing yet</p>;\n  return items.length ? <ul /> : Empty();\n}",
   // A render prop is a function, not a component type.
   "export function Grid({ rows }) {\n  return <Table rows={rows} cell={(row) => <span>{row.name}</span>} />;\n}",
+  "export function Grid({ rows }) {\n  const Icon = rows.length ? CheckIcon : XIcon;\n  const Cell = useMemo(() => makeCell(rows), [rows]);\n  return <ul><Icon /><Cell /></ul>;\n}",
   "export function useColumns() {\n  const Cell = ({ v }) => <span>{v}</span>;\n  return [{ id: 'a', cell: Cell }];\n}",
 ];

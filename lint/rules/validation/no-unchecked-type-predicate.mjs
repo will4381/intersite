@@ -38,6 +38,7 @@ function shallow(e, name) {
   if (e.type === "UnaryExpression") return (e.operator === "!" || e.operator === "typeof") && shallow(e.argument, name);
   if (e.type === "CallExpression") return e.callee.name === "Boolean" && shallow(e.arguments[0], name);
   if (e.type === "LogicalExpression") return e.operator === "&&" && shallow(e.left, name) && shallow(e.right, name);
+  if (e.type === "BinaryExpression" && e.operator === "instanceof") return e.right.name === "Object" && shallow(e.left, name);
   if (e.type === "BinaryExpression" && /^[!=]==?$/.test(e.operator)) {
     const literal = (/** @type {any} */ n) => n.type === "Literal" || (n.type === "Identifier" && n.name === "undefined");
     return (shallow(e.left, name) && literal(e.right)) || (literal(e.left) && shallow(e.right, name));
@@ -105,6 +106,7 @@ export const bad = [
   "function isEvent(data): data is WebhookEvent { return Boolean(data); }",
   "function assertUser(value: unknown): asserts value is User { if (typeof value !== 'object') console.warn('not a user'); }",
   "const isPayload = (body: unknown): body is { id: string; amount: number } => body != null;",
+  "function isUser(v: unknown): v is User { return v instanceof Object; }",
 ];
 
 export const good = [

@@ -11,8 +11,11 @@ const SETTABLE = /^(?:location|name|on[a-z]+)$/;
 // not new app state, so those are left to review.
 const BROWSER = /^(?:scheduler|requestIdleCallback|cancelIdleCallback|requestAnimationFrame|cancelAnimationFrame|(?:Intersection|Resize|Mutation|Performance)Observer|matchMedia|localStorage|sessionStorage|indexedDB|XMLHttpRequest|ResizeObserverEntry)$/;
 
+// Globals a third-party script defines its contract by: analytics queues and config objects it reads on load.
+const THIRD_PARTY = /^(?:dataLayer|gtag|fbq|_fbq|_paq|ttq|twq|rdt|lintrk|_hsq|hj|clarity|plausible|umami|analytics|Intercom|intercomSettings|\$crisp|CRISP_\w+|grecaptcha|turnstile|MonacoEnvironment)$/;
+
 /** Whether a global name is new state rather than a platform global or a settable browser slot. @param {string | undefined} key */
-const isNewGlobal = (key) => !key || !(SETTABLE.test(key) || BROWSER.test(key) || key in globalThis);
+const isNewGlobal = (key) => !key || !(SETTABLE.test(key) || BROWSER.test(key) || THIRD_PARTY.test(key) || key in globalThis);
 
 /** `window`, `(window as any)`, `globalThis` and friends, else undefined. @param {any} node */
 const globalObject = (node) => {
@@ -74,4 +77,5 @@ export const good = [
   "export function install(original: typeof fetch) { globalThis.fetch = (input, init) => original(input, init); }",
   "import { sleep } from './sleep';\nif (!('scheduler' in globalThis)) Object.assign(globalThis, { scheduler: { wait: sleep } });",
   "const globalForDb = globalThis as unknown as { db?: object };\nexport const db = (globalForDb.db ??= {});",
+  "export function loadAnalytics() {\n  window.dataLayer = window.dataLayer || [];\n  window.gtag = function gtag() { window.dataLayer.push(arguments); };\n}",
 ];

@@ -7,11 +7,15 @@ const assertionName = /^(expect|assert|should)/i;
 const modifiers = new Set(["only", "concurrent", "sequential", "serial", "fails", "fail", "failing"]);
 
 /**
- * True for `it(...)`/`test(...)` and their modifiers (`it.only`, `test.concurrent`), but not hooks, groups,
- * `.todo`, `.each` or `.skip`.
+ * True for `it(...)`/`test(...)`, their modifiers (`it.only`, `test.concurrent`) and tables (`it.each(rows)(...)`,
+ * test.each`rows`(...)), but not hooks, groups, `.todo` or `.skip`.
  * @param {any} callee
  */
 export function isTestCall(callee) {
+  if (callee.type === "CallExpression" || callee.type === "TaggedTemplateExpression") {
+    const each = callee.type === "CallExpression" ? callee.callee : callee.tag;
+    return each.type === "MemberExpression" && each.property.name === "each" && isTestCall(each.object);
+  }
   if (callee.type === "Identifier") return callee.name === "it" || callee.name === "test";
   return (
     callee.type === "MemberExpression" &&
@@ -33,6 +37,20 @@ export function isAssertion(callee) {
     if (node.type !== "MemberExpression" && node.type !== "CallExpression") return false;
   }
   return false;
+}
+
+/** `assert.fail()`, `expect.fail()`, `expect.unreachable()`, Jest's global `fail()`: a call that fails the test where it runs. @param {any} node */
+export const isFail = (node) => /^(?:fail|unreachable)$/.test(node.callee.type === "MemberExpression" ? node.callee.property.name : node.callee.name ?? "");
+
+/** `expect.assertions(n)` in a test: it fails when an assertion in a branch or catch is skipped. */
+export const counted = /\bexpect\.(?:assertions|hasAssertions)\(/;
+
+/** A statement that fails the test: `throw ...`, `assert.fail()`, `await expect.unreachable()`. @param {any} statement */
+export function fails(statement) {
+  if (statement.type === "ThrowStatement") return true;
+  let e = statement.type === "ExpressionStatement" ? statement.expression : undefined;
+  if (e?.type === "AwaitExpression") e = e.argument;
+  return e?.type === "CallExpression" && isFail(e);
 }
 
 export const id = "require-assertion";
@@ -118,6 +136,7 @@ export const rule = defineRule({
       "Program:exit"() {
         if (!pending.length) return;
         // A helper declared in this file asserts when it, or a helper it calls, asserts.
+        // ponytail: an asserting helper imported from another file (`refused(res)`) is not seen; only check/verify/ensure names count.
         const asserting = new Set([""]);
         for (let grew = true; grew; ) {
           grew = false;

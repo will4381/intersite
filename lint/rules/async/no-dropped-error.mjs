@@ -29,6 +29,13 @@ function isParseOnly(block) {
   return value?.type === "CallExpression" && value.callee.object?.name === "JSON" && value.callee.property?.name === "parse";
 }
 
+/** The rejection handler of `p.catch(handler)` or `p.then(onDone, handler)`. @param {any} fn */
+function isCatchHandler(fn) {
+  const call = fn?.parent;
+  if (call?.type !== "CallExpression" || call.callee.type !== "MemberExpression") return false;
+  return (call.callee.property.name === "catch" && call.arguments[0] === fn) || (call.callee.property.name === "then" && call.arguments[1] === fn);
+}
+
 export const id = "no-dropped-error";
 export const pack = "async";
 
@@ -43,17 +50,20 @@ export const rule = defineRule({
     return {
       ThrowStatement(node) {
         const thrown = node.argument;
-        if (thrown.type !== "NewExpression" || thrown.callee.type !== "Identifier" || !thrown.callee.name.endsWith("Error")) return;
-        // The nearest catch, unless a function boundary comes first.
+        // new Error(...), Error(...), new errors.NotFound(...)
+        const callee = thrown.type === "NewExpression" || thrown.type === "CallExpression" ? thrown.callee : undefined;
+        const errorName = callee?.type === "Identifier" ? callee.name : callee?.type === "MemberExpression" ? callee.property.name : "";
+        if (!errorName?.endsWith("Error")) return;
+        // The nearest catch clause or promise `.catch(error => ...)` handler, unless another function boundary comes first.
         let clause = node.parent;
         while (clause && clause.type !== "CatchClause" && !clause.type.endsWith("FunctionExpression") && clause.type !== "FunctionDeclaration") clause = clause.parent;
-        if (clause?.type !== "CatchClause") return;
+        const param = clause?.type === "CatchClause" ? clause.param : isCatchHandler(clause) ? clause.params[0] : undefined;
         // `catch {}` with no binding: the author chose not to look at the error, often for a parse or lookup whose
         // failure has one meaning. Only a named error that then goes unused is a dropped cause.
-        if (clause.param?.type !== "Identifier") return;
+        if (param?.type !== "Identifier") return;
         // `try { new URL(s) } catch (e) { throw new Error('bad URL') }`: a parse failure has one meaning.
-        if (isParseOnly(clause.parent.block)) return;
-        const name = clause.param.name;
+        if (clause.type === "CatchClause" && isParseOnly(clause.parent.block)) return;
+        const name = param.name;
         const variable = context.sourceCode.getDeclaredVariables(clause).find((v) => v.name === name);
         if (!variable || variable.references.some((/** @type {any} */ ref) => passesOn(ref.identifier, thrown))) return;
         context.report({ node: thrown, messageId: "dropped" });
@@ -67,6 +77,9 @@ export const bad = [
   "function config(file) { try { return load(file); } catch (e) { throw new ConfigError(`bad config in ${file}`); } }",
   "async function charge() { try { await stripe.charge(); } catch (err) { log('charge failed'); throw new PaymentError('Payment failed'); } }",
   "async function read(path) { try { return await open(path); } catch (error) { if (error.code === 'ENOENT') return ''; throw new Error('Cannot open credentials file.'); } }",
+  "async function load(id) { try { return await db.get(id); } catch (error) { throw Error('Failed to load user'); } }",
+  "const user = load(id).catch((error) => { throw new Error('Failed to load user'); });",
+  "async function load(id) { try { return await db.get(id); } catch (error) { throw new errors.NotFoundError('no user'); } }",
 ];
 
 export const good = [
@@ -79,4 +92,6 @@ export const good = [
   "function run() { try { step(); } catch (error) { report(error); throw new Error('step failed'); } }",
   "function run() { try { exec(cmd); } catch (error) { const output = String(error.stderr ?? error); throw new Error(`${cmd} failed: ${output}`); } }",
   "function run() { try { step(); } catch (error) { queue.push(() => { throw new Error('later'); }); } }",
+  "const user = load(id).catch((error) => { throw new Error('Failed to load user', { cause: error }); });",
+  "const user = load(id).then((row) => { throw new Error('unexpected row'); });",
 ];

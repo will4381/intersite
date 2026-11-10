@@ -1,7 +1,7 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { FUNCTIONS } from "../shared.mjs";
+import { FUNCTIONS, isGenerated } from "../shared.mjs";
 
 const LIMIT = 4;
 const NESTING = ["IfStatement", "ForStatement", "ForInStatement", "ForOfStatement", "WhileStatement", "DoWhileStatement", "SwitchStatement", "TryStatement"];
@@ -30,7 +30,8 @@ export const rule = defineRule({
   createOnce(context) {
     /** Reports the block that first crosses the limit, not each block inside it. @param {any} node */
     const check = (node) => depth(node) === LIMIT + 1 && context.report({ node, messageId: "deep" });
-    return Object.fromEntries(NESTING.map((type) => [type, check]));
+    // Generated code is the generator's to shape.
+    return { before: () => !isGenerated(context), ...Object.fromEntries(NESTING.map((type) => [type, check])) };
   },
 });
 

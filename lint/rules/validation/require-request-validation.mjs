@@ -56,12 +56,24 @@ function inspect(fn) {
     if (n.type === "VariableDeclarator" && n.init && mentions(n.init, names)) for (const name of boundNames(n.id)) names.add(name);
     if (n.type === "UnaryExpression" && n.operator === "typeof") checked = true;
     if (n.type === "CallExpression" && CHECK.test(calleeName(n)) && !NOT_CHECK.test(calleeName(n)) && !NOT_CHECK.test(n.callee.object?.name ?? "")) checked = true;
-    // A hand-written check: `if (!email || email.length > 254) return res.status(400)...`.
-    if (n.type === "IfStatement" && mentions(n.test, names) && exits(n.consequent)) checked = true;
-    if (n.type === "CallExpression" && SINK.test(calleeName(n)) && !ANSWER_ROOT.test(chainRoot(n)) && n.arguments.some((/** @type {any} */ a) => mentions(a, names))) used = true;
+    // A hand-written check: `if (!email || email.length > 254) return res.status(400)...`; `if (!email)` alone only checks presence.
+    if (n.type === "IfStatement" && mentions(n.test, names) && !presenceOnly(n.test) && exits(n.consequent)) checked = true;
+    if (n.type === "CallExpression" && isSink(n) && !ANSWER_ROOT.test(chainRoot(n)) && n.arguments.some((/** @type {any} */ a) => mentions(a, names))) used = true;
   });
   return { read, checked, used };
 }
+
+/** `!x`, `x == null`, `!a || !b`: a test that a value is there, not that it is valid. @param {any} test */
+function presenceOnly(test) {
+  test = unwrap(test);
+  if (test.type === "LogicalExpression") return presenceOnly(test.left) && presenceOnly(test.right);
+  if (test.type === "UnaryExpression" && test.operator === "!") return presenceOnly(test.argument);
+  if (test.type === "BinaryExpression" && /^[!=]==?$/.test(test.operator)) return test.right.type === "Literal" && test.right.value === null || test.right.name === "undefined";
+  return test.type === "Identifier" || test.type === "MemberExpression";
+}
+
+/** A sink call, or D1's `prepare(sql).bind(values)`. @param {any} n */
+const isSink = (n) => SINK.test(calleeName(n)) || (calleeName(n) === "bind" && calleeName(n.callee.object) === "prepare");
 
 /** A branch that returns or throws. @param {any} node */
 function exits(node) {
@@ -88,6 +100,7 @@ function routeHandlers(call) {
 
 export const id = "require-request-validation";
 export const pack = "validation";
+// ponytail: handlers passed by name (`router.post('/x', createUser)`), class controllers and sinks not in SINK are not inspected; any typeof, guard-named call or non-presence if-test counts as a check.
 
 export const rule = defineRule({
   meta: {
@@ -108,6 +121,10 @@ export const rule = defineRule({
       CallExpression(node) {
         routeHandlers(node).forEach(check);
       },
+      // A Workers or Deno module: export default { async fetch(request, env) {...} }
+      "ExportDefaultDeclaration > ObjectExpression > Property"(/** @type {any} */ node) {
+        if (node.key?.name === "fetch" && node.value.type.endsWith("FunctionExpression")) check(node.value);
+      },
       // export async function POST(request) {...}, export const POST = async (request) => {...}
       ExportNamedDeclaration(node) {
         const d = /** @type {any} */ (node.declaration);
@@ -125,6 +142,8 @@ export const bad = [
   "export const PATCH = async (req: Request) => { const { title } = await req.json(); await db.insert(posts).values({ title }); return new Response(null, { status: 201 }); };",
   "Deno.serve(async (req) => { const { email } = await req.json(); await supabase.from('leads').insert({ email }); return new Response('ok'); });",
   "app.post('/send', async (req, res) => { await mailer.send({ to: req.body.to, html: req.body.html }); res.sendStatus(202); });",
+  "app.post('/send', async (req, res) => { const { to, html } = req.body; if (!to) return res.status(400).end(); await transporter.sendMail({ to, html }); res.end(); });",
+  "export default { async fetch(request: Request, env: Env) { const { email } = await request.json(); await env.DB.prepare('insert into leads (email) values (?)').bind(email).run(); return new Response('ok'); } };",
 ];
 
 export const good = [

@@ -39,7 +39,9 @@ export const rule = defineRule({
           // Only the start of a chain (`db.insert`), not `db.insert(t).values` again; not a nested `db.transaction`.
           if (n.callee.type !== "MemberExpression" || memberBase(n.callee).type === "CallExpression" || /^\$?transaction$/.test(n.callee.property.name ?? "")) return;
           for (let m = n.callee.object; ; m = m.object) {
-            if (context.sourceCode.getText(m) === client) return context.report({ node: n, messageId: "outer", data: { client, tx } });
+            // `prisma` and `this.prisma` name the same client.
+            const text = context.sourceCode.getText(m);
+            if (text === client || text === `this.${client}` || `this.${text}` === client) return context.report({ node: n, messageId: "outer", data: { client, tx } });
             if (m.type !== "MemberExpression") return;
           }
         });
@@ -53,6 +55,7 @@ export const bad = [
   "await prisma.$transaction(async (tx) => {\n  const user = await tx.user.create({ data });\n  await prisma.account.create({ data: { userId: user.id } });\n});",
   "await this.db.transaction(async (trx) => {\n  await trx.delete(sessions).where(eq(sessions.userId, id));\n  await this.db.delete(users).where(eq(users.id, id));\n});",
   "await knex.transaction(async (trx) => {\n  await trx('orders').insert(order);\n  await knex('stock').decrement('count', 1);\n});",
+  "await prisma.$transaction(async (tx) => {\n  await tx.order.create({ data });\n  await this.prisma.stock.update({ where: { id }, data: { count: { decrement: 1 } } });\n});",
 ];
 
 export const good = [

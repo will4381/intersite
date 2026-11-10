@@ -1,7 +1,7 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { isBodyCall, isRequestHolder, isRequestPart, resolveVariable, unwrap } from "../shared.mjs";
+import { calleeName, enclosingFunction, isBodyCall, isRequestHolder, isRequestPart, resolveVariable, unwrap } from "../shared.mjs";
 
 // ORM and query-builder writes: Prisma, Drizzle, Supabase, Mongoose, Sequelize, Knex, TypeORM.
 const WRITE = /^(create|createMany|update|updateMany|upsert|insert|insertOne|insertMany|updateOne|replaceOne|findOneAndUpdate|findByIdAndUpdate|values|set|save)$/;
@@ -15,6 +15,8 @@ const WRAPPERS = new Set(["TSAsExpression", "TSNonNullExpression", "TSSatisfiesE
 /** `req.body`, `ctx.request.body`, `await request.json()`, `await c.req.json()`. @param {any} node */
 function isBodyRead(node) {
   node = unwrap(node, WRAPPERS);
+  // A server action's form, copied whole: Object.fromEntries(formData).
+  if (calleeName(node) === "fromEntries" && /form/i.test(node.arguments[0]?.name ?? "")) return true;
   return isRequestPart(node, isRequestHolder, /^body$/) || isBodyCall(node, /^json$/);
 }
 
@@ -27,7 +29,9 @@ function isRawBody(node, sourceCode) {
   if (isBodyRead(node)) return true;
   if (node?.type !== "Identifier") return false;
   const def = resolveVariable(node, sourceCode)?.defs[0]?.node;
-  return def?.type === "VariableDeclarator" && def.id.type === "Identifier" && isBodyRead(def.init);
+  if (def?.type !== "VariableDeclarator" || !isBodyRead(def.init)) return false;
+  // `const body = req.body`, or the rest of it: `const { role, ...rest } = req.body` still carries every other field.
+  return def.id.type === "Identifier" || (def.id.type === "ObjectPattern" && def.id.properties.some((/** @type {any} */ p) => p.type === "RestElement" && p.argument === resolveVariable(node, sourceCode).identifiers[0]));
 }
 
 /**
@@ -49,6 +53,7 @@ function bodyValidatedRoute(node) {
 
 export const id = "no-mass-assignment";
 export const pack = "security";
+// ponytail: a body copied into another variable first (`const input = { ...req.body }`), passed to a service helper, or written by a repository method not in WRITE is not reported.
 
 export const rule = defineRule({
   meta: {
@@ -75,6 +80,14 @@ export const rule = defineRule({
       for (const f of found) if (isRawBody(f, context.sourceCode) && !bodyValidatedRoute(call)) context.report({ node: f, messageId: "whole" });
     }
     return {
+      // Mongoose: `const user = new User(req.body); await user.save();`
+      NewExpression(node) {
+        const callee = /** @type {any} */ (node.callee);
+        const parent = /** @type {any} */ (node).parent;
+        if (callee.type !== "Identifier" || !/^[A-Z]/.test(callee.name) || !node.arguments[0] || parent.type !== "VariableDeclarator" || parent.id.type !== "Identifier") return;
+        const scope = enclosingFunction(node);
+        if (scope && context.sourceCode.getText(scope).includes(`${parent.id.name}.save(`)) check(node.arguments[0], node);
+      },
       CallExpression(node) {
         const callee = /** @type {any} */ (node.callee);
         if (callee.type !== "MemberExpression" || callee.computed) return;
@@ -105,6 +118,10 @@ export const bad = [
   "app.put('/posts/:id', async (req, res) => { Object.assign(post, req.body); await post.save(); });",
   "app.post('/orders', async (req, res) => { await prisma.order.create({ data: { ...req.body, userId: req.user.id } }); });",
   "export const POST = async (req: Request) => { const data = (await req.json()) as Profile; await db.insert(profiles).values(data); };",
+  "app.post('/users', async (req, res) => { const { role, ...data } = req.body; await prisma.user.create({ data }); res.end(); });",
+  "app.post('/u', async (req, res) => { const user = new User(req.body); await user.save(); res.end(); });",
+  "export async function updateProfile(formData: FormData) { 'use server'; await db.update(profiles).set(Object.fromEntries(formData)).where(eq(profiles.id, id)); }",
+  "app.patch('/u/:id', async (req, res) => { await User.updateOne({ _id: req.params.id }, { $set: req.body }); res.end(); });",
 ];
 
 export const good = [
@@ -117,4 +134,6 @@ export const good = [
   "const totals = Object.values(req.body);",
   "app.post('/hook', (req, res) => { const sig = crypto.createHmac('sha256', secret).update(req.body).digest('hex'); res.end(sig); });",
   "export const POST = async ({ request }) => { const { data } = await lucra.events.create({ path: { id }, body: await request.json() }); return Response.json(data); };",
+  "app.post('/log', async (req, res) => { await audit.create({ data: { payload: req.body, at: new Date() } }); res.end(); });",
+  "app.post('/u', async (req, res) => { const err = new HttpError(req.body); res.status(400).json(err); });",
 ];

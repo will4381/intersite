@@ -18,6 +18,17 @@ function isBody(node) {
  * @param {any} value @param {any} sourceCode
  */
 function fromBody(value, sourceCode) {
+  // Anywhere in the expression: `Math.round(amount * 100)` still charges what the client sent.
+  let found = false;
+  walk(value, (n) => {
+    if (n.type.endsWith("FunctionExpression")) return false;
+    if (!found && (n.type === "MemberExpression" || n.type === "Identifier") && readsBody(n, sourceCode)) found = true;
+  });
+  return found;
+}
+
+/** @param {any} value @param {any} sourceCode */
+function readsBody(value, sourceCode) {
   let root = unwrap(value);
   while (root?.type === "MemberExpression") {
     if (isBody(root)) return true;
@@ -68,6 +79,7 @@ export const rule = defineRule({
 
 export const bad = [
   "const intent = await stripe.paymentIntents.create({ amount: price * 100, currency: 'usd' });",
+  "app.post('/pay', async (req, res) => {\n  const { amount } = req.body;\n  await stripe.paymentIntents.create({ amount: Math.round(amount * 100), currency: 'usd' });\n  res.end();\n});",
   "await stripe.checkout.sessions.create({ line_items: [{ price_data: { currency: 'usd', unit_amount: Number(total.toFixed(2)) * 100, product_data: { name } }, quantity: 1 }], mode: 'payment' });",
   "app.post('/pay', async (req, res) => {\n  const intent = await stripe.paymentIntents.create({ amount: req.body.amount, currency: 'usd' });\n  res.json({ secret: intent.client_secret });\n});",
   "export async function POST(request: Request) {\n  const { amount } = await request.json();\n  const intent = await getStripe().paymentIntents.create({ amount, currency: 'usd' });\n  return Response.json({ secret: intent.client_secret });\n}",

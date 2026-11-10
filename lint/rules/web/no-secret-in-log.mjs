@@ -1,10 +1,18 @@
 // @ts-check
+import { relative } from "node:path";
+
 import { defineRule } from "@oxlint/plugins";
+
+import { isRequestName } from "../shared.mjs";
 
 // Names that hold a credential: `token`, `accessToken`, `user.password`, `STRIPE_SECRET_KEY`, `headers.authorization`.
 const SECRET = /^(token|secret|password|passwd|apiKey|api_key|jwt|cookie|authorization)$|[a-z](Token|Secret|Password|ApiKey|PrivateKey)$|^[A-Z0-9_]*(TOKEN|SECRET|PASSWORD|API_KEY|SECRET_KEY|PRIVATE_KEY|SERVICE_ROLE_KEY)$/;
 // Tokens that are not credentials: pagination cursors, CSRF tokens sent to the page anyway, LLM token counts.
 const HARMLESS = /(page|next|cursor|continuation|csrf|max|input|output|total|prompt|completion)_?tokens?$/i;
+
+const LEVEL = /^(log|info|debug|warn|warning|error|trace|fatal|verbose|silly|notice|critical)$/;
+// Server code, whose console output lands in the host's log storage.
+const SERVER_PATH = /(^|\/)(api|server|routes?|middlewares?|handlers?|controllers?|functions|workers?)\/|(^|\/)(middleware|proxy|route|server)\.[cm]?[jt]s$/;
 
 /** @param {any} node */
 function name(node) {
@@ -17,6 +25,8 @@ function name(node) {
 /** @param {any} node */
 function isSecret(node) {
   if (node.type === "MemberExpression" && node.object.type === "Identifier" && node.object.name === "process" && name(node) === "env") return true;
+  // All of a request's headers carry its Authorization and Cookie.
+  if (node.type === "MemberExpression" && name(node) === "headers" && isRequestName(node.object)) return true;
   const n = name(node);
   return n !== undefined && SECRET.test(n) && !HARMLESS.test(n);
 }
@@ -24,6 +34,7 @@ function isSecret(node) {
 /** @param {any} node the logged values worth checking: the argument, a template's parts, an object's values */
 function parts(node) {
   if (node.type === "TemplateLiteral") return node.expressions;
+  if (node.type === "BinaryExpression" && node.operator === "+") return [...parts(node.left), ...parts(node.right)];
   if (node.type === "ObjectExpression") return node.properties.filter((/** @type {any} */ p) => p.type === "Property").map((/** @type {any} */ p) => p.value);
   return [node];
 }
@@ -56,14 +67,19 @@ export const rule = defineRule({
     },
   },
   createOnce(context) {
+    let server = false;
     return {
+      before() {
+        server = SERVER_PATH.test(relative(context.cwd, context.filename));
+      },
       CallExpression(node) {
         const callee = /** @type {any} */ (node.callee);
         if (callee.type !== "MemberExpression") return;
         // A server logger (`logger.info`, Fastify's `request.log`) always ends up in log storage; the console only does
         // when a server writes to it.
         const logger = name(callee.object);
-        if (!(/^(logger|log)$/.test(logger ?? "") || (logger === "console" && inHandler(node)))) return;
+        if (!LEVEL.test(callee.property.name ?? "")) return; // `log.push(entry)` on an array is not logging
+        if (!(/^(logger|log|pino|winston)$/.test(logger ?? "") || (logger === "console" && (server || inHandler(node))))) return;
         for (const arg of node.arguments) for (const part of parts(arg)) if (isSecret(part)) context.report({ node: part, messageId: "logged" });
       },
     };
@@ -78,6 +94,10 @@ export const bad = [
   "app.get('/debug', (c) => { console.log('env', process.env); return c.text('ok'); });",
   "logger.info({ userId, accessToken });",
   "request.log.debug({ cookie: req.headers['cookie'] });",
+  "log.info('Using key ' + process.env.STRIPE_SECRET_KEY);",
+  "logger.info({ headers: req.headers });",
+  "app.post('/x', (req, res) => { console.log(req.headers); });",
+  "pino.info({ password: user.password });",
 ];
 
 export const good = [
@@ -88,4 +108,5 @@ export const good = [
   "console.log(`store this once, shown only now: INGEST_TOKEN=${fresh.INGEST_TOKEN}`);",
   "logger.info({ userId, tokenId: token.id });",
   "console.log('fingerprint', token.slice(0, 6));",
+  "app.get('/x', (req, res) => { log.push({ path: req.url, headers: req.headers }); res.end(); });",
 ];

@@ -73,16 +73,20 @@ export const rule = defineRule({
       ":function"(node) {
         if (hasDirective(node) && !context.sourceCode.ast.body.some((/** @type {any} */ s) => s.directive === "use server")) check(node, /** @type {any} */ (node).id ?? node);
       },
-      // TanStack Start: createServerFn(...).middleware([...]).handler(fn).
+      // TanStack Start: createServerFn(...).middleware([...]).handler(fn). next-safe-action: actionClient.use(mw).action(fn).
       CallExpression(node) {
         const callee = /** @type {any} */ (node.callee);
-        if (callee.type !== "MemberExpression" || callee.property.name !== "handler") return;
-        const chain = [];
-        for (let n = callee.object; n?.type === "CallExpression"; n = n.callee.type === "MemberExpression" ? n.callee.object : undefined) chain.push(n);
-        if (!chain.some((c) => c.callee.type === "Identifier" && c.callee.name === "createServerFn")) return;
-        if (chain.some((c) => calleeName(c.callee) === "middleware")) return;
         const fn = /** @type {any} */ (node.arguments[0]);
-        if (fn?.type?.endsWith("FunctionExpression")) check(fn, callee.property);
+        if (callee.type !== "MemberExpression" || !fn?.type?.endsWith("FunctionExpression")) return;
+        const chain = [];
+        let root = callee.object;
+        for (; root?.type === "CallExpression"; root = root.callee.type === "MemberExpression" ? root.callee.object : root.callee) chain.push(root);
+        if (callee.property.name === "handler" && chain.some((c) => c.callee.type === "Identifier" && c.callee.name === "createServerFn")) {
+          if (!chain.some((c) => calleeName(c.callee) === "middleware")) check(fn, callee.property);
+        } else if (callee.property.name === "action" && context.sourceCode.ast.body.some((/** @type {any} */ s) => s.directive === "use server")) {
+          // A client named for auth (`authActionClient`) or given middleware (`.use(...)`) knows the caller.
+          if (!chain.some((c) => calleeName(c.callee) === "use") && !IDENTITY.test(root?.name ?? root?.property?.name ?? "")) check(fn, callee.property);
+        }
       },
     };
   },
@@ -94,6 +98,7 @@ export const bad = [
   "'use server';\nexport const removeItem = async (id: string) => { await (await createClient()).from('items').delete().eq('id', id); };",
   "export default function Page() { async function archive(formData: FormData) { 'use server'; await db.update(projects).set({ archived: true }).where(eq(projects.id, String(formData.get('id')))); } return null; }",
   "export const setPrice = createServerFn({ method: 'POST' }).validator(Price).handler(async ({ data }) => { await db().update(products).set({ price: data.price }).where(eq(products.id, data.id)); });",
+  "'use server';\nexport const deletePost = actionClient.schema(Input).action(async ({ parsedInput }) => { await db.delete(posts).where(eq(posts.id, parsedInput.id)); });",
 ];
 
 export const good = [
@@ -103,4 +108,5 @@ export const good = [
   "export const setPrice = createServerFn({ method: 'POST' }).middleware([adminOnly]).validator(Price).handler(async ({ data }) => { await db().update(products).set({ price: data.price }).where(eq(products.id, data.id)); });",
   "export async function deletePost(id: string) { await db.delete(posts).where(eq(posts.id, id)); }",
   "'use server';\nexport async function clearDraft(key: string) { drafts.delete(key); }",
+  "'use server';\nexport const deletePost = authActionClient.action(async ({ parsedInput, ctx }) => { await db.delete(posts).where(and(eq(posts.id, parsedInput.id), eq(posts.userId, ctx.userId))); });",
 ];

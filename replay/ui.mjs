@@ -9,6 +9,9 @@ import { join } from "node:path";
 import { UI_METHOD } from "../shared/case.mjs";
 import { learnIds, prepare, resolveIds } from "./run.mjs";
 
+/** Closing a browser whose connection already dropped has nothing left to do. */
+const alreadyClosed = () => undefined;
+
 /** @typedef {import("../shared/case.mjs").Case} Case */
 /** @typedef {import("./run.mjs").Step} Step */
 /** @typedef {import("./run.mjs").Context} Context */
@@ -132,7 +135,9 @@ export async function openBrowser({ uiTarget, headed, cwd, browser: engine = "ch
 async function launchChrome(chromium, headed) {
   // No extra switches: Playwright already turns off background networking, updates, sync and throttling, and
   // --disable-gpu measured no better.
-  const shell = headed ? undefined : await chromium.launch({ channel: "chromium-headless-shell" }).catch(() => undefined);
+  // The headless shell is optional: when Playwright has not installed it, the installed Chrome below is used.
+  const noShell = () => undefined;
+  const shell = headed ? undefined : await chromium.launch({ channel: "chromium-headless-shell" }).catch(noShell);
   try {
     const browser = shell ?? (await chromium.launch({ channel: "chrome", headless: !headed }));
     return { browser, stop: () => browser.close() };
@@ -178,7 +183,7 @@ async function startLightpanda(chromium) {
   for (const end = Date.now() + 10_000; ;) {
     try {
       const browser = await chromium.connectOverCDP(`ws://127.0.0.1:${port}`, { timeout: 2000 });
-      return { browser, stop: async () => { await browser.close().catch(() => undefined); await stop(); } };
+      return { browser, stop: async () => { await browser.close().catch(alreadyClosed); await stop(); } };
     } catch (error) {
       if (gone || Date.now() > end) {
         await stop();
@@ -286,7 +291,9 @@ async function submitWrite(watch, fills, write, ids) {
   const wanted = `${write.request.method} ${write.request.route}`;
   if (!request) return `no ${wanted} request was sent`;
   if (!response) return `${wanted} got no answer`;
-  if (response.status() !== write.response.status) return `status ${response.status()}, recorded ${write.response.status} for ${wanted}`;
+  // A recorded server error is the bug, not the answer to keep (as in the baseline mode): any answer below 500 passes.
+  const fixed = write.response.status >= 500 && response.status() < 500;
+  if (response.status() !== write.response.status && !fixed) return `status ${response.status()}, recorded ${write.response.status} for ${wanted}`;
   // Chrome logs every 4xx/5xx answer as a console error; the recorded status was expected, so its log is too.
   const expected = `console error: Failed to load resource: the server responded with a status of ${response.status()} `;
   problems.console = problems.console.filter((message) => !message.startsWith(expected));

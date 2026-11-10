@@ -5,12 +5,13 @@
 rules:
   - id: no-destructured-execution-context
     pack: workers
-    selector: "VariableDeclarator:matches([init.name=/^(ctx|context|executionCtx|executionContext)$/], [init.property.name=/^(ctx|executionCtx|executionContext)$/]) > ObjectPattern.id > Property[key.name=/^(waitUntil|passThroughOnException)$/], :matches(MethodDefinition, Property)[key.name=/^(fetch|scheduled|queue|email|tail)$/] > FunctionExpression > ObjectPattern.params > Property[key.name=/^(waitUntil|passThroughOnException)$/]"
+    selector: "VariableDeclarator:matches([init.name=/^(ctx|context|executionCtx|executionContext)$/], [init.property.name=/^(ctx|executionCtx|executionContext)$/]) > ObjectPattern.id > Property[key.name=/^(waitUntil|passThroughOnException)$/], :matches(MethodDefinition, Property)[key.name=/^(fetch|scheduled|queue|email|tail)$/] > :matches(FunctionExpression, ArrowFunctionExpression) > ObjectPattern.params > Property[key.name=/^(waitUntil|passThroughOnException)$/]"
     message: "ExecutionContext methods need `this`, so a destructured waitUntil throws \"Illegal invocation\" when called and the background work never runs. Call it on the context (ctx.waitUntil(promise)), or import the free function: import { waitUntil } from \"cloudflare:workers\"."
     bad:
       - "export default {\n  async fetch(request: Request, env: Env, ctx: ExecutionContext) {\n    const { waitUntil } = ctx;\n    waitUntil(log(request));\n    return new Response('ok');\n  },\n};"
       - "export default {\n  async fetch(request: Request, env: Env, { waitUntil }: ExecutionContext) {\n    waitUntil(log(request));\n    return new Response('ok');\n  },\n};"
       - "app.get('/', (c) => {\n  const { waitUntil } = c.executionCtx;\n  waitUntil(track(c.req.url));\n  return c.text('ok');\n});"
+      - "export default {\n  fetch: async (request: Request, env: Env, { waitUntil }: ExecutionContext) => {\n    waitUntil(log(request));\n    return new Response('ok');\n  },\n};"
       - "export class Api extends WorkerEntrypoint {\n  async queue(batch: MessageBatch, env: Env, { waitUntil, passThroughOnException }: ExecutionContext) {\n    waitUntil(flush(batch));\n  }\n}"
     good:
       - "export default {\n  async fetch(request: Request, env: Env, ctx: ExecutionContext) {\n    ctx.waitUntil(log(request));\n    return new Response('ok');\n  },\n};"

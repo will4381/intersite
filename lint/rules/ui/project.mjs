@@ -1,8 +1,8 @@
 // @ts-check
 // What the project's design system offers, read once per run from its stylesheets and Tailwind config. A ui rule
 // only reports a hardcoded value when the project has something to use instead.
-import { readFileSync, readdirSync } from "node:fs";
-import { basename, join, relative } from "node:path";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { basename, dirname, join, relative } from "node:path";
 
 const SKIP_DIRS = /^(?:node_modules|dist|build|out|coverage|vendor|Pods|ios|android|\..+)$/;
 const STYLE_FILE = /\.(?:css|scss|sass|less|pcss)$|^tailwind\.config\.[cm]?[jt]s$/;
@@ -39,11 +39,37 @@ function styleFiles(dir, depth = 0, found = /** @type {string[]} */ ([])) {
   return found;
 }
 
-/** Colour names a Tailwind config's `colors: { ... }` block declares (rough: its keys). @param {string} text */
+/** Colour names a Tailwind config's `colors: { ... }` block declares (rough: every key inside the block). @param {string} text */
 function configColors(text) {
   const start = text.search(/\bcolors\s*:\s*\{/);
   if (start < 0) return [];
-  return [...text.slice(start, start + 4000).matchAll(/^\s*["']?([a-z][\w-]*)["']?\s*:/gim)].map((m) => m[1]).filter((n) => n !== "colors" && n !== "DEFAULT");
+  const open = text.indexOf("{", start);
+  let end = open;
+  for (let depth = 0; end < text.length; end++) {
+    if (text[end] === "{") depth++;
+    else if (text[end] === "}" && --depth === 0) break;
+  }
+  return [...text.slice(open + 1, end).matchAll(/(?:^|[{,])\s*["']?([a-z][\w-]*)["']?\s*:/gim)].map((m) => m[1]).filter((n) => n !== "DEFAULT");
+}
+
+/**
+ * Stylesheets a stylesheet `@import`s from outside the project folder: a workspace package's tokens
+ * (`@import "@acme/ui/globals.css"`), found through the nearest node_modules up the tree.
+ * @param {string} file @param {string} text
+ */
+function importedSheets(file, text) {
+  const found = [];
+  for (const [, spec] of text.matchAll(/@import\s+(?:url\()?["']([^"']+\.css)["']/g)) {
+    if (spec.startsWith(".")) continue; // relative imports are inside the project, so the walk already found them
+    for (let dir = dirname(file); dir !== dirname(dir); dir = dirname(dir)) {
+      const candidate = join(dir, "node_modules", spec);
+      if (existsSync(candidate)) {
+        found.push(candidate);
+        break;
+      }
+    }
+  }
+  return found;
 }
 
 /** @param {string} cwd @returns {DesignSystem} */
@@ -64,6 +90,7 @@ export function designSystem(cwd) {
   const files = found.filter((f) => !PRIMITIVE_FILE.test(basename(f)));
   for (const file of files) {
     const text = readFileSync(file, "utf8");
+    for (const sheet of importedSheets(file, text)) if (!files.includes(sheet)) files.push(sheet);
     const isConfig = /tailwind\.config/.test(file);
     tailwind ||= isConfig || /@import\s+["']tailwindcss|@tailwind\s|@theme\b/.test(text);
     for (const m of text.matchAll(COLOR_VAR)) colorVars.add(m[1]);

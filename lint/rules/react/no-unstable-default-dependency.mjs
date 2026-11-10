@@ -6,6 +6,12 @@ import { isComponentOrHook, isHookCall } from "./hooks.mjs";
 
 const fresh = /^(?:ArrayExpression|ObjectExpression|ArrowFunctionExpression|FunctionExpression|NewExpression)$/;
 
+/** The object patterns a function body destructures `name` into (`const { items = [] } = props`). @param {any} fn @param {string} name */
+const destructured = (fn, name) =>
+  (fn.body?.body ?? []).flatMap((/** @type {any} */ s) => (s.type === "VariableDeclaration" ? s.declarations : []))
+    .filter((/** @type {any} */ d) => d.id.type === "ObjectPattern" && d.init?.type === "Identifier" && d.init.name === name)
+    .map((/** @type {any} */ d) => d.id);
+
 export const id = "no-unstable-default-dependency";
 export const pack = "react";
 export const ext = "tsx";
@@ -20,11 +26,13 @@ export const rule = defineRule({
   createOnce(context) {
     return {
       ":function"(fn) {
-        const props = fn.params[0]?.type === "AssignmentPattern" ? fn.params[0].left : fn.params[0];
-        if (props?.type !== "ObjectPattern" || !isComponentOrHook(fn)) return;
+        if (!isComponentOrHook(fn)) return;
+        const param = fn.params[0]?.type === "AssignmentPattern" ? fn.params[0].left : fn.params[0];
+        // `{ items = [] }` in the signature, or `const { items = [] } = props` at the top of the body.
+        const patterns = param?.type === "ObjectPattern" ? [param] : param?.type === "Identifier" ? destructured(fn, param.name) : [];
         /** @type {Map<string, any>} */
         const defaults = new Map();
-        for (const p of props.properties) {
+        for (const p of patterns.flatMap((pattern) => pattern.properties)) {
           if (p.value?.type === "AssignmentPattern" && p.value.left.type === "Identifier" && fresh.test(p.value.right.type)) defaults.set(p.value.left.name, p.value);
         }
         if (!defaults.size) return;
@@ -47,6 +55,7 @@ export const rule = defineRule({
 export const bad = [
   "export function Picker({ selected = [] }) {\n  const [open, setOpen] = useState(false);\n  useEffect(() => { setOpen(selected.length > 0); }, [selected]);\n  return <p>{open}</p>;\n}",
   "export const Chart = ({ data, options = {} }) => {\n  const config = useMemo(() => build(data, options), [data, options]);\n  return <Plot config={config} />;\n};",
+  "export function Picker(props) {\n  const { selected = [] } = props;\n  useEffect(() => { track(selected); }, [selected]);\n  return null;\n}",
   "export function useSearch({ filters = [] } = {}) {\n  const [hits, setHits] = useState([]);\n  React.useEffect(() => { search(filters).then(setHits); }, [filters]);\n  return hits;\n}",
 ];
 

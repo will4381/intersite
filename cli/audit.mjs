@@ -7,20 +7,25 @@ import { loadConfig } from "../shared/config.mjs";
 
 const FAKE = /^(?:text-[0-9a-f]{8}|u[0-9a-f]{8}@example\.test|https:\/\/example\.test\/[0-9a-f]{8}|\+1555\d{7})$/;
 
+const TEXT_FAKE = /^text-[0-9a-f]{8}$/;
+
 /**
- * Adds each kept string under `value` to `kept`, keyed by the dotted path of its key (array indexes dropped).
+ * Adds each kept string under `value` to `kept`, keyed by the dotted path of its key (array indexes dropped). A string
+ * faked as `text-…` is counted in `faked` instead: few distinct fakes under one key may be a project enum.
  * @param {unknown} value @param {string} key @param {RegExp} id @param {Map<string, Map<string, number>>} kept
+ * @param {Map<string, Set<string>>} faked
  */
-function collect(value, key, id, kept) {
+function collect(value, key, id, kept, faked) {
   if (typeof value === "string") {
+    if (TEXT_FAKE.test(value)) faked.set(key, (faked.get(key) ?? new Set()).add(value));
     if (FAKE.test(value) || id.test(value) || value === "") return;
     const values = kept.get(key) ?? new Map();
     values.set(value, (values.get(value) ?? 0) + 1);
     kept.set(key, values);
   } else if (Array.isArray(value)) {
-    for (const item of value) collect(item, key, id, kept);
+    for (const item of value) collect(item, key, id, kept, faked);
   } else if (value !== null && typeof value === "object") {
-    for (const [name, item] of Object.entries(value)) collect(item, key ? `${key}.${name}` : name, id, kept);
+    for (const [name, item] of Object.entries(value)) collect(item, key ? `${key}.${name}` : name, id, kept, faked);
   }
 }
 
@@ -48,28 +53,32 @@ export default async function audit(argv, { cwd }) {
   const id = new RegExp(loadConfig(cwd).capture.idPattern);
   /** @type {Map<string, Map<string, number>>} */
   const kept = new Map();
+  /** @type {Map<string, Set<string>>} */
+  const faked = new Map();
   let cases = 0;
   for (const session of sessions) {
     for (const item of session.cases) {
       cases += 1;
-      collect(item.request.body, "body", id, kept);
-      collect(item.request.query, "query", id, kept);
+      collect(item.request.body, "body", id, kept, faked);
+      collect(item.request.query, "query", id, kept, faked);
       const template = item.request.route.split("/");
-      collect(item.request.path.split("/").filter((segment, index) => segment !== template[index]), `path ${item.request.route}`, id, kept);
-      if (item.action) collect(item.action.page.split("/").filter((segment) => segment !== "_"), "page", id, kept);
+      collect(item.request.path.split("/").filter((segment, index) => segment !== template[index]), `path ${item.request.route}`, id, kept, faked);
+      if (item.action) collect(item.action.page.split("/").filter((segment) => segment !== "_"), "page", id, kept, faked);
     }
   }
   const rows = [...kept].map(([key, values]) => ({ key, distinct: values.size, values: [...values].sort((a, b) => b[1] - a[1]).map(([value]) => value) }))
     .sort((a, b) => b.distinct - a.distinct || a.key.localeCompare(b.key));
 
+  const fakedRows = [...faked].map(([key, values]) => ({ key, distinct: values.size })).sort((a, b) => a.distinct - b.distinct || a.key.localeCompare(b.key));
   if (json) {
-    console.log(JSON.stringify({ cases, kept: rows }));
+    console.log(JSON.stringify({ cases, kept: rows, faked: fakedRows }));
     return 0;
   }
   for (const row of rows) {
     const shown = row.values.slice(0, 8).map((value) => JSON.stringify(value.length > 40 ? `${value.slice(0, 40)}…` : value)).join(", ");
     console.log(`${row.key}: ${row.distinct} kept ${row.distinct === 1 ? "value" : "values"}: ${shown}${row.distinct > 8 ? `, +${row.distinct - 8} more` : ""}`);
   }
-  console.log(`ok audit: ${cases} cases, ${rows.length} keys with kept values; a key that holds personal data goes in capture.redactKeys; an enum that was faked goes in capture.keepKeys`);
+  for (const row of fakedRows) console.log(`${row.key}: ${row.distinct} distinct ${row.distinct === 1 ? "value" : "values"} faked as text`);
+  console.log(`ok audit: ${cases} cases, ${rows.length} keys with kept values, ${fakedRows.length} with faked text; a key that holds personal data goes in capture.redactKeys; an enum that was faked goes in capture.keepKeys`);
   return 0;
 }

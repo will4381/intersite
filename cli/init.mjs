@@ -1,4 +1,5 @@
 // @ts-check
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,9 +17,13 @@ const packaged = (path) => readFileSync(join(packageRoot, path), "utf8");
  * `intersite init`: the one setup step. Writes the config, the replay adapter, the agent rules and skills, and
  * records today's lint findings so only new ones fail. It never overwrites the project's own edits; a second run
  * only refreshes what the package owns (the skills and the marked block in AGENTS.md).
- * @param {string[]} _argv @param {{ cwd: string }} context
+ * @param {string[]} argv @param {{ cwd: string }} context
  */
-export default async function init(_argv, { cwd }) {
+export default async function init(argv, { cwd }) {
+  if (argv.length) {
+    console.error(`intersite init: unexpected ${argv[0]}; usage: intersite init`);
+    return 2;
+  }
   /** @type {string[]} */
   const wrote = [];
   /** Writes when the content differs; `keep` leaves an existing file alone. @param {string} name @param {string} text @param {boolean} [keep] */
@@ -46,17 +51,23 @@ export default async function init(_argv, { cwd }) {
     write(`.claude/skills/${skill}/SKILL.md`, packaged(`skills/${skill}/SKILL.md`));
   }
 
-  if (existsSync(join(cwd, ".gitignore"))) {
-    const ignore = readFileSync(join(cwd, ".gitignore"), "utf8");
-    if (!/^\.intersite\/?$/m.test(ignore)) write(".gitignore", `${ignore}${ignore.endsWith("\n") ? "" : "\n"}.intersite/\n`);
+  // Recorded cases never belong in git. git itself says whether some .gitignore (here or above) covers them; outside
+  // a repository only an existing .gitignore is updated.
+  const ignore = existsSync(join(cwd, ".gitignore")) ? readFileSync(join(cwd, ".gitignore"), "utf8") : undefined;
+  const ignored = spawnSync("git", ["check-ignore", "-q", ".intersite/cases.db"], { cwd }).status;
+  if (ignored === 1 || (ignored !== 0 && ignore !== undefined && !/^\/?\.intersite\/?$/m.test(ignore))) {
+    write(".gitignore", `${ignore ?? ""}${!ignore || ignore.endsWith("\n") ? "" : "\n"}.intersite/\n`);
   }
 
   // Start green: findings that already exist go in the baseline, so only new ones fail from here on.
   let baseline = "";
   if (fresh && !existsSync(join(cwd, loadConfig(cwd).lint.baseline))) {
-    if (existsSync(join(cwd, "node_modules/.bin/oxlint"))) {
-      const { default: lint } = await import("./lint.mjs");
-      await lint(["--write=init"], { cwd });
+    const { default: lint, findOxlint } = await import("./lint.mjs");
+    const { swiftFiles } = await import("../lint/swift/swiftlint.mjs");
+    // A Swift-only project needs no oxlint: its lint runs through SwiftLint.
+    if (findOxlint(cwd) || swiftFiles(cwd, []).length) {
+      if ((await lint(["--write=init"], { cwd, quiet: true })) === 0) wrote.push(loadConfig(cwd).lint.baseline);
+      else baseline = "; no lint baseline recorded: fix the lint error above, then run `intersite lint --write=init`";
     } else {
       baseline = "; install oxlint and @oxlint/plugins, then run `intersite lint --write=init`";
     }

@@ -37,6 +37,9 @@ through the wiring.
 | `unused` | A file or export this change added that nothing uses, or a file it orphaned | git |
 | `replay` | An API that now answers real recorded sessions differently | capture and an adapter |
 
+`gates.base` defaults to `origin/main` and falls back to `main` or `master`; a repository with no commits compares
+against an empty tree, and outside git `check` skips the gates.
+
 Two more gates run the tests and are opt-in through `gates.run`: `fails-on-base` (a bug fix's new test must fail
 without the fix) and `mutation` (a deliberate break on a changed line must make a test fail).
 
@@ -48,7 +51,7 @@ finding, exit code 0, 1 or 2.
 | Command | Does |
 | --- | --- |
 | `intersite init` | Sets a project up; safe to run again after upgrading |
-| `intersite check [--skip <stage>]` | Runs every stage that applies |
+| `intersite check [--base <ref>] [--skip <stage>]` | Runs every stage that applies; one line on success |
 | `intersite lint [paths] [--write] [--rules]` | Lints; `--write` lowers the baseline; `--rules` lists what applies |
 | `intersite gate <name> [--base <ref>]` | Runs one gate against the diff |
 | `intersite collector` | Runs the local collector (SQLite file in `.intersite/`) |
@@ -79,7 +82,7 @@ all. `intersite.schema.json` documents every field and gives editor completion.
 project: acme
 
 lint:
-  packs: [tests, slop, security, state, actions]
+  packs: [tests, slop, security, state, types, validation, actions]   # this list replaces the defaults
   custom:
     - id: no-raw-fetch
       selector: CallExpression[callee.name='fetch']
@@ -139,7 +142,7 @@ that says what to do instead, and examples.
 | `start` | on | TanStack Start server functions whose validator only types the input |
 | `payments` | on | Stripe amounts built with floats or taken from the client; refunds, transfers and payouts with no idempotency key |
 | `auth` | on | A `userId` taken from the request in a handler that has the session |
-| `swift` | on | Swift through SwiftLint (`brew install swiftlint`): force `try` and force unwraps, empty `catch` and discarded `try?`, `print` logging, stub `fatalError`s, fixed `asyncAfter` delays, `Task` in `onAppear`, `AnyView`, flag clusters, deprecated SwiftUI APIs, fixed font sizes and raw colours outside design-system files, secrets in source or `UserDefaults`, type and identifier casing |
+| `swift` | on | Swift through SwiftLint (`brew install swiftlint`): force `try` and force unwraps, empty `catch` and discarded `try?`, `print` logging, stub `fatalError`s, fixed `asyncAfter` delays, `Task` in `onAppear`, `AnyView`, flag clusters, deprecated SwiftUI APIs, fixed font sizes and raw colours outside design-system files, secrets in source or `UserDefaults`, type and identifier casing, view builders over 100 lines or nested past 7 levels, more than 12 `@State` properties, notification event buses and discarded observers, settable singletons, strong `self` in subscriptions and timers, redundant main-queue hops, generic `MARK`s, restating comments |
 | `runtime` | opt-in | Module-level mutable state, which leaks between requests on serverless |
 | `actions` | opt-in | Clickable elements with no `data-intersite` name |
 
@@ -167,7 +170,10 @@ return response;
 ```
 
 Fastify, Next.js and browser-only (`wrapFetch`) forms are shown at the top of
-[capture/index.mjs](capture/index.mjs).
+[capture/index.mjs](capture/index.mjs). In a Node server, build it with
+`createCapture({ ...captureOptions(), url, token, release })` (`captureOptions` from `intersite/shared/config`), so
+`project` and the `capture` section of `intersite.yml` apply. Capture never reads files itself; on Workers pass
+`project`, `exclude`, `redactKeys` and `keepKeys` inline.
 
 - **Scrubbing is default-deny.** A string is kept only when it is an ID, a date under a date key such as `createdAt`, or a short
   code such as `active` under a structural key such as `status`. Numbers are kept so replay has amounts and counts.
@@ -180,7 +186,8 @@ Fastify, Next.js and browser-only (`wrapFetch`) forms are shown at the top of
   (`intersite/track`) stamps each request with the action that caused it, so `intersite actions` shows which
   actions fail in production and `intersite replay --action program.save` replays exactly those. Markup can change
   freely as long as the name stays.
-- **Replay modes:** `baseline` (same status and response shape as production), `twice` (a repeated write must not
+- **Replay modes:** `baseline` (same status and response shape as production; a server error production recorded
+  fails while it still happens and passes once it is fixed), `twice` (a repeated write must not
   error), `cross-tenant` (another account must be refused), `ui` (each named action's page loads cleanly in Chrome;
   reads are clicked, and writes fill the form from the recorded body, submit it and must get the recorded status).
 - **Cheaper `ui` runs:** `npx playwright install chromium-headless-shell` makes `ui` use Chrome Headless Shell instead
@@ -193,6 +200,21 @@ Fastify, Next.js and browser-only (`wrapFetch`) forms are shown at the top of
 
 Nightly on the main branch, `intersite replay --sample 200 --mark --release <sha>` records which sessions pass. Pull
 requests then run `intersite replay --known-good`, so a failure there is a regression and not old noise.
+
+### Verifying Lightpanda
+
+Install it (the binary goes to `~/.local/bin`, which must be on PATH), then run the `ui` suite against it:
+
+```bash
+curl -fsSL https://pkg.lightpanda.io/install.sh | bash
+```
+
+```bash
+INTERSITE_UI_BROWSER=lightpanda node --test test/replay/ui.test.mjs
+```
+
+If every test passes, `replay.browser: lightpanda` works with Intersite. Lightpanda has no layout, so the tests most
+likely to fail are the ones that click or fill forms; each failure names the step.
 
 ### Catching an endpoint that got slower
 

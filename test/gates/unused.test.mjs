@@ -25,7 +25,7 @@ test("an added file nothing imports is reported, and is not once something impor
   assert.match(first.out[0], / \| to accept: add \{ "gate": "unused", "target": "src\/format-price\.ts", "why": "…" \}/);
   r.write({ "src/main.ts": `${base["src/main.ts"]}import { formatPrice } from "./format-price.js";\nconsole.log(formatPrice(1));\n` });
   const second = await run(r.cwd, ["unused"]);
-  assert.deepEqual(second.out, ["ok gate unused: 1 added files, 1 added exports and 0 removed imports checked against 9 files"]);
+  assert.deepEqual(second.out, ["ok gate unused: 1 added files, 1 added exports and 0 removed imports checked against 8 files"]);
 });
 
 test("tests, routes, configs, package.json bins and gates.entryPaths are not reported", async () => {
@@ -105,4 +105,16 @@ test("indexes 4,000 files and reports its CPU time", async (t) => {
   console.error(`unused on 4,000 files: ${Math.round(ms)}ms`);
   assert.equal(code, 1);
   assert.match(out[0], /^src\/new\.ts is added but/);
+});
+
+test("an acknowledgement or baseline entry naming a file is not a use of it", async () => {
+  const r = repo(base);
+  r.write({
+    "src/editor.ts": "export const editor = () => 1;\n",
+    "intersite.json": JSON.stringify({ project: "t", gates: { base: "base", acknowledged: [{ gate: "similar", target: "src/editor.ts:editor", why: "x" }] } }),
+    "intersite-baseline.json": JSON.stringify({ "src/editor.ts": { "intersite/no-empty-catch": 1 } }),
+  });
+  const { code, out } = await run(r.cwd, ["unused"]);
+  assert.equal(code, 1);
+  assert.deepEqual(lines(out), ["src/editor.ts is added but no other file imports or names it: wire it in, or delete it"]);
 });

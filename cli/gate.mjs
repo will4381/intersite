@@ -39,9 +39,9 @@ export async function runGate(name, { cwd, config, flags = {} }) {
 
 /**
  * @param {string[]} argv
- * @param {{ cwd: string }} options
+ * @param {{ cwd: string, quiet?: boolean }} options `quiet` leaves out the success line, for `check`
  */
-export default async function gate(argv, { cwd }) {
+export default async function gate(argv, { cwd, quiet = false }) {
   let parsed;
   try {
     parsed = parseArgs({
@@ -103,7 +103,7 @@ export default async function gate(argv, { cwd }) {
   if (values.json) {
     console.log(JSON.stringify({ gate: name, ok: !findings.length, summary, findings }));
   } else if (!findings.length) {
-    console.log(`ok gate ${name}: ${summary}`);
+    if (!quiet) console.log(`ok gate ${name}: ${summary}`);
   } else {
     for (const f of findings) {
       console.log(`${f.message} | to accept: add { "gate": "${name}", "target": "${f.target}", "why": "…" } to gates.acknowledged in intersite.yml`);

@@ -37,8 +37,9 @@ lint:
 npx intersite lint
 ```
 
-A new rule usually matches existing code. Fix those places if there are few. If there are many, record them so only
-new ones fail, and say so in your summary:
+A new rule usually matches existing code. Fix those places if there are few. If there are many, and the new rule's
+are the only findings listed, record them so only new ones fail (this records every current finding), and say so in
+your summary:
 
 ```bash
 npx intersite lint --write=init

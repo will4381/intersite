@@ -3,31 +3,38 @@ rules:
   - id: no-client-created-in-render
     pack: react
     ext: tsx
-    selector: ":matches(FunctionDeclaration[id.name=/^[A-Z]/], VariableDeclarator[id.name=/^[A-Z]/] > :function, VariableDeclarator[id.name=/^[A-Z]/] > CallExpression > :function) > BlockStatement :matches(NewExpression[callee.name='QueryClient'], CallExpression[callee.name='createContext'], CallExpression[callee.property.name='createContext']):not(CallExpression[callee.name=/^use(State|Memo|Ref)$/] *, CallExpression[callee.property.name=/^use(State|Memo|Ref)$/] *)"
+    selector: ":matches(FunctionDeclaration[id.name=/^(?:[A-Z]|use[A-Z0-9])/], VariableDeclarator[id.name=/^(?:[A-Z]|use[A-Z0-9])/] > :function, VariableDeclarator[id.name=/^(?:[A-Z]|use[A-Z0-9])/] > CallExpression > :function, VariableDeclarator[id.name=/^(?:[A-Z]|use[A-Z0-9])/] > CallExpression > CallExpression > :function) :matches(NewExpression[callee.name='QueryClient'], CallExpression[callee.name='createContext'], CallExpression[callee.property.name='createContext']):not(CallExpression[callee.name=/^use(State|Memo|Ref)$/] *, CallExpression[callee.property.name=/^use(State|Memo|Ref)$/] *)"
     message: Created inside a component, this is a new instance on every render, so its cache or context resets and everything under it re-renders or loses state. Create it once at module scope, or for a per-request client inside the component, useState(() => new QueryClient()).
     bad:
       - "export function App({ children }) {\n  const client = new QueryClient();\n  return <QueryClientProvider client={client}>{children}</QueryClientProvider>;\n}"
       - "export const Theme = ({ children }) => {\n  const ThemeContext = createContext('light');\n  return <ThemeContext.Provider value='dark'>{children}</ThemeContext.Provider>;\n};"
       - "export const Providers = memo(function Providers({ children }) {\n  const ctx = React.createContext(null);\n  return <ctx.Provider value={1}>{children}</ctx.Provider>;\n});"
       - "export function Root() {\n  useEffect(() => { const client = new QueryClient(); client.clear(); }, []);\n  return null;\n}"
+      - "export const App = ({ children }) => <QueryClientProvider client={new QueryClient()}>{children}</QueryClientProvider>;"
+      - "export function useStore() {\n  const StoreContext = createContext(null);\n  return StoreContext;\n}"
+      - "export const Providers = React.memo(React.forwardRef(function Providers(props, ref) {\n  const client = new QueryClient();\n  return <QueryClientProvider client={client} />;\n}));"
     good:
       - "const client = new QueryClient();\nexport function App({ children }) {\n  return <QueryClientProvider client={client}>{children}</QueryClientProvider>;\n}"
       - "export function App({ children }) {\n  const [client] = useState(() => new QueryClient());\n  return <QueryClientProvider client={client}>{children}</QueryClientProvider>;\n}"
       - "export const ThemeContext = createContext('light');"
       - "export function makeClient() {\n  return new QueryClient({ defaultOptions: { queries: { retry: false } } });\n}"
+      - "export function App({ children }) {\n  const client = useMemo(() => new QueryClient(), []);\n  return <QueryClientProvider client={client}>{children}</QueryClientProvider>;\n}"
   - id: no-keyless-fragment-in-map
     pack: react
     ext: tsx
-    selector: "CallExpression[callee.property.name=/^(map|flatMap)$/] > :function > JSXFragment, CallExpression[callee.property.name=/^(map|flatMap)$/] > :function > BlockStatement > ReturnStatement > JSXFragment"
+    selector: "CallExpression[callee.property.name=/^(map|flatMap)$/] > :function > JSXFragment, CallExpression[callee.property.name=/^(map|flatMap)$/] > :function > :matches(ConditionalExpression, LogicalExpression) > JSXFragment, CallExpression[callee.property.name=/^(map|flatMap)$/] > :function > BlockStatement ReturnStatement > JSXFragment, CallExpression[callee.property.name=/^(map|flatMap)$/] > :function > BlockStatement ReturnStatement > :matches(ConditionalExpression, LogicalExpression) > JSXFragment"
     message: A <>…</> fragment cannot take a key, so React cannot tell these list items apart and warns. Use <Fragment key={item.id}>…</Fragment>, or put the key on a single wrapping element.
     bad:
       - "export const Rows = ({ rows }) => <>{rows.map((r) => <><dt>{r.term}</dt><dd>{r.text}</dd></>)}</>;"
       - "export function Rows({ rows }) {\n  return <dl>{rows.map((r) => {\n    return <><dt>{r.term}</dt><dd>{r.text}</dd></>;\n  })}</dl>;\n}"
       - "export const Rows = ({ rows }) => <dl>{rows.map((r) => (\n  <>\n    <dt>{r.term}</dt>\n  </>\n))}</dl>;"
+      - "export const Rows = ({ rows }) => <dl>{rows.map((r) => (r.ok ? <><dt>{r.term}</dt><dd>{r.text}</dd></> : null))}</dl>;"
+      - "export function Rows({ rows }) {\n  return <dl>{rows.map((r) => {\n    if (!r.ok) return null;\n    return <><dt>{r.term}</dt><dd>{r.text}</dd></>;\n  })}</dl>;\n}"
     good:
       - "export const Rows = ({ rows }) => <dl>{rows.map((r) => <Fragment key={r.id}><dt>{r.term}</dt><dd>{r.text}</dd></Fragment>)}</dl>;"
       - "export const Rows = ({ rows }) => <>{rows.map((r) => <dt key={r.id}>{r.term}</dt>)}</>;"
       - "export const Page = ({ rows }) => {\n  const items = rows.map((r) => r.id);\n  return <><List items={items} /></>;\n};"
+      - "export const Rows = ({ rows }) => <ul>{rows.map((r) => <li key={r.id}>{r.ok ? <><b>{r.term}</b></> : null}</li>)}</ul>;"
 builtin:
   # Missing key on an element built in a loop.
   - { rule: react/jsx-key, pack: react }

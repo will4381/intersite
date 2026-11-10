@@ -19,10 +19,19 @@ const paramName = (p) => (p.type === "Identifier" ? p.name : p.type === "RestEle
 /** @param {any} a */
 const argName = (a) => (a.type === "Identifier" ? a.name : a.type === "SpreadElement" && a.argument.type === "Identifier" ? `...${a.argument.name}` : undefined);
 
-/** The name a function is declared under: `function load`, `const load = () => ...`. Callbacks and methods have none. @param {any} node */
+/** A statement at the top of the module, exported or not. @param {any} node */
+const atModuleLevel = (node) => node?.type === "Program" || (/^Export(?:Named|Default)Declaration$/.test(node?.type) && node.parent.type === "Program");
+
+/**
+ * The name a module-level function is declared under: `function load`, `const load = () => ...`. Callbacks, methods and
+ * functions declared inside another function have none: `const onTyping = (on) => signalTyping(on)` in a component is a
+ * handler with a name, not a second name for a module's API.
+ * @param {any} node
+ */
 function declaredName(node) {
-  if (node.type === "FunctionDeclaration") return node.id?.name;
-  if (node.parent.type === "VariableDeclarator" && node.parent.init === node && node.parent.id.type === "Identifier") return node.parent.id.name;
+  if (node.type === "FunctionDeclaration") return atModuleLevel(node.parent) ? node.id?.name : undefined;
+  const declarator = node.parent;
+  if (declarator.type === "VariableDeclarator" && declarator.init === node && declarator.id.type === "Identifier" && atModuleLevel(declarator.parent.parent)) return declarator.id.name;
   return undefined;
 }
 
@@ -68,6 +77,8 @@ export const bad = [
   "export const formatDate = (date, locale) => format(date, locale);",
   "export function createClient(options) { return new HttpClient(options); }",
   "export const track = (...args) => send(...args);",
+  "export default function load(id) { return fetchUser(id); }",
+  "const read = (path) => readFile(path);\nexport { read };",
 ];
 
 export const good = [
@@ -79,4 +90,6 @@ export const good = [
   "export const isEmail = (value) => EMAIL.test(value);",
   "items.forEach((item) => save(item));",
   "export function sort(list, by) { return [...list].sort(by); }",
+  "export function Chat() { const handleTyping = (active: boolean) => signalTyping(active); return { onTyping: handleTyping }; }",
+  "export function attach(client) { const listener = (error: unknown) => onError(error); client.on('error', listener); }",
 ];

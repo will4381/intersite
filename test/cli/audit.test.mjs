@@ -36,6 +36,7 @@ test("audit lists what capture kept, widest key first, and leaves fakes and IDs 
     'body.tags.label: 1 kept value: "urgent"',
     'path /teams/:team/notes: 1 kept value: "blue"',
     'query.sort: 1 kept value: "newest"',
-    "ok audit: 3 cases, 5 keys with kept values; a key that holds personal data goes in capture.redactKeys; an enum that was faked goes in capture.keepKeys",
+    "body.note: 1 distinct value faked as text",
+    "ok audit: 3 cases, 5 keys with kept values, 1 with faked text; a key that holds personal data goes in capture.redactKeys; an enum that was faked goes in capture.keepKeys",
   ]);
 });

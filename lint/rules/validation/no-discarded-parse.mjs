@@ -43,7 +43,8 @@ export const rule = defineRule({
         const call = unwrap(node.expression);
         if (call?.type !== "CallExpression" || !PARSE.test(calleeName(call)) || call.callee.type !== "MemberExpression") return;
         if (NOT_SCHEMA.test(call.callee.object.name ?? "")) return;
-        const arg = call.arguments[0];
+        // valibot: v.parse(Schema, value)
+        const arg = call.arguments[/^(v|valibot)$/.test(call.callee.object.name ?? "") && call.arguments.length === 2 ? 1 : 0];
         if (!arg || !/^(Identifier|MemberExpression)$/.test(arg.type) || !isRaw(arg, context.sourceCode)) return;
         // `schema.parse(body)` then `body` read again later in the same block.
         const block = /** @type {any} */ (node).parent;
@@ -61,6 +62,7 @@ export const bad = [
   "export async function POST(request: Request) { const body = await request.json(); InviteSchema.parse(body); await invite(body.email); return Response.json({ ok: true }); }",
   "async function save(input: unknown) { await schema.validate(input); return db.insert(input); }",
   "function handle(body: unknown) { Body.safeParse(body); return process(body); }",
+  "export async function POST(request: Request) { const body = await request.json(); v.parse(Schema, body); await save(body); }",
 ];
 
 export const good = [

@@ -5,7 +5,11 @@ import { defineRule } from "@oxlint/plugins";
  * A whole message that only marks "the code got here": `here`, `test`, `HERE!!!`, `got here`, `asdf`, `1`. Not `ok` or a
  * line of `=====`: a script's last line and its output headings are real output.
  */
-const marker = /^\s*(?:here|in here|got here|reached(?: here)?|test(?:ing)?|hi|hello|asdf\w*|qwe\w*|foo|bar|x+|y+|\d+|yay|works|it works|wtf|hmm+|lol)\s*[!.:?]*\s*$/i;
+const marker = /^(?:here|in here|got here|reached(?: here)?|test(?:ing)?|hi|hello|asdf\w*|qwe\w*|foo|bar|x+|y+|\d+|yay|works|it works|wtf|hmm+|lol)(?: \d+)?$/i;
+/** Markers that stay debugging leftovers with a value logged beside them: `console.log('here', user)`. */
+const markerWithValue = /^(?:here|in here|got here|reached(?: here)?|asdf\w*|wtf)(?: \d+)?$/i;
+/** The message without the arrows, rules and punctuation a marker is dressed in: `>>> here`, `=== HERE ===`, `here!!!`. */
+const undress = (/** @type {string} */ text) => text.replace(/^[\s>*=#~!.:?-]+|[\s<*=#~!.:?-]+$/g, "");
 /** A debug tag at the start: `DEBUG user`, `[debug]`, `debug:`. (`--- RESULTS ---` is often a script's real output heading.) */
 const tag = /^\s*(?:DEBUG\b|\[debug\]|debug:)/;
 /** A message opening with an emoji, as generated code tends to write them: `🚀 Server started`, `✅ Saved`. */
@@ -35,13 +39,14 @@ export const rule = defineRule({
       DebuggerStatement() {
         hasDebugger = true;
       },
-      "CallExpression[callee.object.name='console']"(node) {
+      "CallExpression[callee.object.name=/^(?:console|logger|log)$/]"(node) {
         const method = node.callee.property?.name;
         const [first, ...rest] = node.arguments;
         const text = first?.type === "Literal" && typeof first.value === "string" ? first.value : first?.type === "TemplateLiteral" ? first.quasis[0].value.cooked ?? "" : undefined;
         if (text !== undefined && emoji.test(text)) return context.report({ node, messageId: "emoji" });
-        if (method !== "log" && method !== "debug") return;
-        if (text !== undefined && (tag.test(text) || (!rest.length && first.type === "Literal" && marker.test(text)))) return context.report({ node, messageId: "marker", data: { text: text.trim().slice(0, 30) } });
+        if (node.callee.object.name !== "console" || (method !== "log" && method !== "debug")) return;
+        const isMarker = first?.type === "Literal" && text !== undefined && (rest.length ? markerWithValue : marker).test(undress(text));
+        if (text !== undefined && (tag.test(text) || isMarker)) return context.report({ node, messageId: "marker", data: { text: text.trim().slice(0, 30) } });
         if (first?.type === "Identifier" && !rest.length) bare.push(node);
       },
       "Program:exit"() {
@@ -57,6 +62,10 @@ export const bad = [
   "export function start() { console.log('🚀 Server started on port 3000'); }",
   "export function save(state) { console.log(state); debugger; return state; }",
   "export function f() { console.log('test'); }",
+  "export function save(user) { console.log('here', user); return user; }",
+  "export function save() { console.log('=== HERE ==='); }",
+  "export function save() { console.log('>>> got here 2'); }",
+  "export function start() { logger.info('🚀 Server started'); }",
 ];
 
 export const good = [
@@ -66,4 +75,7 @@ export const good = [
   "export function warn() { console.warn('Retrying after a 429 from the payments API'); }",
   "export function f() { console.log('test suite finished'); }",
   "export function main() { run(); console.log('ok'); }",
+  "export function report(rows) { console.log('here are the rows:', rows.length); }",
+  "export function report(n) { console.log('1 test', n); }",
+  "export function start() { logger.info('server started'); }",
 ];

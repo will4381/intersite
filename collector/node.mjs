@@ -94,7 +94,8 @@ export async function startNodeCollector({ port = 0, dbPath = ":memory:", ingest
   };
   const cleanup = (time = Date.now()) => worker.scheduled({ scheduledTime: time }, env);
   try {
-    sqlite.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;");
+    // Several processes may open one file (a running collector and commands serving it themselves): wait out a writer.
+    sqlite.exec("PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;");
     await db.exec(schema);
     await cleanup();
     await new Promise((resolve, reject) => {

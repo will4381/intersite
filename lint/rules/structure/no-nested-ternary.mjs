@@ -1,6 +1,8 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
+import { isGenerated } from "../shared.mjs";
+
 const LIMIT = 3;
 
 /** The ternary under parentheses and TypeScript casts, if there is one. @param {any} node */
@@ -34,6 +36,7 @@ export const rule = defineRule({
   },
   createOnce(context) {
     return {
+      before: () => !isGenerated(context),
       ConditionalExpression(node) {
         let parent = node.parent;
         while (parent.type === "ParenthesizedExpression" || parent.type === "TSAsExpression" || parent.type === "TSNonNullExpression") parent = parent.parent;

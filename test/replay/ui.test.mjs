@@ -1,5 +1,7 @@
 // @ts-check
 // The `ui` mode against a tiny web app in front of the toy target. Needs the installed Google Chrome.
+// INTERSITE_UI_BROWSER=lightpanda runs every test that does not pick its own engine against the real Lightpanda on PATH
+// instead (see "Verifying Lightpanda" in the README); unset, or `chrome`, it is Chrome.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
@@ -19,6 +21,7 @@ const macChrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 const chromePath = existsSync(macChrome) ? macChrome
   : ["google-chrome", "chrome"].map((name) => spawnSync("which", [name], { encoding: "utf8" }).stdout.trim()).find(Boolean) ?? "";
 const hasChrome = chromePath !== "";
+const engineUnderTest = process.env.INTERSITE_UI_BROWSER || "chrome";
 
 /** @type {Awaited<ReturnType<typeof startTarget>>} */
 let target;
@@ -114,10 +117,10 @@ const session = [
 
 /**
  * @param {string} [cwd] @param {import("../../shared/case.mjs").Case[]} [cases]
- * @param {{ browser?: string, browserUrl?: string }} [engine]
+ * @param {{ browser?: string, browserUrl?: string }} [engine] the engine under test unless a test picks its own
  */
-async function replayUi(cwd = root, cases = session, signIn = adapter.signIn, engine = {}) {
-  assert.ok(hasChrome, "the ui replay tests need Google Chrome installed (https://www.google.com/chrome/)");
+async function replayUi(cwd = root, cases = session, signIn = adapter.signIn, engine = { browser: engineUnderTest }) {
+  assert.ok(engine.browser !== "chrome" || hasChrome, "the ui replay tests need Google Chrome installed (https://www.google.com/chrome/)");
   const [result] = await replaySessions({
     sessions: [{ session: "u", cases }], target: target.url, uiTarget: appUrl, adapter: { ...adapter, signIn }, modes: ["ui"], idPattern: DEFAULT_ID_PATTERN, cwd, ...engine,
   });
@@ -195,6 +198,11 @@ test("a write production answered with 400 passes when the replay is answered 40
   mode = "wrong-shape";
   const rejected = { ...writeSession[0], response: { ...writeSession[0].response, status: 400, ids: {} } };
   assert.deepEqual(await replayUi(root, [rejected]), ["w-1 note.add /new passed"]);
+});
+
+test("a write production answered with a 500 passes once the replay is answered without one: the crash was the bug", async () => {
+  const crashed = { ...writeSession[0], outcome: /** @type {const} */ ("error"), response: { ...writeSession[0].response, status: 500, ids: {} } };
+  assert.deepEqual(await replayUi(root, [crashed]), ["w-1 note.add /new passed"]);
 });
 
 test("an adapter that signs in with a cookie reaches the app and the API on page loads, clicks and submitted forms", async () => {

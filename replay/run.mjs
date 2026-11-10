@@ -32,6 +32,11 @@ import { countersOf } from "./metrics.mjs";
 const DAY = 86_400_000;
 const CLIP = 500;
 
+/** Whether anything answers HTTP at this URL, whatever the status. @param {string} url */
+export function answers(url) {
+  return fetch(url, { signal: AbortSignal.timeout(3000) }).then((response) => (response.body?.cancel(), true), () => false);
+}
+
 /**
  * Replay each session against `target` in every mode and compare with what was recorded.
  * `concurrency` sessions run at once, except when the adapter has `reset` (shared state), when they run one at a time.
@@ -111,16 +116,18 @@ async function replayOnce(mode, cases, steps, context) {
     for (const [key, value] of Object.entries(request.query)) url.searchParams.set(key, value);
     const hasBody = request.body !== undefined && request.body !== null && !["GET", "HEAD"].includes(request.method);
     const body = hasBody ? JSON.stringify(request.body) : undefined;
-    const response = await fetch(url, {
-      method: request.method,
-      headers: { ...headers, "x-intersite-replay": item.id, "x-intersite-time": item.at, ...(hasBody && { "content-type": "application/json" }) },
-      body,
-    });
+    const sent = clip(`${request.method} ${url.pathname}${url.search}${body ? ` ${body}` : ""}`);
+    const headersSent = { ...headers, "x-intersite-replay": item.id, "x-intersite-time": item.at, ...(hasBody && { "content-type": "application/json" }) };
+    // A dropped connection is the server failing this request (it crashed or hung up), not a setup error: status 0.
+    const response = await fetch(url, { method: request.method, headers: headersSent, body }).catch((/** @type {Error} */ error) => error);
+    if (response instanceof Error) {
+      const cause = /** @type {{ code?: string }} */ (response.cause)?.code ?? response.message;
+      return { status: 0, json: undefined, exchange: { sent, got: `no answer (${cause})` }, counters: {} };
+    }
     const text = await response.text();
     let json;
     try { json = JSON.parse(text); } catch { json = undefined; }
-    const exchange = { sent: clip(`${request.method} ${url.pathname}${url.search}${body ? ` ${body}` : ""}`), got: clip(`${response.status} ${text}`) };
-    return { status: response.status, json, exchange, counters: countersOf(response.headers.get("server-timing")) };
+    return { status: response.status, json, exchange: { sent, got: clip(`${response.status} ${text}`) }, counters: countersOf(response.headers.get("server-timing")) };
   };
 
   for (const [index, item] of cases.entries()) {
@@ -148,19 +155,31 @@ async function replayOnce(mode, cases, steps, context) {
     learnIds(item, first.json, ids);
 
     if (mode === "baseline") {
-      const reason = first.status !== item.response.status
-        ? `status recorded ${item.response.status}, got ${first.status}`
-        : shapeDiff(item.response.shape, shapeOf(first.json));
+      const reason = baselineReason(item, first);
       record(item, reason ? "failed" : "passed", reason, first.exchange);
       if (Object.keys(first.counters).length) /** @type {Step} */ (steps.at(-1)).counters = first.counters;
     }
     if (mode === "twice" && method !== "GET") {
       const second = await send(request, item, await auth(kind, false));
-      if (second.status >= 500) record(item, "failed", `second send got ${second.status}, first got ${first.status}`, second.exchange);
+      if (second.status >= 500 || second.status === 0) record(item, "failed", `second send got ${second.status}, first got ${first.status}`, second.exchange);
       else record(item, "passed");
     }
   }
   return undefined;
+}
+
+/**
+ * Why a baseline step failed, or undefined when it passed: the same status and response shape as recorded. A server
+ * error production recorded is a bug, not the answer to keep: that step fails while the replay still gets a 5xx or no
+ * answer (the reproduction), and passes once it does not (the fix), whatever the new status and shape.
+ * @param {Case} item @param {{ status: number, json: unknown, exchange: { got: string } }} answer
+ */
+function baselineReason(item, answer) {
+  const recorded = item.response.status;
+  const got = answer.status === 0 ? answer.exchange.got : answer.status;
+  if (recorded >= 500) return answer.status >= 500 || answer.status === 0 ? `still fails as production did: status recorded ${recorded}, got ${got}` : undefined;
+  if (answer.status !== recorded) return `status recorded ${recorded}, got ${got}`;
+  return shapeDiff(item.response.shape, shapeOf(answer.json));
 }
 
 /**

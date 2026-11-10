@@ -48,6 +48,7 @@ export const rule = defineRule({
         if (!onlySets(callback.body) || !calls.length) return;
 
         // Every name the effect reads is a dependency, a pure global, or local to a callback inside it (`items.filter((i) => …)`).
+        // ponytail: an imported helper (`setFull(formatName(first, last))`) counts as outside, so that copy is missed; allow imports if they prove pure enough
         const locals = new Set();
         walk(callback.body, (n) => void (n.type.endsWith("FunctionExpression") && walk({ type: "Params", params: n.params }, (p) => void (p.type === "Identifier" && locals.add(p.name)))));
         let readsDep = false;

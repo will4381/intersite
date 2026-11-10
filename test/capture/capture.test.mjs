@@ -1,9 +1,13 @@
 // @ts-check
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 
 import { createCapture } from "../../capture/index.mjs";
 import { caseProblem } from "../../shared/case.mjs";
+import { captureOptions } from "../../shared/config.mjs";
 
 const TOKEN = "ingest-secret-token-1234";
 
@@ -221,4 +225,23 @@ test("bad input or config never throws", async () => {
   } finally {
     console.error = original;
   }
+});
+
+test("captureOptions hands intersite.yml's capture section and project to createCapture, so its exclude applies", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "intersite-capture-options-"));
+  writeFileSync(join(cwd, "intersite.yml"), "project: acme\ncapture:\n  sample: 1\n  exclude: [/webhooks/**]\n  redactKeys: [nickname]\n");
+  const options = captureOptions(cwd);
+  assert.equal(options.project, "acme");
+  assert.deepEqual(options.exclude, ["/webhooks/**"]);
+  assert.deepEqual(options.redactKeys, ["nickname"]);
+  /** @type {any[]} */
+  const sent = [];
+  const fetcher = { fetch: async (/** @type {string} */ _url, /** @type {RequestInit} */ init) => (sent.push(...JSON.parse(String(init.body)).cases), Response.json({ accepted: 1, dropped: [] })) };
+  const capture = createCapture({ ...options, url: "http://collector.test", token: "t", release: "r", fetcher });
+  const response = () => Response.json({ ok: true });
+  await capture.record({ request: new Request("https://a.test/webhooks/stripe", { method: "POST" }), response: response(), route: "/webhooks/stripe" });
+  await capture.record({ request: new Request("https://a.test/v1/me", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ nickname: "maria" }) }), response: response(), route: "/v1/me" });
+  assert.deepEqual(sent.map((item) => item.request.route), ["/v1/me"]);
+  assert.equal(sent[0].project, "acme");
+  assert.notEqual(sent[0].request.body.nickname, "maria");
 });

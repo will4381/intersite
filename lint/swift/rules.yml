@@ -3,19 +3,26 @@
 #              (a built-in rule is disabled by its SwiftLint name instead)
 #   message    what is wrong AND what to do instead
 #   swiftlint  a SwiftLint built-in rule, with `config` for its options
-#   regex      or a custom rule: matched against the whole file (`.` also matches newlines, so use [^\n])
+#   regex      or a custom rule: matched against the whole file (`.` also matches newlines, so use [^\n]; `^` and `$`
+#              match at line breaks)
+#   check      or a scanner check from checks.mjs, with `config` for its thresholds (tuned on real projects)
 #   skipKinds  drop a match touching these SourceKit token kinds (comment, string, ...)
-#   files / skipFiles  regular expressions searched in the absolute file path
+#   files / skipFiles  regular expressions searched in the file's path relative to the project
+#   skipIn     regions where the rule does not apply: preview (#Preview, PreviewProvider), debug (#if DEBUG), cli
+#              (a command-line tool: imports ArgumentParser or reads CommandLine.arguments)
 #   bad/good   Swift that must / must not be reported; `npm test` checks every one
 rules:
   - id: no-force-try
-    regex: '(?<!#Preview[^}]{0,300})\btry!'
+    regex: '\btry!(?![ \t]*(?:NSRegularExpression\([ \t]*pattern:|Regex\()[ \t]*#*")'
     skipKinds: [comment, doccomment, string]
     skipFiles: '(^|/)[^/]*Tests?(/|\.swift$)'
-    message: "try! crashes the app on the first error. Use do/catch and handle the failure, or mark the function throws and let the caller decide. (A crash is fine in tests and #Preview.)"
+    skipIn: [preview, debug]
+    message: "try! crashes the app on the first error. Use do/catch and handle the failure, or mark the function throws and let the caller decide. (A crash is fine in tests, #Preview, #if DEBUG and for a literal regex pattern.)"
     bad:
       - 'let data = try! Data(contentsOf: url)'
       - "func load() -> [Item] { try! JSONDecoder().decode([Item].self, from: data) }"
+      - "func f() async { let x = try! await load() }"
+      - 'let re = try! NSRegularExpression(pattern: userPattern)'
     good:
       - "do { let data = try Data(contentsOf: url); show(data) } catch { logger.error(\"read failed: \\(error)\") }"
       - |-
@@ -23,16 +30,39 @@ rules:
             let container = try! ModelContainer(for: Item.self)
             return ContentView().modelContainer(container)
         }
+      - |-
+        #Preview("Filled") {
+            VStack { Text("a") }
+            let container = try! ModelContainer(for: Item.self)
+            return ContentView().modelContainer(container)
+        }
+      - |-
+        struct ContentView_Previews: PreviewProvider {
+            static var previews: some View {
+                let container = try! ModelContainer(for: Item.self)
+                return ContentView().modelContainer(container)
+            }
+        }
+      - |-
+        #if DEBUG
+        let sample = try! JSONDecoder().decode([Item].self, from: fixture)
+        #endif
+      - 'let slug = try! NSRegularExpression(pattern: "^[a-z0-9-]+$")'
+      - 'let digits = try! Regex("[0-9]+")'
 
   - id: no-force-unwrap
-    regex: '(?<![\w.$])(?!(?:as|try)\b|k[A-Z])[a-z_]\w*(?:\.[a-zA-Z_]\w*)*!(?![=!])'
+    regex: '(?<=(?<![\w.$])(?!(?:as|try)\b|k[A-Z])(?:[a-z_]\w{0,80}|\$\d)(?:\??\.[a-zA-Z_]\w{0,80}|\[[^\[\]\n]{0,80}\]){0,12})!(?![=!])'
     skipKinds: [comment, doccomment, string]
     skipFiles: '(^|/)[^/]*Tests?(/|\.swift$)'
+    skipIn: [preview, debug]
     message: "Force-unwrapping a variable crashes when it is nil, and nothing here proves it is not. Unwrap with guard let / if let and handle the nil case, or give it a default with ??."
     bad:
       - 'Text(item.timestamp!, formatter: formatter)'
       - print("family name \(existingFamilyName!)")
       - let age = Date().timeIntervalSince(lastLoadTime!)
+      - 'let names = items.map { $0.name! }'
+      - 'let token = userInfo["token"]!'
+      - 'let city = user?.address!.city'
     good:
       - guard let timestamp = item.timestamp else { return }
       - let url = URL(string:"https://example.com")!
@@ -40,26 +70,57 @@ rules:
       - if !isLoading && count != 0 { refresh() }
       - let key = HTTPField.Name("Lucra-Version")!
       - 'let query: [String: Any] = [kSecReturnData as String: kCFBooleanTrue!]'
+      - 'if values[index] != nil { use(values) }'
+      - |-
+        #if !DEBUG
+        let mode = "release"
+        #endif
 
   - id: no-empty-catch
-    regex: '\bcatch(\s+let\s+\w+)?\s*\{\s*\}'
-    skipKinds: [comment, doccomment, string]
-    message: "An empty catch throws the error away, so the failure is invisible. Handle it (show it, retry, or fall back), let it propagate with throws, or if waiting on a Task is all you need, use `await task.result`."
+    regex: '\bcatch\b(?![ \t]+is\b)[^{}\n]*\{\s*(?://[ \t]*(?i:todo|fixme|handle|ignor|silent|do nothing|no[ -]?op|error)[^\n]{0,30}\n\s*)?\}'
+    skipKinds: [string, doccomment]
+    message: "An empty catch throws the error away, so the failure is invisible. Handle it (show it, retry, or fall back), let it propagate with throws, or if waiting on a Task is all you need, use `await task.result`. If ignoring it is right, say why in the catch."
     bad:
       - "do { try save() } catch {}"
       - "do { try await upload() } catch let error { }"
+      - "do { try save() } catch let error as NSError {}"
+      - |-
+        do {
+            try save()
+        } catch {
+            // Handle error
+        }
     good:
       - "do { try save() } catch { logger.error(\"save failed: \\(error)\"); showError(error) }"
       - "_ = await previous?.result"
+      - "do { try await Task.sleep(for: .seconds(1)) } catch is CancellationError {}"
+      - |-
+        do {
+            try FileManager.default.removeItem(at: staleURL)
+        } catch {
+            // The file is only there after a crash, so a missing file is the normal case.
+        }
 
   - id: no-discarded-try
-    regex: '^[ \t]*(?:_[ \t]*=[ \t]*)?try\?[ \t]+(?!(?:await[ \t]+)?(?:Task\.sleep|[\w.?]*\.(?:removeItem|createDirectory|setCategory|setActive|stop)\(|[\w.?]*\.close\(\)))'
+    regex: '(?=(?:let[ \t]+)?_[ \t]*=[ \t]*try\?|try\?)(?<=^[ \t]{0,99})(?<!(?:(?:->|\bvar\b|\bget\b)[^\n]{0,200}\{|\.(?:compactMap|flatMap|map|filter|first|contains|reduce|sorted|min|max|allSatisfy)\b[^\n]{0,200}\bin|^[ \t]{0,99}(?!(?:if|guard|while|for|else|switch)\b|\}[ \t]{0,9}else\b)[^\n]{0,200}\.(?:compactMap|flatMap|map|filter|first|contains|reduce|sorted|min|max|allSatisfy)[ \t]{0,9}\{)[ \t]{0,9}\n[ \t]{0,99})(?<!(?:[=(,\[]|\breturn|\?\?)[ \t]{0,9}\n[ \t]{0,99})(?:(?:let[ \t]+)?_[ \t]*=[ \t]*)?try\?[ \t]+(?!(?:await[ \t]+)?(?:Task\.sleep|[\w.?]*\.(?:removeItem|createDirectory|setCategory|setActive|stop)\(|[\w.?]*\.close\(\)))'
     skipKinds: [comment, doccomment, string]
     message: "try? with the result thrown away hides the error completely: the call fails and nobody knows. Use do/catch and handle or log the error. (Best-effort calls such as removeItem, createDirectory, close() and AVAudioSession setup are allowed.)"
     bad:
       - try? services.authService.saveSession(refreshed)
       - _ = try? await api.markRead(id)
       - try? Auth.auth().signOut()
+      - |-
+        func send() {
+            let _ = try? api.send(message)
+        }
+      - |-
+        items.forEach { item in
+            try? store.save(item)
+        }
+      - |-
+        if CommandLine.arguments.contains("-uitest-signed-out") {
+            try? await auth.signOut()
+        }
     good:
       - "do { try services.authService.saveSession(refreshed) } catch { logger.error(\"session not saved: \\(error)\") }"
       - 'let user = try? decoder.decode(User.self, from: data)'
@@ -67,44 +128,85 @@ rules:
       - try? FileManager.default.removeItem(at:tempURL)
       - try? handle.close()
       - try? FileManager.default.createDirectory(at:url, withIntermediateDirectories:true)
+      - |-
+        var cached: Data? {
+            try? Data(contentsOf: url)
+        }
+      - |-
+        func load() -> User? {
+            try? decoder.decode(User.self, from: data)
+        }
+      - |-
+        let users = documents.compactMap { document in
+            try? document.data(as: User.self)
+        }
+      - |-
+        let users = documents.compactMap {
+            try? $0.data(as: User.self)
+        }
+      - |-
+        let user =
+            try? decoder.decode(User.self, from: data)
 
   - id: no-print-logging
-    regex: '(?<![\w.])(?:print|debugPrint|NSLog|dump)\('
+    regex: '(?:(?<![\w.])|(?<=\bSwift\.))(?:print|debugPrint|NSLog|dump)\('
     skipKinds: [comment, doccomment, string]
     skipFiles: '(^|/)([^/]*Tests?|Scripts?|Plugins|Tools)/|(^|/)(main|Package)\.swift$|Tests?\.swift$'
-    message: "print() in app or library code is a debugging leftover: release builds keep it, and it has no level, category or privacy. Delete it, or log through os.Logger (`Logger(subsystem:category:).error(...)`) for events worth keeping."
+    skipIn: [preview, debug, cli]
+    message: "print() in app or library code is a debugging leftover: release builds keep it, and it has no level, category or privacy. Delete it, or log through os.Logger (`Logger(subsystem:category:).error(...)`) for events worth keeping. (print is fine in #if DEBUG, previews and command-line tools.)"
     bad:
       - 'print("[FirebaseService] Starting joinHabit for habitId: \(habitId)")'
       - debugPrint(response)
       - NSLog("user signed out")
+      - Swift.print("tapped")
     good:
       - 'logger.error("join failed: \(error.localizedDescription)")'
       - let text = "print(value)"
       - printer.print(page)
+      - |-
+        func refresh() {
+            #if DEBUG
+            print("refreshing \(items.count) items")
+            #endif
+        }
+      - |-
+        import ArgumentParser
+
+        struct Export: ParsableCommand {
+            func run() { print("exported") }
+        }
 
   - id: no-emoji-log
-    regex: '\b(?:[lL]ogger|log|os_log)(?:\.\w+)?\(\s*"(?:\[[^\]"\n]*\][ \t]*)?\p{Extended_Pictographic}'
-    message: "This log message opens with an emoji, a tell of generated code that makes logs harder to search and filter. Start with the event in words (\"upload finished\")."
+    regex: '\b(?:\w*[lL]ogger|[lL]og|os_log)(?:\.\w+)*\(\s*"[^"\n]*?(?:\p{Emoji_Presentation}|\p{Extended_Pictographic}\x{FE0F})'
+    message: "This log message has an emoji in it, a tell of generated code that makes logs harder to search and filter. Say the event in words (\"upload finished\")."
     bad:
       - logger.info("🚀 Upload started")
       - Logger.error("[Auth] ❌ Sign in failed")
+      - logger.info("Upload finished ✅")
+      - Logger.network.debug("⚠️ retrying \(attempt)")
+      - AppLogger.shared.notice("🔥 cache warm")
     good:
       - logger.info("upload started for \(id)")
       - Text("🚀 Ready")
+      - logger.info("© 2024 Acme, build \(build)")
+      - showDialog("✅ Saved")
 
   - id: no-stub-fatal-error
-    regex: 'fatalError\(\s*"(?!init\(coder:\))[^"\n]*(?i:not (?:yet )?implemented|unimplemented|todo|implement me|unresolved error)'
+    regex: '\b(?:fatalError|preconditionFailure)\(\s*"(?!init\()[^"\n]*(?i:not (?:yet )?implemented|unimplemented|\btodo\b|implement me|unresolved error)'
     message: "This fatalError is a placeholder (a \"not implemented\" stub, or Xcode's Core Data template \"Unresolved error\" that Apple says not to ship), so the app crashes where it should recover. Implement it, or handle the error: show it to the user, or log it and fall back."
     bad:
       - "func refund() { fatalError(\"Not implemented\") }"
       - fatalError("Unresolved error \(nsError), \(nsError.userInfo)")
       - 'fatalError("TODO: handle offline mode")'
+      - "func export() { preconditionFailure(\"not implemented yet\") }"
     good:
       - required init?(coder:NSCoder) { fatalError("init(coder:) has not been implemented") }
+      - override init(frame:CGRect) { fatalError("init(frame:) is not implemented") }
       - fatalError("Metal is not supported on this device")
+      - fatalError("Could not load the bundled todos.json")
 
   - id: no-fixed-delay
-    regex: 'DispatchQueue\.main\.asyncAfter\(\s*deadline:\s*\.now\(\)\s*\+\s*(?:[0-9.]+|\.(?:milliseconds|seconds)\(\s*[0-9.]+\s*\))\s*\)\s*\{'
+    regex: 'DispatchQueue\.main\.asyncAfter\(\s*deadline:\s*(?:DispatchTime)?\.now\(\)\s*\+\s*(?:[0-9.]+|\.(?:milliseconds|seconds)\(\s*[0-9.]+\s*\))\s*(?:\)\s*\{|,\s*execute:\s*\{)'
     skipKinds: [comment, doccomment, string]
     message: "A fixed delay on the main queue is a timing guess: it still fires after the view is gone and breaks on a slower device. For staged animation use .animation(.spring.delay(0.3), value:) or withAnimation's completion; to wait for state, react to it (.onChange, .task(id:)); for a real wait, Task.sleep inside .task, which is cancelled with the view."
     bad:
@@ -113,12 +215,17 @@ rules:
             withAnimation { buttonsVisible = true }
         }
       - "DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(50)) { focus = true }"
+      - |-
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: {
+            showConfetti = true
+        })
+      - "DispatchQueue.main.asyncAfter(deadline: DispatchTime.now() + 0.5) { [weak self] in self?.reveal() }"
     good:
       - withAnimation(.spring.delay(0.3)) { buttonsVisible = true }
       - DispatchQueue.main.asyncAfter(deadline:.now() + 20, execute:timeoutWorkItem)
 
   - id: no-any-view
-    regex: '\breturn\s+AnyView\(|\)\s*->\s*AnyView\??\s*\{|AnyView\(\s*EmptyView\(\)\s*\)|\?\s*AnyView\('
+    regex: '\breturn\s+AnyView\(|\)\s*->\s*AnyView\??\s*\{|\bvar\s+\w+\s*:\s*AnyView\s*\{|AnyView\(\s*EmptyView\(\)\s*\)|\?\s*AnyView\(|\.eraseToAnyView\(\)'
     skipKinds: [comment, doccomment, string]
     message: "AnyView here only makes branches return the same type. It erases identity, so SwiftUI cannot animate or diff between them. Mark the property or function @ViewBuilder and return `some View`, using if/else or a switch for the branches."
     bad:
@@ -131,6 +238,11 @@ rules:
             guard let session else { return AnyView(EmptyView()) }
             return AnyView(SessionCard(session: session))
         }
+      - |-
+        var badge: AnyView {
+            AnyView(Text("New"))
+        }
+      - 'let row = Text(title).padding().eraseToAnyView()'
     good:
       - |-
         @ViewBuilder func header(for tab: Tab) -> some View {
@@ -140,44 +252,87 @@ rules:
       - var titleView:(() -> AnyView)? = nil
 
   - id: no-observed-object-init
-    regex: '@ObservedObject\s+(?:private\s+)?var\s+\w+(?:\s*:\s*[\w.<>]+)?\s*=\s*[\w.]+\('
+    regex: '@ObservedObject\s+(?:(?:public|private|fileprivate|internal|package)\s+)?var\s+\w+(?:\s*:\s*[\w.<>, ]+)?\s*=\s*[\w.]+(?:<[^>\n]*>)?\('
     message: "@ObservedObject does not own the object it creates here, so SwiftUI makes a new one and loses its state every time the parent redraws. Use @StateObject for an object the view creates (or @State with an @Observable class), and @ObservedObject only for one passed in."
     bad:
       - "@ObservedObject private var timer = VisualizationTimer()"
       - "@ObservedObject var model: ProfileModel = ProfileModel()"
+      - "@ObservedObject public var store = Store<Item>()"
     good:
       - "@StateObject private var timer = VisualizationTimer()"
       - "@ObservedObject var model: ProfileModel"
+      - "@ObservedObject var settings = AppSettings.shared"
 
   - id: no-task-in-on-appear
-    regex: '\.onAppear\s*\{\s*Task\s*\{'
+    regex: '\.onAppear\s*(?:\(\s*perform:\s*)?\{(?:[^{}]*\n)?[ \t]*Task(?:\.detached)?\s*(?:\([^()\n]*\))?\s*\{'
     message: "A Task started in onAppear keeps running after the view disappears, and onAppear can fire again and start another. Use .task { ... } instead: SwiftUI cancels it when the view goes away."
     bad:
       - |-
         .onAppear {
             Task { await model.load() }
         }
+      - |-
+        .onAppear {
+            analytics.track(.screen)
+            Task(priority: .high) {
+                await model.load()
+            }
+        }
+      - ".onAppear(perform: { Task { await model.load() } })"
     good:
       - ".task { await model.load() }"
       - ".onAppear { model.trackScreen() }"
+      - ".onAppear { loadTask = Task { await model.load() } }"
 
   - id: no-presentation-flags
-    regex: '(?:@State\s+(?:private\s+)?var\s+(?:show|showing|isShowing|present|isPresenting)\w*\s*(?::\s*Bool\s*)?=\s*false\b[^\n]*\n\s*){3}'
-    message: "Three or more show/present booleans for one screen can be true at once and must be reset by hand. Use one optional enum, `@State private var sheet: Sheet?`, with .sheet(item: $sheet) (or .alert(item:)/.confirmationDialog(presenting:))."
+    check: presentationFlags
+    config: { min: 3 }
+    message: "Three or more booleans each presenting a sheet, alert or dialog on one screen can be true at once and must be reset by hand. Use one optional enum, `@State private var sheet: Sheet?`, with .sheet(item: $sheet) (or .alert(item:)/.confirmationDialog(presenting:))."
     bad:
       - |-
         struct SettingsView: View {
             @State private var showingPrivacyPolicy = false
             @State private var showingTerms: Bool = false
             @State private var showingSignOutAlert = false
-            var body: some View { List {} }
+            var body: some View {
+                List {}
+                    .sheet(isPresented: $showingPrivacyPolicy) { PrivacyView() }
+                    .sheet(isPresented: $showingTerms) { TermsView() }
+                    .alert("Sign out?", isPresented: $showingSignOutAlert) { Button("Sign out", role: .destructive) { signOut() } }
+            }
+        }
+      - |-
+        struct ProfileView: View {
+            @State private var editor = false
+            @State private var name = ""
+            @State private var deleteConfirmation = false
+            @State private var share: Bool = false
+            var body: some View {
+                Form { TextField("Name", text: $name) }
+                    .sheet(isPresented: $editor) { Editor() }
+                    .confirmationDialog("Delete?", isPresented: $deleteConfirmation) { Button("Delete") { delete() } }
+                    .sheet(
+                        isPresented: $share
+                    ) { ShareSheet() }
+            }
         }
     good:
       - |-
         struct SettingsView: View {
             @State private var sheet: Sheet?
             @State private var showingSignOutAlert = false
-            var body: some View { List {} }
+            var body: some View {
+                List {}
+                    .sheet(item: $sheet) { $0.view }
+                    .alert("Sign out?", isPresented: $showingSignOutAlert) { Button("Sign out") { signOut() } }
+            }
+        }
+      - |-
+        struct Celebration: View {
+            @State private var showConfetti = false
+            @State private var showTitle = false
+            @State private var showButtons = false
+            var body: some View { Text("Done").opacity(showTitle ? 1 : 0) }
         }
 
   - id: prefer-foreground-style
@@ -188,6 +343,7 @@ rules:
       - Text("Hi").foregroundColor(.red)
     good:
       - Text("Hi").foregroundStyle(.red)
+      - 'let attributes: [NSAttributedString.Key: Any] = [.foregroundColor: UIColor.red]'
 
   - id: prefer-navigation-stack
     regex: '\bNavigationView\s*\{'
@@ -199,7 +355,7 @@ rules:
       - "NavigationStack { List(items) { Text($0.name) } }"
 
   - id: prefer-clip-shape
-    regex: '\.cornerRadius\('
+    regex: '\.cornerRadius\((?![^()\n]*\bcorners:)'
     skipKinds: [comment, doccomment, string]
     message: "cornerRadius(_:) is deprecated. Use .clipShape(.rect(cornerRadius: 12)) (or RoundedRectangle(cornerRadius:) before iOS 17)."
     bad:
@@ -207,6 +363,7 @@ rules:
     good:
       - Image("cover").clipShape(.rect(cornerRadius:12))
       - view.layer.cornerRadius = 12
+      - "Rectangle().cornerRadius(20, corners: [.topLeft, .topRight])"
 
   - id: prefer-ignores-safe-area
     regex: '\.edgesIgnoringSafeArea\('
@@ -218,21 +375,28 @@ rules:
       - Color.black.ignoresSafeArea()
 
   - id: prefer-two-value-on-change
-    regex: '\.onChange\(of:[^)\n]*\)\s*\{\s*(?:\w+|_)\s+in'
+    regex: '\.onChange\(of:(?:[^()\n]|\([^()\n]*\))*\)\s*\{\s*(?:\w+\s+|\(\s*\w+\s*\)\s*)in\b|\.onChange\(of:[^\n]*,\s*perform:'
+    skipKinds: [comment, doccomment, string]
     message: "The one-value onChange(of:perform:) is deprecated. Use the two-value form, `.onChange(of: value) { oldValue, newValue in }`, or the no-value form `{ }` when you do not need them."
     bad:
       - ".onChange(of: query) { newValue in search(newValue) }"
+      - ".onChange(of: model.value(at: 0)) { (value) in refresh(value) }"
+      - ".onChange(of: query, perform: search)"
     good:
       - ".onChange(of: query) { _, newValue in search(newValue) }"
       - ".onChange(of: query) { search(query) }"
+      - ".onChange(of: query) { begin() }"
+      - ".onChange(of: query, initial: true) { old, new in search(new) }"
 
   - id: no-animation-without-value
-    regex: '(?<!\.transition\([^\n]{0,200})(?<!\.(?:combined|asymmetric)\([^\n]{0,200}\n[ \t]{0,40})(?<!\w)\.animation\(\s*(?:nil|\.[a-zA-Z]+(?:\([^()\n]*\))?(?:\.\w+(?:\([^()\n]*\))?)*)\s*\)'
+    regex: '(?<!\.transition\([^\n]{0,200})(?<!\.(?:combined|asymmetric)\([^\n]{0,200}\n[ \t]{0,40})(?<=[)\]}\s])\.animation\((?!\s*\w+\s*:)(?:[^(),\n]|\((?:[^()\n]|\([^()\n]*\))*\))+\)(?!\s*\{)'
     skipKinds: [comment, doccomment, string]
     message: "animation(_:) without a value is deprecated and animates every change to the view, including ones you did not mean to. Pass the value that drives it: .animation(.spring, value: isExpanded)."
     bad:
       - Circle().scaleEffect(scale).animation(.spring(response:0.5, dampingFraction:0.8))
       - Text(title).animation(.easeInOut)
+      - Text(title).animation(Animation.easeIn(duration:0.2))
+      - Text(title).animation(fade)
     good:
       - Circle().scaleEffect(scale).animation(.spring, value:scale)
       - withAnimation(.easeInOut) { expanded.toggle() }
@@ -242,37 +406,49 @@ rules:
         static let slide = AnyTransition.opacity
             .combined(with: .move(edge: .trailing))
             .animation(.spring(response: 0.5))
+      - "Text(title).animation(.spring) { content in content.opacity(visible ? 1 : 0) }"
+      - Toggle("Wi-Fi", isOn:$isOn.animation(.spring))
+      - "TimelineView(.animation(paused: reduceMotion)) { context in Text(context.date, style: .time) }"
 
   - id: prefer-sleep-for
-    regex: 'Task\.sleep\(\s*nanoseconds:'
+    regex: 'Task\.sleep\(\s*(?:nanoseconds:|[0-9])'
     message: "Task.sleep(nanoseconds:) makes readers count zeros. Use Task.sleep(for: .seconds(1)) or .milliseconds(250)."
     bad:
       - try await Task.sleep(nanoseconds:500_000_000)
+      - try await Task.sleep(1_000_000_000)
     good:
       - try await Task.sleep(for:.milliseconds(500))
 
   - id: no-fixed-font-size
-    regex: '\.font\(\s*\.system\(\s*size:\s*[0-9.]+\s*[,)]'
+    regex: '\.font\(\s*(?:Font)?\.system\(\s*size:\s*(?:[0-9]|[12][0-9]|3[0-4])(?:\.[0-9]+)?\s*[,)]'
     skipFiles: '[^/]*(Color|Colour|Palette|Theme|Token|DesignSystem|Font|Typography)[^/]*(/[^/]*)?\.swift$|(^|/)[^/]*Tests?(/|\.swift$)'
-    message: "A fixed point size ignores the user's Dynamic Type setting, so this text never grows for people who need it larger. Use a text style (.font(.headline)), your design system's font token, or .system(.title, design: .rounded)."
+    skipIn: [preview]
+    message: "A fixed point size ignores the user's Dynamic Type setting, so this text never grows for people who need it larger. Use a text style (.font(.headline)), your design system's font token, or .system(.title, design: .rounded). (Display sizes above 34pt, the largest text style, are exempt.)"
     bad:
       - Text(name).font(.system(size:16, weight:.bold))
       - Image(systemName:"star").font(.system(size:20))
+      - Text(name).font(Font.system(size:13.5))
     good:
       - Text(name).font(.headline.weight(.bold))
       - Text(emoji).font(.system(size:size * 0.5))
+      - Image(systemName:"checkmark.seal").font(.system(size:64))
 
   - id: no-raw-color
-    regex: '\b(?:Color|UIColor|NSColor)\(\s*(?:red|hex|white|hue|displayP3Red):'
+    regex: '\b(?:Color|UIColor|NSColor)\(\s*(?:\.(?:sRGB|sRGBLinear|displayP3)\s*,\s*)?(?:(?:red|white|hue|displayP3Red):\s*[0-9.]|(?:hex|rgb):\s*(?:0x|(?=["#])))|#colorLiteral\('
     skipKinds: [comment, doccomment, string]
     skipFiles: '[^/]*(Color|Colour|Palette|Theme|Token|DesignSystem|Font|Typography)[^/]*(/[^/]*)?\.swift$|(^|/)[^/]*Tests?(/|\.swift$)'
+    skipIn: [preview]
     message: "A raw colour value in a view drifts from the palette and ignores dark mode. Name it once in your colour tokens (an asset catalog colour or a Color extension in the design system file) and use the name here."
     bad:
       - Text("Gold").foregroundStyle(Color(red:0.85, green:0.65, blue:0.13))
       - let tint = UIColor(hex:0x0E1217)
+      - 'let night = Color(hex: "0E1217")'
+      - 'let ink = Color(.sRGB, red: 0.1, green: 0.1, blue: 0.12)'
     good:
       - Text("Gold").foregroundStyle(Palette.gold)
       - let tint = Color("AccentColor")
+      - 'let mixed = Color(red: from.red + (to.red - from.red) * t, green: g, blue: b)'
+      - 'let accent = Color(hex: settings.accentHex) ?? .orange'
 
   - id: no-commented-out-code
     regex: '(?:^[ \t]*//[ \t]*(?:let |var |if |guard |func |return\b|\}|\.\w+\(|\w+(?:\.\w+)*\([^\n]*\)[ \t]*$|\w+(?:\.\w+)+[ \t]*$|[^\n]*\{[ \t]*$|\w+ = )[^\n]*\n){3,}'
@@ -302,17 +478,21 @@ rules:
         func total() -> Int { 0 }
 
   - id: no-secret-in-user-defaults
-    regex: '(?:UserDefaults[\w.]*\.set\([^\n]*forKey:\s*|@AppStorage\(\s*)"[^"\n]*(?i:token|password|secret|api_?key)'
+    regex: '(?:(?:UserDefaults(?:\.\w+|\([^()\n]*\)\??)*|\b\w*[dD]efaults)\.set(?:Value)?\([^\n]*forKey:\s*|@AppStorage\(\s*)"(?![^"\n]*(?i:(?:push|fcm|apns|device)[^"\n]*token))[^"\n]*(?i:token|password|secret|api_?key)|(?:UserDefaults(?:\.\w+|\([^()\n]*\)\??)*|\b\w*[dD]efaults)\.set(?:Value)?\(\s*(?:\w+\.)*\w*(?i:password|secret|api_?key|(?:access|refresh|auth|id|session|bearer)_?token)\w*\s*,'
     message: "UserDefaults is an unencrypted plist that backups and anyone with the device can read. Store tokens, passwords and keys in the Keychain (SecItemAdd, or a small Keychain wrapper)."
     bad:
       - UserDefaults.standard.set(token, forKey:"authToken")
       - "@AppStorage(\"apiKey\") private var apiKey = \"\""
+      - 'defaults.set(session.refreshToken, forKey: "refresh_token")'
+      - 'UserDefaults(suiteName: "group.app")?.set(password, forKey: "userPassword")'
+      - 'UserDefaults.standard.set(session.accessToken, forKey: Keys.session)'
     good:
       - UserDefaults.standard.set(true, forKey:"hasSeenOnboarding")
       - try keychain.save(token, account:"authToken")
+      - 'UserDefaults.standard.set(token, forKey: "fcmToken")'
 
   - id: no-hardcoded-secret
-    regex: '"[^"\n]*\b(?:(?:sk|rk)_live_[0-9A-Za-z]{16,}|gh[pousr]_[0-9A-Za-z]{36}|github_pat_[0-9A-Za-z_]{40,}|(?:AKIA|ASIA)[0-9A-Z]{16}|xox[bp]-[0-9A-Za-z-]{20,}|sk-ant-[0-9A-Za-z_-]{20,}|sk-proj-[0-9A-Za-z_-]{20,}|AIza[0-9A-Za-z_-]{35}|glpat-[0-9A-Za-z_-]{20,})'
+    regex: '"[^"\n]*\b(?:(?:sk|rk)_live_[0-9A-Za-z]{16,}|gh[pousr]_[0-9A-Za-z]{36}|github_pat_[0-9A-Za-z_]{40,}|(?:AKIA|ASIA)[0-9A-Z]{16}|xox[bp]-[0-9A-Za-z-]{20,}|sk-ant-[0-9A-Za-z_-]{20,}|sk-proj-[0-9A-Za-z_-]{20,}|sk-[0-9A-Za-z]{20}T3BlbkFJ|AIza[0-9A-Za-z_-]{35}|glpat-[0-9A-Za-z_-]{20,})'
     message: "This looks like a live credential compiled into the app, where `strings` on the binary reveals it. Move the call behind your own backend so the key never ships, and rotate this one: anyone with the repository or the app has it."
     bad:
       - let stripe = "sk_live_51HxQ2bLk8dPq3RtY7uVw9ZaB"
@@ -336,17 +516,24 @@ rules:
             @State private var currentIndex = 0
             var body: some View { Text("\(currentIndex)") }
         }
+      - |-
+        #Preview {
+            @Previewable @State var isOn = false
+            Toggle("Wi-Fi", isOn: $isOn)
+        }
 
   - id: type-name
     swiftlint: type_name
-    config: { min_length: 1, max_length: 60 }
+    config: { min_length: 1, max_length: 60, excluded: ['^[ie][A-Z][A-Za-z0-9]*$'] }
     message: "Swift type names are UpperCamelCase letters and digits, with no underscores: `FiveMinApp`, not `__MinApp` or `Interior_AIApp`."
     bad:
       - struct user_profile {}
       - struct Interior_AIApp {}
+      - struct userProfile {}
     good:
       - struct UserProfile {}
       - struct ID {}
+      - struct iTunesRSSResponse {}
 
   - id: identifier-name
     swiftlint: identifier_name
@@ -358,9 +545,10 @@ rules:
     good:
       - let verifiedAt = Date()
       - let x = point.x
+      - "final class Box { private var _storage = 0 }"
 
   - id: no-type-suffix-name
-    regex: '\b(?:let|var)\s+[a-z]\w*(?<!json)(?:Bool|Object|Array|Dict|Dictionary)\s*[:=]'
+    regex: '\b(?:let|var)\s+[a-z]\w*(?<!json|managed)(?:Bool|Object|Array|Dict|Dictionary)\s*[:=]'
     skipKinds: [comment, doccomment, string]
     message: "The type is already in the declaration, so a type suffix (`colorsArray`, `verseObject`, `isLoadingBool`) is noise. Name what the value means: `colors`, `verse`, `isLoading`."
     bad:
@@ -371,3 +559,406 @@ rules:
       - let colors = Array(vectors.prefix(5))
       - let jsonObject = try JSONSerialization.jsonObject(with:data)
       - let selectedObjectID = object.id
+      - let managedObject = NSManagedObject(entity:entity, insertInto:context)
+
+  - id: long-view-body
+    check: viewBodyLength
+    config: { max: 100 }
+    message: "This view builder has more than 100 lines of code, so every state change re-evaluates all of it and nobody can see its structure. Extract its sections into their own View structs (structs, not computed properties or functions, so SwiftUI can skip the ones whose inputs did not change), each taking only the data it shows."
+    bad:
+      - |-
+        struct Feed: View {
+            var body: some View {
+                VStack {
+                    Text("Row 1")
+                    Text("Row 2")
+                    Text("Row 3")
+                    Text("Row 4")
+                    Text("Row 5")
+                    Text("Row 6")
+                    Text("Row 7")
+                    Text("Row 8")
+                    Text("Row 9")
+                    Text("Row 10")
+                    Text("Row 11")
+                    Text("Row 12")
+                    Text("Row 13")
+                    Text("Row 14")
+                    Text("Row 15")
+                    Text("Row 16")
+                    Text("Row 17")
+                    Text("Row 18")
+                    Text("Row 19")
+                    Text("Row 20")
+                    Text("Row 21")
+                    Text("Row 22")
+                    Text("Row 23")
+                    Text("Row 24")
+                    Text("Row 25")
+                    Text("Row 26")
+                    Text("Row 27")
+                    Text("Row 28")
+                    Text("Row 29")
+                    Text("Row 30")
+                    Text("Row 31")
+                    Text("Row 32")
+                    Text("Row 33")
+                    Text("Row 34")
+                    Text("Row 35")
+                    Text("Row 36")
+                    Text("Row 37")
+                    Text("Row 38")
+                    Text("Row 39")
+                    Text("Row 40")
+                    Text("Row 41")
+                    Text("Row 42")
+                    Text("Row 43")
+                    Text("Row 44")
+                    Text("Row 45")
+                    Text("Row 46")
+                    Text("Row 47")
+                    Text("Row 48")
+                    Text("Row 49")
+                    Text("Row 50")
+                    Text("Row 51")
+                    Text("Row 52")
+                    Text("Row 53")
+                    Text("Row 54")
+                    Text("Row 55")
+                    Text("Row 56")
+                    Text("Row 57")
+                    Text("Row 58")
+                    Text("Row 59")
+                    Text("Row 60")
+                    Text("Row 61")
+                    Text("Row 62")
+                    Text("Row 63")
+                    Text("Row 64")
+                    Text("Row 65")
+                    Text("Row 66")
+                    Text("Row 67")
+                    Text("Row 68")
+                    Text("Row 69")
+                    Text("Row 70")
+                    Text("Row 71")
+                    Text("Row 72")
+                    Text("Row 73")
+                    Text("Row 74")
+                    Text("Row 75")
+                    Text("Row 76")
+                    Text("Row 77")
+                    Text("Row 78")
+                    Text("Row 79")
+                    Text("Row 80")
+                    Text("Row 81")
+                    Text("Row 82")
+                    Text("Row 83")
+                    Text("Row 84")
+                    Text("Row 85")
+                    Text("Row 86")
+                    Text("Row 87")
+                    Text("Row 88")
+                    Text("Row 89")
+                    Text("Row 90")
+                    Text("Row 91")
+                    Text("Row 92")
+                    Text("Row 93")
+                    Text("Row 94")
+                    Text("Row 95")
+                    Text("Row 96")
+                    Text("Row 97")
+                    Text("Row 98")
+                    Text("Row 99")
+                    Text("Row 100")
+                    Text("Row 101")
+                }
+            }
+        }
+    good:
+      - |-
+        struct Feed: View {
+            var body: some View {
+                VStack { Header(); Posts(); Footer() }
+            }
+        }
+
+  - id: deep-view-nesting
+    check: viewNesting
+    config: { max: 7 }
+    message: "This view builder nests more than 7 levels deep (views, branches and action closures), which hides the layout and makes every change touch the whole tree. Extract the inner levels into their own View structs named for what they show, and move action logic into methods."
+    bad:
+      - |-
+        struct Feed: View {
+            var body: some View {
+                ScrollView {
+                    VStack {
+                        ForEach(posts) { post in
+                            HStack {
+                                VStack {
+                                    if post.isPinned {
+                                        Button {
+                                            withAnimation { pin(post) }
+                                        } label: { Text("Pin") }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    good:
+      - |-
+        struct Feed: View {
+            var body: some View {
+                ScrollView {
+                    VStack {
+                        ForEach(posts) { post in PostRow(post: post) }
+                    }
+                }
+            }
+        }
+
+  - id: too-many-state
+    check: stateCount
+    config: { max: 12 }
+    message: "This view holds more than 12 @State properties, so it is doing the work of several screens and any of them can redraw all of it. Move the related ones into an @Observable model the view owns, or split the screen into child views that each own their own state."
+    bad:
+      - |-
+        struct Checkout: View {
+            @State private var a = 0
+            @State private var b = 0
+            @State private var c = 0
+            @State private var d = 0
+            @State private var e = 0
+            @State private var f = 0
+            @State private var g = 0
+            @State private var h = 0
+            @State private var i = 0
+            @State private var j = 0
+            @State private var k = 0
+            @State private var l = 0
+            @State private var m = 0
+            var body: some View { Text("") }
+        }
+    good:
+      - |-
+        struct Checkout: View {
+            @State private var model = CheckoutModel()
+            @StateObject private var cart = Cart()
+            var body: some View { Text("") }
+        }
+
+  - id: no-notification-bus
+    regex: '\b(?:NS)?Notification\.Name\(\s*(?:rawValue:\s*)?"'
+    skipKinds: [comment, doccomment]
+    message: "A custom notification turns NotificationCenter into an untyped, app-wide event bus: anything can post it, nothing says who listens, and the payload is an untyped userInfo. Call the owner directly: pass a closure or a @Binding, share an @Observable model through the environment, or expose an AsyncStream from the object that has the event. (System notifications such as UIApplication.didBecomeActiveNotification are fine.)"
+    bad:
+      - 'NotificationCenter.default.post(name: NSNotification.Name("RefreshHabits"), object: nil)'
+      - |-
+        extension Notification.Name {
+            static let profileChanged = Notification.Name("profileChanged")
+        }
+    good:
+      - '.onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in refresh() }'
+
+  - id: no-discarded-observer
+    swiftlint: discarded_notification_center_observer
+    message: "The token from addObserver(forName:object:queue:using:) is the only way to remove this observer, and it is thrown away: the closure runs for the life of the app, and a copy is added every time this code runs again. In SwiftUI use .onReceive(NotificationCenter.default.publisher(for:)); elsewhere keep the token and remove it, or loop over NotificationCenter.default.notifications(named:) in a task that is cancelled."
+    bad:
+      - |-
+        func listen() {
+            NotificationCenter.default.addObserver(forName: .NSCalendarDayChanged, object: nil, queue: .main) { _ in refresh() }
+        }
+    good:
+      - |-
+        func listen() {
+            observer = NotificationCenter.default.addObserver(forName: .NSCalendarDayChanged, object: nil, queue: .main) { _ in refresh() }
+        }
+
+  - id: no-singleton-state
+    check: singletonState
+    config: {}
+    message: "This shared instance has settable properties, so any file can change them at any time: it is a global variable, and the bugs it causes show up far from the line that caused them. Make the properties private(set) and change them through methods on the type, or create the object once at the app's root and pass it down (environment or init). A `static var shared` can itself be replaced: make it `static let`."
+    bad:
+      - |-
+        final class Session {
+            static let shared = Session()
+            var currentUser: User?
+            private init() {}
+        }
+      - |-
+        final class Router: ObservableObject {
+            static var shared = Router()
+            @Published private(set) var path: [Route] = []
+        }
+    good:
+      - |-
+        final class Session {
+            static let shared = Session()
+            private(set) var currentUser: User?
+            var isSignedIn: Bool { currentUser != nil }
+            private init() {}
+            func signIn(_ user: User) { currentUser = user }
+        }
+      - |-
+        actor ImageCache {
+            static let shared = ImageCache()
+            var images: [URL: Data] = [:]
+        }
+
+  - id: no-strong-self-capture
+    check: strongSelfCapture
+    config: {}
+    message: "This closure is kept alive by a Combine subscription, a NotificationCenter observer or a repeating Timer, and it captures self strongly, so self is never freed (a retain cycle) and keeps reacting after its screen is gone. Capture `[weak self]` and start with `guard let self else { return }`; for Combine, `.assign(to: &$property)` needs no self at all."
+    bad:
+      - |-
+        final class FeedModel: ObservableObject {
+            @Published var posts: [Post] = []
+            private var cancellables: Set<AnyCancellable> = []
+            func start() {
+                service.posts
+                    .sink { posts in
+                        self.posts = posts
+                    }
+                    .store(in: &cancellables)
+            }
+        }
+      - |-
+        final class Clock {
+            var ticks = 0
+            var timer: Timer?
+            func start() {
+                timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in self.ticks += 1 }
+            }
+        }
+      - |-
+        final class Profile: ObservableObject {
+            @Published var name = ""
+            func bind() { service.name.assign(to: \.name, on: self).store(in: &cancellables) }
+        }
+    good:
+      - |-
+        final class FeedModel: ObservableObject {
+            @Published var posts: [Post] = []
+            private var cancellables: Set<AnyCancellable> = []
+            func start() {
+                service.posts
+                    .sink { [weak self] posts in
+                        self?.posts = posts
+                    }
+                    .store(in: &cancellables)
+            }
+        }
+      - |-
+        struct Clock: View {
+            @State private var ticks = 0
+            var body: some View {
+                Text("\(ticks)").onAppear {
+                    _ = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in print(self.ticks) }
+                }
+            }
+        }
+      - |-
+        final class Splash {
+            func start() {
+                Timer.scheduledTimer(withTimeInterval: 1, repeats: false) { _ in self.finish() }
+            }
+        }
+
+  - id: no-main-queue-hop
+    check: mainActorDispatch
+    config: {}
+    message: "This code already runs on the main actor (a SwiftUI view, a UIKit view or controller, or a @MainActor type), so DispatchQueue.main.async (or MainActor.run) only pushes the work to a later turn of the run loop. Call it directly. If it only works deferred, the state is being set at the wrong moment: react to it with .onChange or .task(id:) instead."
+    bad:
+      - |-
+        struct Player: View {
+            @State private var isReady = false
+            var body: some View {
+                Text("Ready").onAppear {
+                    DispatchQueue.main.async { isReady = true }
+                }
+            }
+        }
+      - |-
+        @MainActor
+        final class FeedModel: ObservableObject {
+            @Published var posts: [Post] = []
+            func reload() async {
+                let fresh = await api.posts()
+                await MainActor.run { posts = fresh }
+            }
+        }
+      - |-
+        final class PhotoViewController: UIViewController {
+            func show(_ image: UIImage) {
+                if isViewLoaded {
+                    DispatchQueue.main.async { self.imageView.image = image }
+                }
+            }
+        }
+    good:
+      - |-
+        struct Player: View {
+            @State private var isReady = false
+            var body: some View {
+                Text("Ready").onAppear {
+                    loader.load { result in
+                        DispatchQueue.main.async { isReady = true }
+                    }
+                }
+            }
+        }
+      - |-
+        final class Downloader {
+            func finish(_ data: Data) {
+                DispatchQueue.main.async { self.onDone?(data) }
+            }
+        }
+      - |-
+        @MainActor
+        final class FeedModel {
+            nonisolated func receive(_ posts: [Post]) {
+                DispatchQueue.main.async { self.apply(posts) }
+            }
+        }
+
+  - id: no-generic-mark
+    regex: '//[ \t]*MARK:[ \t]*-?[ \t]*(?:(?:Public|Private|Internal|Fileprivate|Published|Computed|Stored|Static|Helper|Supporting|Utility|Other|View|UI)[ \t]+)*(?:Properties|Property|Vars|Variables|Methods|Functions|Funcs|Helpers?|Init|Inits|Initiali[sz]ers?|Initiali[sz]ation|Lifecycle|Body|Views?|Subviews|Previews?|Preview[ \t]+Provider|Actions|Constants|State|Types|Extensions?)[ \t]*$'
+    message: "This MARK names the kind of member under it (Properties, Methods, Init, Preview), which the code already shows. Delete it, or name what the section is for (`// MARK: - Checkout`), or move a protocol's members into an extension named by the conformance."
+    bad:
+      - |-
+        // MARK: - Properties
+        let title: String
+      - "// MARK: Private Methods"
+      - "// MARK: - Preview"
+    good:
+      - "// MARK: - Payment sheet"
+      - "// MARK: - AVCapturePhotoCaptureDelegate"
+
+  - id: no-restating-comment
+    check: restatingComment
+    config: { maxWords: 6 }
+    message: "This comment says what the next line already says. Delete it, or replace it with why the line is there (the reason, the constraint, the bug it avoids)."
+    bad:
+      - |-
+        func refresh() {
+            // Load the user profile
+            loadUserProfile()
+        }
+      - |-
+        func close() {
+            // Dismiss
+            dismiss()
+        }
+    good:
+      - |-
+        func refresh() {
+            // The profile can change on the web, so reload it on every visit.
+            loadUserProfile()
+        }
+      - |-
+        func close() {
+            // Keep the draft until the server confirms
+            dismiss()
+        }

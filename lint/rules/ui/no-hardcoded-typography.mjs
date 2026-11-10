@@ -8,11 +8,12 @@ import { designSystem, examples } from "./project.mjs";
 const LENGTH = /^-?\d*\.?\d+(?:px|rem)?$/;
 /** What an arbitrary type utility hardcodes, by prefix: `text-[13px]`, `leading-[18px]`, `tracking-[-0.5px]`, `font-[650]`. */
 const CLASS_CHECKS = /** @type {Record<string, (v: string) => boolean>} */ ({
-  text: (v) => LENGTH.test(v),
+  text: (v) => LENGTH.test(v.replace(/^length:/, "")),
   // Unitless line heights are fine unless they repeat a named step: 1.25 is `leading-tight`.
   leading: (v) => /^\d*\.?\d+(?:px|rem)$/.test(v) || /^(?:1|1\.25|1\.375|1\.5|1\.625|2)$/.test(v),
   tracking: (v) => /^-?\d*\.?\d+(?:px|rem)$/.test(v),
-  font: (v) => /^\d{3}$/.test(v),
+  // A weight (`font-[650]`) or a quoted family (`font-['Inter']`, `font-[family-name:Inter]`).
+  font: (v) => /^\d{3}$|^(?:family-name:)?['"]|^family-name:(?!var\()/.test(v),
 });
 /** What an inline style hardcodes, by property. */
 const STYLE_CHECKS = /** @type {Record<string, (v: string) => boolean>} */ ({
@@ -31,7 +32,7 @@ export const rule = defineRule({
   meta: {
     type: "problem",
     messages: {
-      found: "`{{ value }}` hardcodes a type value off the project's scale{{ tokens }}. Use a type step (`text-sm`, `leading-tight`, `font-semibold`, or the project's own `text-*`/`--font-*` tokens) so headings and body text stay consistent; if the design needs a new step, add it to the theme once.",
+      found: "`{{ value }}` hardcodes a type value off the project's scale{{ tokens }}. Use a type step (`text-sm`, `leading-tight`, `font-semibold`, `font-sans`, or the project's own `text-*`/`--font-*` tokens) so headings and body text stay consistent; if the design needs a new step, add it to the theme once.",
     },
   },
   createOnce(context) {
@@ -64,6 +65,7 @@ export const bad = [
   'export const Stat = () => <p className="font-[650] leading-[1.25] tracking-[-0.5px]">42</p>;',
   "export const Note = () => <p className=\"mt-2\" style={{ fontSize: '14px', fontFamily: 'Inter, sans-serif' }}>Saved</p>;",
   'export const heading = cva("text-[2.25rem] font-bold", { variants: {} });',
+  "export const Label = () => <span className=\"text-[length:13px] font-['Inter']\">x</span>;",
   "export const Badge = () => <span className=\"px-2\" style={{ fontWeight: 600, lineHeight: '18px' }}>New</span>;",
 ];
 

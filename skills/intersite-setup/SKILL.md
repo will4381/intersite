@@ -42,13 +42,23 @@ Find the one place every API request passes through and add about five lines the
 
 The examples for each are at the top of `node_modules/intersite/capture/index.mjs`. Rules:
 
+- Build the capture from `intersite.yml`. In a Node server (Fastify, Express, Next.js on the Node runtime):
+  `import { captureOptions } from "intersite/shared/config"` and
+  `createCapture({ ...captureOptions(), sample: process.env.NODE_ENV === "production" ? 0.05 : 1, url, token, release })`,
+  so `project` and the `capture` section (`exclude`, `redactKeys`, `keepKeys`) apply; capture never reads files
+  itself. A Cloudflare Worker has no file system: pass `project` (exactly the `project` in `intersite.yml`, or
+  nothing shows up) and those lists inline.
+- Record every session while developing (`sample: 1`, as above). The default records 5% of sessions, so a few clicks
+  locally would usually record nothing.
+- If the server shows a request ID to users (a "Ref" on error pages, or in logs), pass it as `id`, so
+  `intersite replay --id <ref>` finds the case.
 - `route` is the route template (`/v1/programs/:id`), never the raw path.
 - `actor.kind` is a role name such as `member` or `admin`. `session` is the signed-in user's ID; it is hashed
   before it leaves the server.
 - Read the collector URL and ingest token from the environment. For local development the URL is
   `http://127.0.0.1:8790` and the token is `local-ingest`.
-- List webhook and provider-callback paths in `capture.exclude`, and the project's own personal-data field names in
-  `capture.redactKeys`.
+- List webhook and provider-callback paths in `capture.exclude` in `intersite.yml`, and the project's own
+  personal-data field names in `capture.redactKeys`.
 - Do not turn capture on in production yet. Tell the user it needs their review of stored cases first.
 
 ## 3. Name user actions (web apps)
@@ -62,8 +72,16 @@ template>` from the router, so the name is never sent. Give each button, form an
 ```
 
 Names are `<area>.<verb>`, lowercase. Name form controls after the API body's keys (`name="title"`), so the `ui`
-replay can fill and submit the form. Add `"actions"` to `lint.packs` so new elements without a name are reported;
-baseline the existing ones.
+replay can fill and submit the form. Turn on the `actions` pack so new elements without a name are reported. A
+`lint.packs` list replaces the default one, so list the defaults with it:
+
+```yaml
+lint:
+  packs: [tests, slop, security, state, async, react, next, design, types, validation, naming, globals, ui, orm, query, workers, supabase, server, start, payments, auth, swift, actions]
+```
+
+Then baseline the existing ones with `npx intersite lint --write=init`, after checking that `npx intersite lint`
+reports nothing but the new pack's findings (`--write=init` records every current finding).
 
 ## 4. Write the replay adapter
 
@@ -83,7 +101,9 @@ In one terminal, keep a collector running:
 npx intersite collector
 ```
 
-Start the project's dev server, click through a few flows, then:
+Set `replay.target` in `intersite.yml` to the dev server's URL if it is not `http://localhost:8787` (for the `ui`
+mode, `replay.uiTarget` to the URL its pages are served from). Start the project's dev server, click through a few
+flows, then:
 
 ```bash
 npx intersite actions
@@ -103,8 +123,9 @@ Any key whose kept values look like names, handles or free text goes in `capture
 whose values came out as `text-…` fakes (such as `sortBy`) goes in `capture.keepKeys`. Show the user this
 output; they decide when capture is safe for production.
 
-Set `replay.target` in `intersite.yml` to the dev server's URL if it is not `http://localhost:8787`. Fix adapter
-problems until sessions pass or are skipped for a stated reason.
+Fix adapter problems until sessions pass or are skipped for a stated reason. A replayed session runs as the user
+`signIn` returns, so a case recorded for one user that another user's data would answer differently (a 404 that is
+now a 200) points at the adapter, not the code.
 
 ## 6. Report
 

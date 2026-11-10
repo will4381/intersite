@@ -6,8 +6,14 @@ import { defineRule } from "@oxlint/plugins";
 /** A line that reads as code: ends like a statement or opens/closes a block, or starts with a keyword. */
 const codeEnd = /(?:[;{}[(,]|=>|\)|\]|\*\/)$/;
 const codeStart = /^(?:(?:const|let|var|if|for|while|return|import|export|function|await|async|class|try|catch|else|switch|case|throw|new|break|continue|interface|type|enum)\b[\s({]|[})\]]|<\/?[A-Za-z][\w.]*[\s/>]|\w+(?:\.\w+)*\(.*\);?$|@\w+\()/;
-/** Documentation that shows code on purpose. */
-const documented = /@example|```|^\s*(?:e\.g\.|for example|usage|examples?)\b[^\n]*:\s*$|SPDX-License-Identifier|copyright \(c\)|licensed under/im;
+/** Documentation that shows code on purpose, including a block under a prose heading such as `Renders:` or `Response shape:`. */
+const documented = /@example|```|^\s*(?:e\.g\.|for example|usage|examples?)\b[^\n]*:\s*$|SPDX-License-Identifier|copyright \(c\)|licensed under|^[A-Z][\w ,'()/-]*:$/im;
+/** A JSX element: opens with a tag and ends with a closing or self-closing tag. Its text children are not code-shaped. */
+const jsxOpen = /^<[A-Za-z][\w.]*(?:[\s/>]|$)/;
+const jsxClose = /(?:\/>|<\/[A-Za-z][\w.]*>)$/;
+
+/** @param {string[]} text trimmed, non-empty lines */
+const isJsx = (text) => jsxOpen.test(text[0]) && jsxClose.test(text.at(-1) ?? "") && text.filter((l) => /^<\/?[A-Za-z]/.test(l)).length >= 2;
 
 /**
  * True when the text compiles as JavaScript in one of the shapes commented-out code takes: statements (possibly
@@ -43,6 +49,7 @@ const stripTypes = (code) =>
 export function isCode(lines) {
   const text = lines.map((l) => l.trim()).filter(Boolean);
   if (text.length < 3 || documented.test(text.join("\n"))) return false;
+  if (isJsx(text)) return true;
   const code = text.filter((l) => codeEnd.test(l) || codeStart.test(l)).length;
   if (code < 3 || code / text.length < 0.75) return false;
   const joined = text.join("\n");
@@ -51,6 +58,7 @@ export function isCode(lines) {
 
 export const id = "no-commented-out-code";
 export const pack = "slop";
+export const ext = "tsx";
 
 export const rule = defineRule({
   meta: {
@@ -92,6 +100,8 @@ export const bad = [
   "/*\nfunction legacyTotal(items) {\n  return items.reduce((a, b) => a + b, 0);\n}\n*/\nexport const total = 1;",
   "export async function load(id: string) {\n  // const user: User = await db.get(id);\n  // if (!user) throw new NotFound(id);\n  // return user;\n  return db.find(id);\n}",
   "export const routes = {\n  home: '/',\n  // settings: '/settings',\n  // billing: '/billing',\n  // admin: '/admin',\n};",
+  "export const Page = () => (\n  <main>\n    {/*\n    <Header />\n    <Nav items={items} />\n    <Footer />\n    */}\n  </main>\n);",
+  "export const Page = () => null;\n// <Button onClick={save}>\n//   Save\n// </Button>",
 ];
 
 export const good = [
@@ -100,5 +110,6 @@ export const good = [
   "// Usage:\n//   const capture = createCapture({ project });\n//   await capture.record({ request });\n//   return response;\nexport const usage = 1;",
   "// Copyright (c) 2026 Acme Inc.\n// Licensed under the MIT License.\n// See LICENSE in the project root.\nexport const x = 1;",
   "//  request ──► capture ──► collector\n//                │\n//                └──► replay\nexport const flow = 1;",
+  "// Renders:\n// <ul>\n//   <li>item</li>\n// </ul>\nexport const List = () => null;",
   "// When the user is signed out (no session), we redirect to /login;\n// otherwise the page renders the dashboard (see Shell);\n// both paths log the visit.\nexport const y = 1;",
 ];

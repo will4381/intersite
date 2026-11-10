@@ -1,7 +1,7 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { FUNCTIONS, isTestFile } from "../shared.mjs";
+import { FUNCTIONS, isGenerated, isTestFile } from "../shared.mjs";
 
 const LIMIT = 80;
 /** Statements, not lines: a long data table, object literal or JSX tree is one statement and costs nothing. */
@@ -32,8 +32,8 @@ export const rule = defineRule({
     return {
       before() {
         counts = new Map();
-        // Test files are long sequences of setup and assertions by nature.
-        return !isTestFile(context);
+        // Test files are long sequences of setup and assertions by nature; generated code is the generator's to shape.
+        return !isTestFile(context) && !isGenerated(context);
       },
       ...Object.fromEntries(STATEMENTS.map((type) => [type, count])),
       "Program:exit"() {

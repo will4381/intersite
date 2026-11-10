@@ -60,3 +60,11 @@ test("indexes and answers on 3,000 files and reports its CPU time", async (t) =>
   assert.equal(code, 1);
   assert.match(out[0], /^src\/new\.ts:2 repeats src\/m12\/f1234\.ts:6 \(10 lines\)/);
 });
+
+test("a block pasted into a path with spaces and non-ASCII letters is found, as git quotes such paths", async () => {
+  const r = repo({ "src/util.mjs": util });
+  r.write({ "src/Composants ü/prix copy.mjs": `export const a = 1;\n\n${helper}` });
+  const { code, out } = await run(r.cwd, ["duplicates"]);
+  assert.equal(code, 1);
+  assert.match(out[0], /^src\/Composants ü\/prix copy\.mjs:3 repeats src\/util\.mjs:3 \(8 lines\)/);
+});

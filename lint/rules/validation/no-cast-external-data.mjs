@@ -1,7 +1,7 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { calleeName, constInit, enclosingFunction, isEnvRead, isParamGet, isRequestInput, isRequestPart, isStorageRead, notShipped, unwrap, validatedRoute } from "../shared.mjs";
+import { calleeName, constInit, enclosingFunction, isEnvRead, isParamGet, isRequestInput, isRequestPart, isStorageRead, notShipped, receiverName, unwrap, validatedRoute } from "../shared.mjs";
 
 // Types that claim nothing about the shape: the honest result of reading outside data.
 const HONEST = /^(unknown|any|const|JsonValue|JSONValue|Json|JsonObject)$/;
@@ -103,6 +103,18 @@ export const rule = defineRule({
       TSTypeAssertion(node) {
         check(node, node.expression, node.typeAnnotation);
       },
+      // `JSON.parse(raw) satisfies Config`: any satisfies every type, so nothing is checked.
+      TSSatisfiesExpression(node) {
+        check(node, node.expression, node.typeAnnotation, true);
+      },
+      // A cast written as a type argument: `res.json<User>()`, `axios.get<User[]>(url)`, `$fetch<User>(url)`.
+      CallExpression(node) {
+        const type = /** @type {any} */ (node).typeArguments?.params?.[0] ?? /** @type {any} */ (node).typeParameters?.params?.[0];
+        if (!type || !claimed(type)) return;
+        const name = calleeName(node);
+        const http = (name === "json" && !node.arguments.length) || (/^(get|post|put|patch|delete|request)$/.test(name) && /^(axios|http|api|client|instance|ky)$/i.test(receiverName(node))) || /^(\$fetch|ofetch)$/.test(name);
+        if (http) context.report({ node, messageId: "cast", data: { source: "a JSON body" } });
+      },
       // const user: User = await res.json();
       VariableDeclarator(node) {
         const type = /** @type {any} */ (node.id).typeAnnotation?.typeAnnotation;
@@ -130,6 +142,9 @@ export const bad = [
   "async function load() { const user: User = await (await fetch('/api/me')).json(); return user; }",
   "export async function POST(request: Request) { const body = await request.json(); const input = body as CreatePost; return save(input); }",
   "function getUser(): Promise<User> { return fetch('/api/me').then((r) => r.json() as Promise<User>); }",
+  "const { data } = await axios.get<User[]>('/api/users');",
+  "const user = await res.json<User>();",
+  "const config = JSON.parse(raw) satisfies Config;",
 ];
 
 export const good = [
@@ -147,4 +162,6 @@ export const good = [
   "app.post('/hook', (req, res) => { const raw = req.body as string; verify(raw, req.headers['stripe-signature']); res.end(); });",
   "app.get('/events', { schema: { querystring: Query } }, async (request) => list(request.query.kinds as Kind[]));",
   "export async function POST(request: Request) { const body = await request.json(); const input = parseCreatePost(body) as CreatePost; return save(input); }",
+  "const { data } = await axios.get<unknown>('/api/users');",
+  "const user = UserSchema.parse(await res.json<unknown>());",
 ];

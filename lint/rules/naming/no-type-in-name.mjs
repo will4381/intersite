@@ -40,12 +40,20 @@ export const rule = defineRule({
     },
   },
   createOnce(context) {
+    /** Whether `name` is also bound where `id` is (`idStr` beside `id`): then the suffix tells two values apart. @param {any} id @param {string} name */
+    const beside = (id, name) => {
+      for (let scope = context.sourceCode.getScope(id); scope; scope = scope.upper) if (scope.set.has(name)) return true;
+      return false;
+    };
     /** @param {any} id @param {any} init */
     function check(id, init) {
       const m = id?.type === "Identifier" ? SUFFIX.exec(id.name) : null;
       if (!m || FORMAT.test(m[1])) return;
       const kind = KIND[/** @type {keyof typeof KIND} */ (m[2])];
-      if (kindOf(id, init) === kind) context.report({ node: id, messageId: "found", data: { name: id.name, kind, article: /^[ao]/.test(kind) ? "an" : "a", fixed: m[1] } });
+      if (kindOf(id, init) !== kind || beside(id, m[1])) return;
+      // An array is named for its items: resultArray -> results.
+      const fixed = kind === "array" && !m[1].endsWith("s") ? `${m[1]}s` : m[1];
+      context.report({ node: id, messageId: "found", data: { name: id.name, kind, article: /^[ao]/.test(kind) ? "an" : "a", fixed } });
     }
     return {
       before: () => !isTestFile(context),
@@ -73,4 +81,5 @@ export const good = [
   "export const userObject = load();",
   "export function readString(input: string) { return input; }",
   "export const phoneNumber = '555-0100';",
+  "export function label(id: number) {\n  const idStr: string = String(id);\n  return id > 0 ? idStr : '';\n}",
 ];

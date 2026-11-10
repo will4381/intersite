@@ -4,7 +4,7 @@
 import { readFileSync, statSync } from "node:fs";
 import { join, posix } from "node:path";
 
-import { listFiles, matches, parseNameStatus, resolveBase, topLevel, workingDiff } from "./lib.mjs";
+import { listFiles, matches, parseNameStatus, patchPath, resolveBase, topLevel, workingDiff } from "./lib.mjs";
 
 // ponytail: Go and Swift link every file of a package or module without naming it, so they are not checked; a
 // per-language symbol table if that matters
@@ -15,7 +15,8 @@ const CORPUS = /\.(?:[cm]?[jt]sx?|py|rb|go|rs|java|kts?|swift|c|h|cc|cpp|hpp|cs|
 // ponytail: a file counts as referenced when any other file quotes its stem, so a generic stem (`utils`, `types`) is
 // always referenced and never reported; resolve each import to a path if those misses matter
 const QUOTED_ONLY = /\.(?:[cm]?[jt]sx?|vue|svelte|astro|css|scss)$/;
-const SKIP = /(?:^|\/)(?:node_modules|dist|build|out|vendor|coverage|generated|__generated__)\/|\.min\.|(?:^|\/)(?:package-lock\.json|pnpm-lock\.yaml|yarn\.lock)$/;
+// Intersite's own config and baseline name files only to acknowledge or baseline them, which is not a use.
+const SKIP = /(?:^|\/)(?:node_modules|dist|build|out|vendor|coverage|generated|__generated__)\/|\.min\.|(?:^|\/)(?:package-lock\.json|pnpm-lock\.yaml|yarn\.lock|intersite\.(?:ya?ml|json)|intersite-baseline\.json)$/;
 const MAX_BYTES = 1024 * 1024;
 // Loaded by convention, never imported: folders that route by file name, entry names, dotfiles, configs, types,
 // tests and fixtures, and components/ui, where kits like shadcn/ui add whole components at once.
@@ -97,9 +98,8 @@ function patchLines(patch) {
   for (const line of patch.split("\n")) {
     if (line.startsWith("diff --git ")) header = true;
     else if (line.startsWith("@@")) header = false;
-    // ponytail: paths with spaces or quotes come quoted by git and are not unquoted, use -z output if that matters
-    else if (header && line.startsWith("--- ")) minus = line === "--- /dev/null" ? undefined : removed.set(line.slice(6), []).get(line.slice(6));
-    else if (header && line.startsWith("+++ ")) plus = line === "+++ /dev/null" ? undefined : added.set(line.slice(6), []).get(line.slice(6));
+    else if (header && line.startsWith("--- ")) minus = line === "--- /dev/null" ? undefined : removed.set(patchPath(line), []).get(patchPath(line));
+    else if (header && line.startsWith("+++ ")) plus = line === "+++ /dev/null" ? undefined : added.set(patchPath(line), []).get(patchPath(line));
     else if (!header && line.startsWith("+")) plus?.push(line.slice(1));
     else if (!header && line.startsWith("-")) minus?.push(line.slice(1));
   }

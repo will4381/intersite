@@ -2,7 +2,7 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { collectorTokens, loadConfig } from "../shared/config.mjs";
+import { collectorTokens, loadConfig, useServedCollector } from "../shared/config.mjs";
 
 const LOCAL = /^(?:localhost|127\.0\.0\.1)$/;
 
@@ -32,7 +32,10 @@ export async function ensureLocalCollector(cwd) {
   const { startNodeCollector } = await import("../collector/node.mjs");
   mkdirSync(join(cwd, ".intersite"), { recursive: true });
   const tokens = collectorTokens(config);
-  const options = { port: Number(url.port), dbPath: join(cwd, ".intersite/cases.db"), ingestToken: tokens.ingest, readToken: tokens.read, dailyCap: config.collector.dailyCap };
-  // If it cannot start (the port is held by something else), the command reports the unreachable collector itself.
-  return startNodeCollector(options).then((running) => running.stop, () => nothing);
+  // A free port of its own, not the configured one: two commands at once must not share a collector that the first to
+  // finish would stop under the other. SQLite lets each open the same file.
+  const options = { port: 0, dbPath: join(cwd, ".intersite/cases.db"), ingestToken: tokens.ingest, readToken: tokens.read, dailyCap: config.collector.dailyCap };
+  const running = await startNodeCollector(options);
+  useServedCollector(running.url);
+  return running.stop;
 }

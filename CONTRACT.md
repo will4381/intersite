@@ -35,13 +35,17 @@ Agents read this output, and every line costs them context.
 - Success is one line: `ok <command>: <counts>`.
 - A finding is one line: what and where, then `| rerun: <exact command>` when a narrower rerun exists.
 - Nothing decorative: no banners, colours, progress bars or blank lines. `--json` prints structured data instead.
-- Exit 0 pass, 1 findings, 2 usage or setup error. A setup error is one line on stderr that says what to do.
+- Exit 0 pass, 1 findings, 2 usage or setup error. A setup error is one line on stderr that says what to do. An
+  unexpected error is also one line and exit 2; `INTERSITE_DEBUG=1` prints the stack.
+- `check` prints only its stages' findings and its own line; `skip <stage>: <why>` lines may come before it.
 
 ## Config: `intersite.yml`
 
 One optional file at the project root, described by `intersite.schema.json`, loaded with `loadConfig(cwd)` from
 `shared/config.mjs`, which fills defaults. With no file every default applies and the project is named after its
-package, so each command works in a fresh checkout. `intersite.json` is still read, since JSON is valid YAML. Secrets are never in it; it names the environment variables that hold
+package, so each command works in a fresh checkout. `intersite.json` is still read, since JSON is valid YAML.
+Commands other than `init` use the nearest folder at or above the working directory that holds the config, no
+higher than the repository top. `captureOptions(cwd)` returns `{ project, ...capture }` for `createCapture`. Secrets are never in it; it names the environment variables that hold
 them, and `collectorTokens(config)` reads them, falling back to `local-read` and `local-ingest`, the tokens the
 local collector accepts.
 
@@ -117,12 +121,14 @@ Rules the collector enforces:
 All SQL lives in `collector/store.mjs`, written against the D1 interface. Locally, `intersite collector` runs the
 same routes and store in Node over `node:sqlite` through a small D1-shaped wrapper, listening on 127.0.0.1 only and
 accepting the tokens `local-ingest` and `local-read` unless the token environment variables are set. Its database is
-`.intersite/cases.db`. A command that reads cases (`check`, `replay`, `actions`, `pin`) serves that file itself for
+`.intersite/cases.db`. A command that reads cases (`check`, `replay`, `actions`, `pin`) serves that file itself, on a free port of its own, for
 the length of the command when the configured collector is local and nothing is listening.
 
 ## Gates
 
-Each gate looks at the change between `gates.base` and the working tree (uncommitted work included).
+Each gate looks at the change between `gates.base` and the working tree (uncommitted work included). The default
+base falls back from `origin/main` to `origin/HEAD`, `origin/master`, `main`, `master`; with no commits the change
+is compared with an empty tree. Untracked `node_modules` and `.intersite` are never part of a change.
 `intersite gate <name> [--base <ref>]` runs one; `intersite check` runs those in `gates.run`.
 
 | Gate | Fails when |
@@ -162,7 +168,9 @@ export const invariants = [{ name: "ledger balances", async check({ target, fetc
 UI cases are skipped by every mode except `ui`.
 
 - `baseline`: replay each session in order; a step passes when the status equals the recorded status and
-  `shapeDiff(recorded, replayed)` is undefined. Then run the adapter's invariants.
+  `shapeDiff(recorded, replayed)` is undefined. A step recorded with a 5xx is the reverse: it fails
+  (`still fails as production did`) on a 5xx or no answer, and passes once the answer is below 500. A dropped
+  connection is status 0 (`got no answer (<code>)`). `--json --verbose` adds the `recorded` request. Then run the adapter's invariants.
 - `twice`: send each non-GET request a second time; the second answer must not be a 5xx.
 - `cross-tenant`: send each request that names an ID as `signIn(kind, { other: true })`; the answer must be 401, 403
   or 404. A request with no ID (a create in the caller's own account) is not checked, and `anonymous` cases are skipped.

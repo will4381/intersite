@@ -13,7 +13,8 @@ const NAMED = /^(?:white|black|red|green|blue|yellow|orange|purple|pink|gray|gre
  * @param {string} value
  */
 const colorIn = (value) => {
-  const bare = withoutVars(value).replace(/[a-z]+\([\s_]*(?:\/[\s_]*[\d.]+%?)?[\s_]*\)/gi, "");
+  // url(/sprite.svg#add) holds a fragment, not a colour.
+  const bare = withoutVars(value).replace(/url\([^)]*\)/gi, "").replace(/[a-z]+\([\s_]*(?:\/[\s_]*[\d.]+%?)?[\s_]*\)/gi, "");
   return HEX.exec(bare)?.[0] ?? COLOR_FN.exec(bare)?.[0].replace("(", "()");
 };
 
@@ -39,7 +40,8 @@ export const rule = defineRule({
         tokens = examples(colorVars);
       },
       ...eachClass(/\[/, (utility, word, node) => {
-        const [, value] = arbitrary(utility) ?? (/^\[[a-z-]+:(.+)\]$/.exec(utility) ?? []);
+        // `[--brand:#0af]` defines a custom property, as a `--brand` key in a style object does.
+        const [, value] = arbitrary(utility) ?? (/^\[(?!--)[a-z-]+:(.+)\]$/.exec(utility) ?? []);
         if (value && colorIn(value)) report(node, word);
       }),
       ...eachStyleObject(context, (object) => {
@@ -69,6 +71,7 @@ export const good = [
   "export const Fill = ({ hue }: { hue: string }) => <div style={{ background: hue, color: 'var(--fg, #111)' }} />;",
   'export const Swatch = () => <svg><circle fill="#ff0000" r="4" /></svg>;',
   "export const Clear = () => <div style={{ background: 'transparent', color: 'currentColor', '--accent': '#0af' }} />;",
+  'export const Icon = () => <i className="bg-[url(/sprite.svg#add)] [--accent:#0af]" />;',
   'export const TAGS = { vip: "#22c55e" };',
   "export const OgCard = () => <div style={{ display: 'flex', background: '#ffffff', color: '#111827' }}>Lucra</div>;",
 ];

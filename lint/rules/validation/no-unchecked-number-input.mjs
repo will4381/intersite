@@ -1,7 +1,7 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { calleeName, constInit, isEnvRead, isRequestInput, notShipped, unwrap } from "../shared.mjs";
+import { calleeName, constInit, isEnvRead, isRequestValue, notShipped, unwrap } from "../shared.mjs";
 
 // Calls that catch NaN: the standard checks, an allowlist lookup (WIDTHS.includes(w)), helpers named for checking.
 const NAN_CHECK = /^(isNaN|isFinite|isInteger|isSafeInteger|includes|has)$|valid|assert|check|clamp|ensure|require/i;
@@ -16,7 +16,7 @@ function operand(node) {
 /** Request input or an environment variable, read here or through a `const` alias. @param {any} node @param {any} sourceCode */
 function isInput(node, sourceCode) {
   // A NaN port fails loudly at listen(), so PORT variables are left alone.
-  const source = (/** @type {any} */ n) => isRequestInput(n) || (isEnvRead(n) && !(n.property.name ?? "").endsWith("PORT"));
+  const source = (/** @type {any} */ n) => isRequestValue(n) || (isEnvRead(n) && !(n.property.name ?? "").endsWith("PORT"));
   node = operand(node);
   if (source(node)) return true;
   const init = constInit(node, sourceCode);
@@ -85,6 +85,7 @@ export const bad = [
   "const maxPerMinute = Number(process.env.RATE_LIMIT); if (count > maxPerMinute) throw new TooManyRequests();",
   "app.post('/pay', async (req, res) => { const { amount } = req.body; await charge(parseFloat(amount)); res.end(); });",
   "app.get('/x', (req, res) => { const raw = req.query.n; res.json(compute(Number(raw))); });",
+  "app.get('/x', (c) => { const page = parseInt(c.req.query('page')!); return c.json(list(page)); });",
 ];
 
 export const good = [

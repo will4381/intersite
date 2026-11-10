@@ -19,10 +19,13 @@ const testHelper = /(?:^|\/)(?:test|tests|__mocks__|mocks?|__fixtures__|fixtures
 /** @param {any} node */
 const isBoolean = (node) => node?.type === "Literal" && typeof node.value === "boolean";
 
-/** `useState(false)` or `React.useState(true)`. @param {any} node */
+/** A reactive cell: React's useState, Solid's createSignal, Vue's ref, Svelte's $state, Preact and Angular signals. */
+const stateHook = /^(?:useState|createSignal|ref|shallowRef|signal|\$state)$/;
+
+/** `useState(false)`, `React.useState(true)`, `ref(false)`, `createSignal(false)`. @param {any} node */
 const isBooleanState = (node) =>
   node?.type === "CallExpression" &&
-  (node.callee.name === "useState" || node.callee.property?.name === "useState") &&
+  stateHook.test(node.callee.name ?? node.callee.property?.name ?? "") &&
   isBoolean(node.arguments[0]);
 
 export const id = "no-boolean-state-cluster";
@@ -63,12 +66,14 @@ export const rule = defineRule({
       VariableDeclarator(node) {
         if (isBooleanState(node.init) && node.id.type === "ArrayPattern" && node.id.elements[0]?.type === "Identifier") {
           flag(enclosingFunction(node), node, node.id.elements[0].name, true);
+        } else if (isBooleanState(node.init) && node.id.type === "Identifier") {
+          flag(enclosingFunction(node), node, node.id.name, true);
         } else if (isBoolean(node.init) && node.id.type === "Identifier" && node.parent.kind !== "const") {
           flag(enclosingFunction(node), node, node.id.name, false);
         }
       },
       PropertyDefinition(node) {
-        if (isBoolean(node.value) && node.key.type === "Identifier") flag(node.parent, node, node.key.name, false);
+        if (isBoolean(node.value) && (node.key.type === "Identifier" || node.key.type === "PrivateIdentifier")) flag(node.parent, node, node.key.name, false);
       },
       Property(node) {
         if (isBoolean(node.value) && node.key.type === "Identifier") flag(node.parent, node, node.key.name, false);
@@ -89,6 +94,9 @@ export const bad = [
   "export function load() {\n  let isLoading = true;\n  let hasLoaded = false;\n  let isError = false;\n  return fetch('/x').then(() => { isLoading = false; hasLoaded = true; }, () => { isError = true; });\n}",
   "export class Form {\n  submitting = false;\n  submitted = false;\n  submitError = false;\n}",
   "export const initial = { loading: false, saved: false, failed: false };",
+  "export function useSave() {\n  const isLoading = ref(false);\n  const isSaving = ref(false);\n  const hasError = ref(false);\n  return { isLoading, isSaving, hasError };\n}",
+  "export function Upload() {\n  const [uploading, setUploading] = createSignal(false);\n  const [failed, setFailed] = createSignal(false);\n  const [done, setDone] = createSignal(false);\n  return null;\n}",
+  "export class Form {\n  #submitting = false;\n  #submitted = false;\n  #submitError = false;\n}",
 ];
 
 export const good = [
@@ -97,5 +105,6 @@ export const good = [
   "export function Save() {\n  const [status, setStatus] = useState('idle');\n  const [open, setOpen] = useState(false);\n  return null;\n}",
   "export const options = { enabled: true, retry: false, refetchOnWindowFocus: false };",
   "export function Booking() {\n  const [isEditMode, setIsEditMode] = useState(false);\n  const [canProceed, setCanProceed] = useState(false);\n  const [termsAccepted, setTermsAccepted] = useState(false);\n  const [previewFailed, setPreviewFailed] = useState(false);\n  const [submitting, setSubmitting] = useState(false);\n  return null;\n}",
+  "export function Menu() { const [, setOpen] = useState(false); const [ready] = useState(); return ready; }",
   "export function A() { const [saving, setSaving] = useState(false); return null; }\nexport function B() { const [failed, setFailed] = useState(false); return null; }\nexport function C() { const [done, setDone] = useState(false); return null; }",
 ];

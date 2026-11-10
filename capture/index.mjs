@@ -17,7 +17,9 @@
  *   },
  * };
  *
- * @example Fastify (plain objects; `payload` is the serialized body)
+ * @example Fastify (plain objects; `payload` is the serialized body). In Node, `captureOptions()` from
+ * "intersite/shared/config" supplies `project` and intersite.yml's `capture` section (exclude, redactKeys, keepKeys).
+ * const capture = createCapture({ ...captureOptions(), url: process.env.INTERSITE_URL, token: process.env.INTERSITE_INGEST_TOKEN, release: process.env.RELEASE });
  * fastify.addHook("onSend", async (request, reply, payload) => {
  *   capture.record({ request: { method: request.method, url: request.url, headers: request.headers, body: request.body },
  *     response: { status: reply.statusCode, headers: reply.getHeaders(), body: payload },
@@ -324,8 +326,9 @@ export function createCapture(options) {
 
     /** @param {Promise<unknown>} build A case, or undefined to drop it. @returns {Promise<void>} */
     function enqueue(build) {
-      // oxlint-disable-next-line intersite/no-empty-catch -- a case that fails to build is dropped, never surfaced
-      const item = build.then((value) => (caseProblem(value) ? undefined : value)).catch(() => undefined);
+      // A case that fails to build is dropped, never surfaced: capture must not disturb the request it observes.
+      const dropped = () => undefined;
+      const item = build.then((value) => (caseProblem(value) ? undefined : value)).catch(dropped);
       return new Promise((done) => {
         queue.push({ item, done: () => done(undefined) });
         if (queue.length >= MAX_BATCH) flush();

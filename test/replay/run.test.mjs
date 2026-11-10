@@ -1,5 +1,6 @@
 // @ts-check
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import { afterEach, beforeEach, test } from "node:test";
 
 import { replaySessions } from "../../replay/run.mjs";
@@ -159,4 +160,30 @@ test("--concurrency runs sessions at once, each with its own ID map, and one at 
   const serial = spyFetch();
   await replaySessions({ sessions, target: target.url, adapter, modes: ["baseline"], idPattern: DEFAULT_ID_PATTERN, fetch: serial.spy, concurrency: 6 });
   assert.equal(serial.most(), 1);
+});
+
+test("a request the server drops (it crashed or hung up) fails its step instead of aborting the run", async () => {
+  const dropping = createServer((request) => request.socket.destroy());
+  await new Promise((done) => dropping.listen(0, "127.0.0.1", () => done(undefined)));
+  const url = `http://127.0.0.1:${/** @type {import("node:net").AddressInfo} */ (dropping.address()).port}`;
+  try {
+    const cases = [recorded({ id: "c1", session: "s", seq: 1, method: "POST", route: "/notes", path: "/notes", body: { text: "hi" }, status: 201, json: {} })];
+    const [result] = await replaySessions({ sessions: [{ session: "s", cases }], target: url, adapter: { signIn: async () => ({}) }, modes: ["baseline", "twice"], idPattern: DEFAULT_ID_PATTERN });
+    const [baseline, twice] = result.steps.map((step) => `${step.mode} ${step.result} ${step.reason}`);
+    assert.match(baseline, /^baseline failed status recorded 201, got no answer \(\w+\)$/);
+    assert.equal(twice, "twice failed second send got 0, first got 0");
+    assert.equal(result.steps.length, 2);
+  } finally {
+    dropping.close();
+  }
+});
+
+test("a server error production recorded fails while it still happens and passes once fixed, whatever the fixed answer", async () => {
+  const [create, , , archive] = notesSession();
+  // Production archived the note twice, and the second time crashed.
+  const again = { ...recorded({ id: "s-notes-5", session: "s-notes", seq: 1005, method: "POST", route: "/notes/:id/archive", path: "/notes/note_prodA1/archive", status: 500, json: { error: "already archived" } }) };
+  target.bugs.add("twice");
+  assert.deepEqual(failures(await replay([create, archive, again])), ["baseline s-notes-5 still fails as production did: status recorded 500, got 500"]);
+  target.bugs.clear();
+  assert.deepEqual(failures(await replay([create, archive, again])), [], "fixed: the second archive no longer crashes");
 });

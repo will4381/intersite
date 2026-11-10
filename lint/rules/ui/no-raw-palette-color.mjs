@@ -2,11 +2,25 @@
 import { defineRule } from "@oxlint/plugins";
 
 import { eachClass, skipFile } from "./classes.mjs";
-import { designSystem, examples } from "./project.mjs";
+import { designSystem } from "./project.mjs";
 
 const PALETTE = "slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose";
 const HINT = new RegExp(`-(?:${PALETTE})-\\d`);
-const RAW = new RegExp(`^(?:bg|text|border(?:-[trblxyse])?|ring(?:-offset)?|outline|divide|fill|stroke|from|via|to|decoration|placeholder|caret|accent|shadow)-(?:${PALETTE})-(?:50|[1-9]00|950)(?:/\\d+)?$`);
+const RAW = new RegExp(`^(bg|text|border(?:-[trblxyse])?|ring(?:-offset)?|outline|divide|fill|stroke|from|via|to|decoration|placeholder|caret|accent|shadow)-(?:${PALETTE})-(?:50|[1-9]00|950)(?:/\\d+)?$`);
+
+const TEXT_NAME = /foreground|text|fg|ink|muted/;
+
+/**
+ * Three theme colours written with the same utility (`text-red-500` -> `text-foreground`), text-like names first for
+ * text utilities and the rest first for surfaces.
+ * @param {string} prefix @param {string[]} colors
+ */
+function suggest(prefix, colors) {
+  const names = colors.length ? colors : ["primary", "muted-foreground", "destructive"];
+  const textual = /^(?:text|placeholder|decoration|caret)$/.test(prefix);
+  const ranked = [...names.filter((n) => TEXT_NAME.test(n) === textual), ...names.filter((n) => TEXT_NAME.test(n) !== textual)];
+  return ranked.slice(0, 3).map((c) => `\`${prefix}-${c}\``).join(", ");
+}
 
 export const id = "no-raw-palette-color";
 export const pack = "ui";
@@ -16,19 +30,22 @@ export const rule = defineRule({
   meta: {
     type: "problem",
     messages: {
-      found: "`{{ value }}` is a raw Tailwind palette colour, but this project's theme names its colours{{ names }}. Use the semantic class (`bg-primary`, `text-muted-foreground`, `border-destructive`) so the colour follows the theme and dark mode; add a theme colour if none means this.",
+      found: "`{{ value }}` is a raw Tailwind palette colour, but this project's theme names its colours. Use the theme colour that means this ({{ names }}) so it follows the theme and dark mode; if none does, add one to the theme.",
     },
   },
   createOnce(context) {
-    let names = "";
+    /** @type {string[]} */
+    let colors = [];
     return {
       before() {
         const { themeColors, stylesheets } = designSystem(context.cwd);
-        if ((stylesheets && !themeColors.length) || skipFile(context)) return false;
-        names = examples(themeColors);
+        // Two names (create-next-app's background and foreground) are not a palette to move to.
+        if ((stylesheets && themeColors.length < 3) || skipFile(context)) return false;
+        colors = themeColors;
       },
       ...eachClass(HINT, (utility, word, node) => {
-        if (RAW.test(utility)) context.report({ node, messageId: "found", data: { value: word, names } });
+        const prefix = RAW.exec(utility)?.[1];
+        if (prefix) context.report({ node, messageId: "found", data: { value: word, names: suggest(prefix, colors) } });
       }),
     };
   },

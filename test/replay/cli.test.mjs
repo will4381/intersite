@@ -277,3 +277,32 @@ test("--mode ui with replay.browser lightpanda and no lightpanda on PATH exits 2
   assert.equal(run.stderr, "intersite replay: replay.browser lightpanda needs the lightpanda binary on PATH; install it with "
     + "curl -fsSL https://pkg.lightpanda.io/install.sh | bash (it goes to ~/.local/bin), or set replay.browserUrl to a running one\n");
 });
+
+test("with recorded sessions and nothing answering at the target, replay exits 2 with one line saying what to start", async () => {
+  const closed = createServer();
+  await new Promise((done) => closed.listen(0, "127.0.0.1", () => done(undefined)));
+  const port = /** @type {import("node:net").AddressInfo} */ (closed.address()).port;
+  await new Promise((done) => closed.close(done));
+  const run = await cli(["--target", `http://127.0.0.1:${port}`]);
+  assert.equal(run.code, 2);
+  assert.equal(run.stdout, "");
+  assert.equal(run.stderr, `intersite replay: nothing answers at http://127.0.0.1:${port}: start the project's server there, or point replay.target in intersite.yml (or --target) at it\n`);
+});
+
+test("an error thrown inside the adapter names the adapter file and function", async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "intersite-adapter-error-")));
+  writeFileSync(join(dir, "intersite.adapter.mjs"), 'export async function signIn() { return {}; }\nexport async function reset() { throw new Error("db down"); }\n');
+  writeFileSync(join(dir, "intersite.json"), JSON.stringify({ project: "demo", collector: { url: collector.url }, replay: { target: target.url } }));
+  const run = await cli(["--seed", "1"], dir);
+  assert.equal(run.code, 2);
+  assert.equal(run.stderr, "intersite replay: ./intersite.adapter.mjs reset: db down\n");
+});
+
+test("--json --verbose adds the recorded cases, so a bug can be reproduced from the request production saw", async () => {
+  const run = await cli(["--id", "s-b-3", "--json", "--verbose"]);
+  assert.equal(run.code, 0, run.stderr);
+  const { recorded: sessions } = JSON.parse(run.stdout);
+  assert.deepEqual(sessions[0].cases.map((/** @type {{ id: string }} */ item) => item.id), ["s-b-1", "s-b-2", "s-b-3"]);
+  assert.deepEqual(sessions[0].cases[2].request.body, { noteId: "note_prodA1", text: "c" });
+  assert.equal(JSON.parse((await cli(["--id", "s-b-3", "--json"])).stdout).recorded, undefined, "without --verbose the output stays small");
+});

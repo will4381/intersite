@@ -31,7 +31,8 @@ export const rule = defineRule({
     /** @param {any} id */
     function check(id) {
       if (id?.type !== "Identifier") return;
-      let scope = id.parent.parent;
+      // A function or class name belongs to the scope around the declaration, not inside it.
+      let scope = FUNCTIONS.has(id.parent.type) || id.parent.type === "ClassDeclaration" ? id.parent.parent : id.parent;
       while (scope && !FUNCTIONS.has(scope.type) && scope.type !== "ClassBody" && scope.type !== "Program") scope = scope.parent;
       const names = declared.get(scope) ?? new Map();
       if (!names.has(id.name)) names.set(id.name, id);
@@ -39,12 +40,21 @@ export const rule = defineRule({
       if (generic.has(id.name)) context.report({ node: id, messageId: "generic", data: { name: id.name } });
       else if (numbered.test(id.name)) context.report({ node: id, messageId: "numbered", data: { name: id.name } });
     }
+    /** Every name a declaration binds: `x`, `[a, b]`, `{ data: data2 }`, `{ a = 1, ...rest }`. @param {any} pattern */
+    function bind(pattern) {
+      if (pattern?.type === "Identifier") check(pattern);
+      else if (pattern?.type === "ArrayPattern") pattern.elements.forEach(bind);
+      else if (pattern?.type === "ObjectPattern") for (const p of pattern.properties) bind(p.type === "RestElement" ? p.argument : p.value);
+      else if (pattern?.type === "AssignmentPattern") bind(pattern.left);
+      else if (pattern?.type === "RestElement") bind(pattern.argument);
+    }
+
     return {
       before() {
         declared = new Map();
         return !isTestFile(context);
       },
-      VariableDeclarator: (node) => check(node.id),
+      VariableDeclarator: (node) => bind(node.id),
       FunctionDeclaration: (node) => check(node.id),
       ClassDeclaration: (node) => check(node.id),
       "MethodDefinition, PropertyDefinition": (node) => !node.computed && check(node.key),
@@ -68,6 +78,8 @@ export const bad = [
   "export const Button = () => null;\nexport const ButtonFixed = () => null;",
   "const data2 = rows.filter(Boolean);\nexport const finalResult2 = data2.length;",
   "export function processData(input: string[]) { return input; }",
+  "export async function load() { const [result1, result2] = await Promise.all([users(), teams()]); return [result1, result2]; }",
+  "export function read(o) { const { data: data2 } = o; return data2; }",
 ];
 
 export const good = [
@@ -81,4 +93,5 @@ export const good = [
   "export function markFixed(issue: Issue) { issue.state = 'fixed'; }",
   "export const lastUpdated = new Date();",
   "export const step2 = steps[1];",
+  "export function address(o) { const { line1, line2 } = o; return [line1, line2]; }",
 ];

@@ -2,7 +2,7 @@
 import { defineRule } from "@oxlint/plugins";
 
 import { enclosingFunction, walk } from "../shared.mjs";
-import { stateSetters } from "./hooks.mjs";
+import { isHookCall, stateSetters } from "./hooks.mjs";
 
 /** Methods whose result moves items to other positions as the inputs change. */
 const reorders = /^(?:filter|sort|toSorted|reverse|toReversed)$/;
@@ -13,6 +13,13 @@ const reordered = (n) => {
   for (; n?.type === "CallExpression" && n.callee.type === "MemberExpression"; n = n.callee.object) found ||= reorders.test(n.callee.property.name ?? "");
   // [a, b].filter(Boolean) is a fixed list with gaps closed; [...rows].sort() is not.
   return found && (n?.type !== "ArrayExpression" || n.elements.some((/** @type {any} */ e) => e?.type === "SpreadElement"));
+};
+
+/** What a `useMemo(() => …)` initializer computes (its expression body or final return), else the node itself. @param {any} n */
+const memoized = (n) => {
+  const body = isHookCall(n, /^useMemo$/) ? n.arguments[0]?.body : undefined;
+  if (!body) return n;
+  return body.type === "BlockStatement" ? body.body.at(-1)?.argument : body;
 };
 
 export const id = "no-index-key-on-changing-list";
@@ -51,7 +58,7 @@ export const rule = defineRule({
           // State only counts when it is set to a filtered or sorted copy (a removed todo); an appended log keeps its positions.
           const setter = [...stateSetters(component)].find(([, value]) => value === list.name)?.[0];
           walk(component.body, (n) => {
-            if (n.type === "VariableDeclarator" && n.id.type === "Identifier" && n.id.name === list.name && reordered(n.init)) why = "filtered or sorted";
+            if (n.type === "VariableDeclarator" && n.id.type === "Identifier" && n.id.name === list.name && reordered(memoized(n.init))) why = "filtered or sorted";
             if (setter && n.type === "CallExpression" && n.callee.name === setter) walk(n.arguments[0], (a) => void (reordered(a) && (why = "state that items are removed from or reordered in")));
           });
         }
@@ -64,6 +71,7 @@ export const rule = defineRule({
 export const bad = [
   "export function Todos() {\n  const [todos, setTodos] = useState([]);\n  return <ul>{todos.map((todo, i) => <Todo key={i} todo={todo} onRemove={() => setTodos(todos.filter((t) => t !== todo))} />)}</ul>;\n}",
   "export function Results({ items, query }) {\n  return <ul>{items.filter((item) => item.name.includes(query)).map((item, index) => <li key={index}>{item.name}</li>)}</ul>;\n}",
+  "export function Results({ items, query }) {\n  const visible = useMemo(() => items.filter((item) => item.name.includes(query)), [items, query]);\n  return <ul>{visible.map((item, i) => <li key={i}>{item.name}</li>)}</ul>;\n}",
   "export function Table({ rows, by }) {\n  const sorted = [...rows].sort((a, b) => a[by] - b[by]);\n  return <tbody>{sorted.map((row, i) => <Row key={`row-${i}`} row={row} />)}</tbody>;\n}",
 ];
 

@@ -13,8 +13,8 @@ export const rule = defineRule({
   },
   createOnce(context) {
     return {
-      // Generated declaration files (OpenAPI schemas, worker bindings) keep their generator's names.
-      before: () => !/\.d\.[cm]?ts$/.test(context.filename),
+      // Generated files (declaration files, OpenAPI schemas, database types, worker bindings) keep their generator's names.
+      before: () => !/\.d\.[cm]?ts$|(?:^|\/)generated\/|\.gen(?:erated)?\.[cm]?[jt]sx?$/.test(context.filename),
       "TSTypeAliasDeclaration, TSInterfaceDeclaration, TSEnumDeclaration, ClassDeclaration"(node) {
         const name = node.id?.name;
         if (!name || !/^[a-z]|[a-z0-9]_[A-Za-z]/.test(name)) return;

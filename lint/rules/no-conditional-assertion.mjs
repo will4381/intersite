@@ -1,26 +1,10 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { isAssertion, isTestCall } from "./require-assertion.mjs";
+import { counted, fails, isAssertion, isFail, isTestCall } from "./require-assertion.mjs";
 
 /** An assertion, a throw, or a fail call: a branch with one of these does not let the test pass silently. */
 const checks = /\b(?:expect|assert\w*|throw|should)\b|\.fail\(/;
-/** `expect.assertions(n)` makes the test fail when a conditional assertion is skipped. */
-const counted = /\bexpect\.(?:assertions|hasAssertions)\(/;
-
-/** @param {any} node */
-const isFail = (node) => node.callee.type === "MemberExpression" && node.callee.property.name === "fail";
-
-/**
- * True for `assert.fail()` or `throw`, possibly awaited, as a statement.
- * @param {any} statement
- */
-function fails(statement) {
-  if (statement.type === "ThrowStatement") return true;
-  let e = statement.type === "ExpressionStatement" ? statement.expression : undefined;
-  if (e?.type === "AwaitExpression") e = e.argument;
-  return e?.type === "CallExpression" && isFail(e);
-}
 
 export const id = "no-conditional-assertion";
 export const pack = "tests";
@@ -53,9 +37,16 @@ export const rule = defineRule({
           if (!checks.test(other ? text(other) : after(parent))) return true;
         }
         if (parent.type === "CatchClause" && !parent.parent.block.body.some(fails)) return true;
+        // `r.ok && expect(r.value)...`: the right side runs only when the left is truthy.
+        if (parent.type === "LogicalExpression" && child === parent.right) return true;
+        // A case runs only for its value, unless a default case checks the rest.
+        if (parent.type === "SwitchCase" && child !== parent.test && !switchChecksDefault(parent.parent)) return true;
       }
       return false;
     }
+
+    /** Whether the switch has a default case that asserts or fails. @param {any} node a SwitchStatement */
+    const switchChecksDefault = (node) => node.cases.some((/** @type {any} */ c) => !c.test && checks.test(c.consequent.map(text).join("\n")));
 
     /**
      * The statements after `node` in its block, as text, when the branch returns early: `if (x) return check(a);`
@@ -115,6 +106,9 @@ export const bad = [
   "it('lists', async () => { const body = await list(); expect(Array.isArray(body.items)).toBe(true); if (body.items.length > 0) { expect(body.items[0]).toHaveProperty('id'); } });",
   "it('hides', async () => { const other = await find(); if (other) { expect(ids).not.toContain(other.id); } });",
   "test('unrelated', () => { const r = run(); expect(r.count).toBe(1); if (r.ok) assert.equal(r.value, 1); });",
+  "test('short-circuits', () => { const r = run(); r.ok && expect(r.value).toBe(1); });",
+  "test('cases', () => { const r = run(); switch (r.kind) { case 'a': expect(r.a).toBe(1); break; } });",
+  "it.each([1, 2])('runs %i', (n) => { const r = run(n); if (r) expect(r).toBe(n); });",
 ];
 
 export const good = [
@@ -126,5 +120,7 @@ export const good = [
   "function check(user) { if (user) { expect(user.name).toBe('Ada'); } }",
   "it('refuses', () => { const r = schema.safeParse(input); expect(r.success).toBe(false); if (!r.success) expect(r.error.issues[0].message).toBe('required'); });",
   "test('narrows', () => { const d = gate(); assert.equal(d.skip, true); if (d.skip) { assert.equal(d.reason, 'consent'); } });",
+  "it('rejects', async () => { try { await parse('x'); expect.unreachable('parse should throw'); } catch (error) { expect(error.message).toBe('bad'); } });",
+  "test('kinds', () => { const r = run(); switch (r.kind) { case 'a': expect(r.a).toBe(1); break; default: assert.fail(r.kind); } });",
   "test('either', async () => { if (await empty.isVisible()) return expectEmpty(screen); await expect(table).toBeVisible(); });",
 ];

@@ -9,7 +9,7 @@ const isRequest = (node) =>
   node.type === "CallExpression" &&
   (node.callee.name === "fetch" || node.callee.name === "axios" || (node.callee.type === "MemberExpression" && node.callee.object.name === "axios"));
 
-/** Any sign the effect already guards against a stale response: an abort signal, an ignore/cancelled flag, a ref check. */
+/** Any name showing the effect already guards against a stale response: an abort signal, an ignore/cancelled flag, a ref check. */
 const guarded = /AbortController|signal|cancel|ignore|stale|active|mounted|alive|unmount|current|latest/i;
 
 export const id = "no-racy-effect-fetch";
@@ -33,13 +33,17 @@ export const rule = defineRule({
         const component = enclosingFunction(node);
         if (!component) return;
         const setters = stateSetters(component);
+        // ponytail: only requests written inside the effect; `useEffect(() => { load(); }, [id])` with `load` above it is missed
         let request = Infinity;
         let setAfter = false;
-        walk(callback.body, (n) => {
+        // Names only: `?active=1` in a URL is not a guard.
+        let isGuarded = false;
+        walk(callback, (n) => {
           if (isRequest(n)) request = Math.min(request, n.start);
           else if (n.type === "Identifier" && setters.has(n.name) && n.start > request) setAfter = true;
+          if (n.type === "Identifier") isGuarded ||= guarded.test(n.name);
         });
-        if (!setAfter || guarded.test(context.sourceCode.getText(callback))) return;
+        if (!setAfter || isGuarded) return;
         context.report({ node, messageId: "race", data: { deps: deps.elements.map((/** @type {any} */ d) => context.sourceCode.getText(d)).join(", ") } });
       },
     };
@@ -49,6 +53,7 @@ export const rule = defineRule({
 export const bad = [
   "export function User({ id }) {\n  const [user, setUser] = useState(null);\n  useEffect(() => {\n    fetch(`/api/users/${id}`).then((r) => r.json()).then(setUser);\n  }, [id]);\n  return <p>{user?.name}</p>;\n}",
   "export function Search({ query }) {\n  const [results, setResults] = useState([]);\n  useEffect(() => {\n    const load = async () => {\n      const res = await fetch('/api/search?q=' + query);\n      setResults(await res.json());\n    };\n    load();\n  }, [query]);\n  return <List items={results} />;\n}",
+  "export function Users({ id }) {\n  const [user, setUser] = useState(null);\n  useEffect(() => {\n    fetch(`/api/users?active=1&id=${id}`).then((r) => r.json()).then(setUser);\n  }, [id]);\n  return <p>{user?.name}</p>;\n}",
   "export function Orders({ customerId }) {\n  const [orders, setOrders] = React.useState([]);\n  React.useEffect(() => {\n    axios.get(`/orders/${customerId}`).then((res) => setOrders(res.data));\n  }, [customerId]);\n  return <List items={orders} />;\n}",
 ];
 

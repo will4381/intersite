@@ -6,6 +6,8 @@ import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, realpathSync,
 import { tmpdir } from "node:os";
 import { dirname, join, matchesGlob, relative, resolve } from "node:path";
 
+import { DEFAULT_BASE } from "../shared/config.mjs";
+
 /** A setup problem (bad ref, failing baseline): the CLI prints its message on one line and exits 2. */
 export class GateError extends Error {}
 
@@ -28,16 +30,40 @@ export function git(cwd, args, env) {
   return run.stdout;
 }
 
+/** git's empty tree: the base of a repository with no commits yet, against which every file is new. */
+export const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+/** Where the default base `origin/main` is looked for when a repository has no such ref: no remote, or another name. */
+const MAIN_LINES = ["origin/HEAD", "origin/master", "main", "master"];
+
+/** Whether this folder is inside a git work tree (false too when git is not installed). @param {string} cwd */
+export const inGit = (cwd) => spawnSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd, encoding: "utf8" }).stdout?.trim() === "true";
+
 /**
- * The merge-base of `base` and HEAD.
+ * The ref the gates compare with, as findings should name it: `base`, or for the default base the main line it fell
+ * back to, or the empty tree when there are no commits yet.
+ * @param {string} cwd @param {string} base
+ */
+export function baseName(cwd, base) {
+  if (!inGit(cwd)) throw new GateError("not a git repository: the gates compare a change with git history; run `git init`, or `intersite check` skips them");
+  /** @param {string} ref */
+  const exists = (ref) => spawnSync("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd }).status === 0;
+  if (!exists("HEAD")) return EMPTY_TREE;
+  const found = [base, ...(base === DEFAULT_BASE ? MAIN_LINES : [])].find(exists);
+  if (!found) throw new GateError(`base ref "${base}" not found: pass --base <ref> or set "gates.base" in intersite.yml, for example "main"`);
+  return found;
+}
+
+/**
+ * The merge-base of `base` and HEAD. The default base falls back to the repository's main line, and a repository
+ * with no commits compares against the empty tree, so the gates work in a fresh `git init`.
  * @param {string} cwd
  * @param {string} base
  */
 export function resolveBase(cwd, base) {
-  const ok = spawnSync("git", ["rev-parse", "--verify", "--quiet", `${base}^{commit}`], { cwd, encoding: "utf8" });
-  if (ok.status !== 0) throw new GateError(`base ref "${base}" not found: pass --base <ref> or set "gates.base" in intersite.yml, for example "main"`);
-  const mb = spawnSync("git", ["merge-base", base, "HEAD"], { cwd, encoding: "utf8" });
-  if (mb.status !== 0) throw new GateError(`base ref "${base}" shares no history with HEAD: pass --base <ref> or set "gates.base" in intersite.yml`);
+  const found = baseName(cwd, base);
+  if (found === EMPTY_TREE) return found;
+  const mb = spawnSync("git", ["merge-base", found, "HEAD"], { cwd, encoding: "utf8" });
+  if (mb.status !== 0) throw new GateError(`base ref "${found}" shares no history with HEAD: pass --base <ref> or set "gates.base" in intersite.yml`);
   return mb.stdout.trim();
 }
 
@@ -47,11 +73,17 @@ export function resolveBase(cwd, base) {
 export const topLevel = (cwd) => git(cwd, ["rev-parse", "--show-toplevel"]).trim();
 
 /**
+ * The whole repository except installed packages and Intersite's own data, which a project with no .gitignore leaves
+ * untracked and which are never part of a change.
+ */
+const WORK_TREE = [":(top)", ":(top,exclude,glob)**/node_modules/**", ":(top,exclude,glob)**/.intersite/**"];
+
+/**
  * Every tracked and untracked (not ignored) path, relative to the repository top. Tracked files deleted from the
  * working tree are still listed, so callers that read files check they exist.
  * @param {string} top
  */
-export const listFiles = (top) => [...new Set(git(top, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]).split("\0"))].filter(Boolean);
+export const listFiles = (top) => [...new Set(git(top, ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ...WORK_TREE]).split("\0"))].filter(Boolean);
 
 /**
  * Runs `git diff --cached <args>` for each args list against a throwaway index holding the whole working tree, so
@@ -61,6 +93,7 @@ export const listFiles = (top) => [...new Set(git(top, ["ls-files", "-z", "--cac
  */
 export function workingDiff(cwd, argsList) {
   const dir = mkdtempSync(join(tmpdir(), "intersite-index-"));
+  const forget = onInterrupt(() => rmSync(dir, { recursive: true, force: true }));
   try {
     const index = join(dir, "index");
     const real = resolve(cwd, git(cwd, ["rev-parse", "--git-path", "index"]).trim());
@@ -73,9 +106,10 @@ export function workingDiff(cwd, argsList) {
       utimesSync(index, atime, mtime);
     }
     const env = { ...process.env, GIT_INDEX_FILE: index };
-    git(cwd, ["add", "-A"], env);
+    git(cwd, ["add", "-A", "--", ...WORK_TREE], env);
     return argsList.map((args) => git(cwd, ["diff", "--cached", "--no-color", "--no-ext-diff", ...args], env));
   } finally {
+    forget();
     rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -105,6 +139,28 @@ export function parseNameStatus(out) {
   return list;
 }
 
+const ESCAPES = /** @type {Record<string, number>} */ ({ a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13, '"': 34, "\\": 92 });
+
+/**
+ * The path in a patch's `--- a/…` or `+++ b/…` line. git C-quotes a path holding a quote, backslash, control or
+ * non-ASCII byte (`"b/caf\303\251.js"`) and ends the line with a tab when the path holds a space.
+ * @param {string} line
+ */
+export function patchPath(line) {
+  const raw = line.slice(4).replace(/\t$/, "");
+  if (!raw.startsWith('"')) return raw.slice(2);
+  /** @type {number[]} */
+  const bytes = [];
+  for (let i = 1; i < raw.length - 1; i++) {
+    const octal = raw[i] === "\\" ? /^[0-7]{3}/.exec(raw.slice(i + 1))?.[0] : undefined;
+    if (octal) bytes.push(Number.parseInt(octal, 8));
+    else if (raw[i] === "\\") bytes.push(ESCAPES[raw[i + 1]] ?? raw.charCodeAt(i + 1));
+    else bytes.push(...Buffer.from(raw[i]));
+    if (raw[i] === "\\") i += octal ? 3 : 1;
+  }
+  return Buffer.from(bytes).toString("utf8").slice(2);
+}
+
 /**
  * New-file line numbers of the lines added in a `-U0` patch, per path.
  * @param {string} patch
@@ -118,8 +174,7 @@ export function addedLines(patch) {
   for (const text of patch.split("\n")) {
     if (text.startsWith("+++ ")) {
       current = text === "+++ /dev/null" ? undefined : new Set();
-      // ponytail: paths with spaces or quotes come quoted by git and are not unquoted, use -z output if that matters
-      if (current) added.set(text.slice(6), current);
+      if (current) added.set(patchPath(text), current);
     } else if (text.startsWith("@@")) {
       line = Number(/\+(\d+)/.exec(text)?.[1]);
     } else if (text.startsWith("+") && current) {
@@ -175,6 +230,33 @@ export function show(cwd, sha, path) {
  */
 export const matches = (path, globs) => globs.some((glob) => matchesGlob(path, glob));
 
+/** Cleanups that must run if the user interrupts: running test commands (own process groups) and temporary worktrees. */
+const pending = new Set();
+/** @param {NodeJS.Signals} signal */
+function interrupted(signal) {
+  for (const cleanup of [...pending].reverse()) cleanup();
+  process.exit(signal === "SIGINT" ? 130 : 143);
+}
+
+/**
+ * Runs `cleanup` if the process is interrupted before the returned function is called. A test command runs in its
+ * own process group, so Ctrl-C does not reach it; without this it and its worktree would outlive the gate.
+ * @param {() => void} cleanup
+ */
+export function onInterrupt(cleanup) {
+  if (!pending.size) {
+    process.once("SIGINT", interrupted);
+    process.once("SIGTERM", interrupted);
+  }
+  pending.add(cleanup);
+  return () => {
+    pending.delete(cleanup);
+    if (pending.size) return;
+    process.off("SIGINT", interrupted);
+    process.off("SIGTERM", interrupted);
+  };
+}
+
 /**
  * Runs a shell command in its own process group, killing the whole group on timeout. NODE_TEST_CONTEXT is cleared
  * so a `node --test` command run from inside a test run does not silently skip.
@@ -188,6 +270,7 @@ export function sh(cmd, cwd, { timeout = 0, output = "stderr" } = {}) {
   delete env.NODE_TEST_CONTEXT;
   const out = output === "stderr" ? 2 : "ignore";
   const child = spawn(cmd, { cwd, env, shell: true, detached: true, stdio: ["ignore", out, out] });
+  const forget = onInterrupt(() => killGroup(child.pid));
   return new Promise((done) => {
     let timedOut = false;
     const timer = timeout
@@ -200,6 +283,7 @@ export function sh(cmd, cwd, { timeout = 0, output = "stderr" } = {}) {
       clearTimeout(timer);
       // Grandchildren the shell left behind would keep writing into a worktree about to be removed.
       killGroup(child.pid);
+      forget();
       done({ code, timedOut });
     });
   });
@@ -228,6 +312,13 @@ export async function withWorktree({ cwd, ref, setup, overlay }, fn) {
   const top = topLevel(cwd);
   const parent = mkdtempSync(join(tmpdir(), "intersite-gate-"));
   const dir = join(parent, "tree");
+  const remove = () => {
+    spawnSync("git", ["worktree", "remove", "--force", dir], { cwd: top });
+    // rmSync removes the node_modules symlink itself, never what it points at.
+    rmSync(parent, { recursive: true, force: true });
+    spawnSync("git", ["worktree", "prune"], { cwd: top });
+  };
+  const forget = onInterrupt(remove);
   try {
     git(top, ["worktree", "add", "--detach", "--quiet", dir, ref]);
     for (const file of overlay) {
@@ -249,10 +340,8 @@ export async function withWorktree({ cwd, ref, setup, overlay }, fn) {
     }
     return await fn(work);
   } finally {
-    spawnSync("git", ["worktree", "remove", "--force", dir], { cwd: top });
-    // rmSync removes the node_modules symlink itself, never what it points at.
-    rmSync(parent, { recursive: true, force: true });
-    spawnSync("git", ["worktree", "prune"], { cwd: top });
+    forget();
+    remove();
   }
 }
 

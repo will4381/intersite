@@ -1,6 +1,10 @@
 // @ts-check
 import assert from "node:assert/strict";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
+import { createInterface } from "node:readline";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { repo, run } from "./repo.mjs";
 
@@ -47,5 +51,22 @@ test("takes the command and paths from intersite.yml, the test from the working 
   const { code, out } = await run(r.cwd, ["fails-on-base"]);
   assert.equal(code, 1);
   assert.match(out[0], /^test\/dep\.test\.mjs passes on base/);
+  assert.equal(r.worktrees(), 1);
+});
+
+test("Ctrl-C while the test command runs stops it and removes the worktree", async () => {
+  const r = fixed("assert.equal(add(2, 2), 4);");
+  const hang = `node -e "console.log('ready ' + process.pid); setInterval(() => {}, 1000)"`;
+  const bin = fileURLToPath(new URL("../../bin/intersite.mjs", import.meta.url));
+  const child = spawn(process.execPath, [bin, "gate", "fails-on-base", "--cmd", hang, "--paths", "test/**"], { cwd: r.cwd, stdio: ["ignore", "ignore", "pipe"] });
+  const [line] = await once(createInterface({ input: /** @type {import("node:stream").Readable} */ (child.stderr) }), "line");
+  const pid = Number(/^ready (\d+)$/.exec(line)?.[1]);
+  assert.ok(pid, line);
+  child.kill("SIGINT");
+  const [code] = await once(child, "exit");
+  assert.equal(code, 130);
+  // Gone, or a zombie waiting to be reaped: either way no longer running.
+  const state = spawnSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim();
+  assert.ok(state === "" || state.startsWith("Z"), `the test command was left running (${state})`);
   assert.equal(r.worktrees(), 1);
 });

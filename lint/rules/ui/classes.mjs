@@ -6,7 +6,7 @@ import { isTestFile, unwrap } from "../shared.mjs";
 
 // A class word: utilities, variants and arbitrary values. Prose fails on punctuation or a leading capital-then-space.
 const CLASS_WORD = /^!?-?[a-z0-9@[][\w:[\]/.&>=%#()'",+*~^!@-]*$/;
-const VAR_CALL = /(?:var|env)\([^()]*(?:\([^()]*\))?[^()]*\)/g;
+const VAR_CALL = /(?:var|env)\((?:[^()]|\([^()]*\))*\)/g;
 // Emails, Open Graph images and PDFs render without the app's stylesheet, so inline literals are the only option.
 const OWN_RENDERER = /^(?:next\/og|@vercel\/og|satori|@react-email\/|react-email|jsx-email|@react-pdf\/|mjml)/;
 const OWN_RENDERER_FILE = /(?:^|\/)(?:emails?|og)\/|(?:^|\/)(?:opengraph-image|twitter-image|apple-icon|icon)\.[jt]sx?$/;

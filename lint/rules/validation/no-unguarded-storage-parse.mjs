@@ -1,7 +1,7 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { calleeName, fromSource, isStorageRead, notShipped, unwrap } from "../shared.mjs";
+import { calleeName, fromSource, isStorageRead, notShipped, receiverName, unwrap } from "../shared.mjs";
 
 /** Inside the block of a `try` (not its catch or finally), or a `.catch()`/`safeParse`-style wrapper. @param {any} node */
 function guarded(node) {
@@ -16,7 +16,8 @@ function guarded(node) {
 function stored(node) {
   node = unwrap(node);
   while (node?.type === "LogicalExpression") node = unwrap(node.left);
-  return isStorageRead(node);
+  // React Native's AsyncStorage and other `*Storage.getItem` stores hold the same leftovers.
+  return isStorageRead(node) || (calleeName(node) === "getItem" && receiverName(node).endsWith("Storage"));
 }
 
 export const id = "no-unguarded-storage-parse";
@@ -46,6 +47,7 @@ export const bad = [
   "function load() { const raw = localStorage.getItem('prefs'); return raw ? JSON.parse(raw) : defaults; }",
   "const [user, setUser] = useState(() => JSON.parse(sessionStorage.getItem('user') || 'null'));",
   "export const draft = JSON.parse(window.localStorage.getItem('draft')!) as Draft;",
+  "const session = JSON.parse((await AsyncStorage.getItem('session')) ?? 'null');",
 ];
 
 export const good = [
