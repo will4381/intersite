@@ -92,6 +92,15 @@ npx intersite actions
 npx intersite replay --sample 5 --verbose
 ```
 
+Then check what capture kept:
+
+```bash
+npx intersite audit
+```
+
+Any key whose kept values look like names, handles or free text goes in `capture.redactKeys`. Show the user this
+output; they decide when capture is safe for production.
+
 Set `replay.target` in `intersite.yml` to the dev server's URL if it is not `http://localhost:8787`. Fix adapter
 problems until sessions pass or are skipped for a stated reason.
 

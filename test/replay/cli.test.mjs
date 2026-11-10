@@ -1,13 +1,14 @@
 // @ts-check
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { after, before, beforeEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { READ_TOKEN, notesSession, preexistingSession, startCollector, startTarget } from "./helpers.mjs";
+import { READ_TOKEN, notesSession, preexistingSession, recorded, startCollector, startTarget } from "./helpers.mjs";
 
 const bin = fileURLToPath(new URL("../../bin/intersite.mjs", import.meta.url));
 const adapterFile = fileURLToPath(new URL("./adapter.mjs", import.meta.url));
@@ -200,4 +201,60 @@ test("--metrics-base from a run of other sessions is a setup error", async () =>
   assert.equal(run.code, 2);
   assert.equal(run.stdout, "");
   assert.equal(run.stderr, "intersite replay: --metrics-base seven.json was written by a run of other sessions (seed 7); replay the same ones: same --seed, --sample and filters, on the same local data\n");
+});
+
+test("--mode ui drives the app in replay.uiTarget: ok when healthy; a broken page exits 1 and its rerun command reproduces it", async () => {
+  let broken = false;
+  const app = createServer(async (req, res) => {
+    const path = req.url ?? "/";
+    if (!path.startsWith("/api/")) {
+      return res.writeHead(200, { "content-type": "text/html" }).end(`<!doctype html><link rel="icon" href="data:,">
+<button id="read" data-intersite="note.open">Open</button>
+<script>${broken ? 'throw new Error("boom on load");' : ""}
+document.getElementById("read").onclick = () => fetch("/api" + location.pathname);</script>`);
+    }
+    const tenant = req.headers["x-tenant"];
+    const answer = await fetch(target.url + path.slice(4), { headers: typeof tenant === "string" ? { "x-tenant": tenant } : {} });
+    res.writeHead(answer.status, { "content-type": "application/json" }).end(await answer.text());
+  });
+  await new Promise((done) => app.listen(0, "127.0.0.1", () => done(undefined)));
+  const page = "/notes/note_prod99";
+  const uiCollector = await startCollector([{
+    ...recorded({ id: "u-1", session: "u", seq: 1, method: "GET", route: "/notes/:id", path: page, status: 200, json: { note: { id: "note_prod99", text: "seed" } } }),
+    action: { name: "note.open", page },
+  }]);
+  try {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "intersite-replay-ui-")));
+    mkdirSync(join(dir, "node_modules"));
+    symlinkSync(fileURLToPath(new URL("../../node_modules/playwright-core", import.meta.url)), join(dir, "node_modules/playwright-core"));
+    writeFileSync(join(dir, "intersite.json"), JSON.stringify({
+      project: "demo",
+      collector: { url: uiCollector.url },
+      replay: { target: target.url, adapter: relative(dir, adapterFile), uiTarget: `http://127.0.0.1:${/** @type {import("node:net").AddressInfo} */ (app.address()).port}` },
+    }));
+
+    const healthy = await cli(["--mode", "ui", "--seed", "1"], dir);
+    assert.equal(healthy.code, 0, healthy.stderr + healthy.stdout);
+    assert.equal(healthy.stdout, "ok replay: 1 sessions; steps: 1 passed, 0 failed, 0 skipped; seed 1\n");
+    assert.ok(target.log.some((entry) => entry.path === "/notes/note_seed01" && entry.headers["x-tenant"] === "a"), "the click read the note signed in");
+
+    broken = true;
+    const run = await cli(["--mode", "ui", "--seed", "1"], dir);
+    assert.equal(run.code, 1, run.stderr);
+    const fail = "FAIL ui u-1 note.open /notes/note_prod99: page error: boom on load | rerun: intersite replay --id u-1 --mode ui";
+    assert.deepEqual(run.stdout.trim().split("\n"), ["replay: 1 sessions; steps: 0 passed, 1 failed, 0 skipped; seed 1", fail]);
+
+    const rerun = await cli(fail.split("rerun: intersite replay ")[1].split(" "), dir);
+    assert.equal(rerun.code, 1, rerun.stderr);
+    assert.deepEqual(rerun.stdout.trim().split("\n"), ["replay: 1 sessions; steps: 0 passed, 1 failed, 0 skipped", fail]);
+  } finally {
+    await Promise.all([uiCollector.close(), new Promise((done) => app.close(done))]);
+  }
+});
+
+test("--mode ui without replay.uiTarget exits 2 with one line", async () => {
+  const run = await cli(["--mode", "ui", "--seed", "1"]);
+  assert.equal(run.code, 2);
+  assert.equal(run.stdout, "");
+  assert.equal(run.stderr, "intersite replay: ui mode needs replay.uiTarget in intersite.yml\n");
 });

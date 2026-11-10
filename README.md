@@ -51,6 +51,7 @@ finding, exit code 0, 1 or 2.
 | `intersite collector` | Runs the local collector (SQLite file in `.intersite/`) |
 | `intersite replay [--id] [--tag] [--action] [--sample] [--mode] [--verbose] [--metrics-out] [--metrics-base]` | Replays recorded sessions against a local server |
 | `intersite actions` | Lists named user actions seen, with error counts |
+| `intersite audit` | Lists every value capture kept, per key, so personal data that slipped through is easy to spot |
 | `intersite pin <id>` | Keeps a recorded case from expiring |
 | `intersite deploy [--dry-run]` | Deploys the collector to Cloudflare (Worker and D1) |
 
@@ -139,8 +140,10 @@ Fastify, Next.js and browser-only (`wrapFetch`) forms are shown at the top of
 [capture/index.mjs](capture/index.mjs).
 
 - **Scrubbing is default-deny.** A string is kept only when it is an ID, a date, or a short code such as `active`.
-  Everything else becomes a stable fake. No headers and no response bodies are stored. Read a batch of stored cases
-  by hand before turning capture on in production; the known gaps are listed in `capture/scrub.mjs`.
+  Everything else becomes a stable fake. No headers and no response bodies are stored. Before turning capture on in
+  production, run `intersite audit`: it lists what was kept, per key, widest first. An enum has a handful of values;
+  a key with many distinct kept values is probably personal data and goes in `capture.redactKeys`. The known gaps
+  are listed in `capture/scrub.mjs`.
 - **Actions** are names you give to what users do: `<button data-intersite="program.save">`. The tracker
   (`intersite/track`) stamps each request with the action that caused it, so `intersite actions` shows which
   actions fail in production and `intersite replay --action program.save` replays exactly those. Markup can change

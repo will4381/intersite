@@ -20,11 +20,13 @@ const hasChrome = existsSync("/Applications/Google Chrome.app")
 
 /** @type {Awaited<ReturnType<typeof startTarget>>} */
 let target;
-/** How the web app misbehaves: "healthy", "renamed", "throws", "console", "500", and on the form page "wrong-shape", "sends-nothing" or "no-color". */
+/** How the web app misbehaves: "healthy", "renamed", "throws", "console", "500", and on the form page "wrong-shape", "sends-nothing" or "no-color". "cookie" signs in by the `session` cookie instead of `x-tenant`. */
 let mode = "healthy";
 let appUrl = "";
 /** @type {import("node:http").Server} */
 let app;
+/** Requests the app turned away in "cookie" mode for lacking the session cookie. */
+const rejected = [];
 
 /** The new-note page: a form whose controls are named after the API's body keys; saving opens the new note. */
 const form = () => `<!doctype html><link rel="icon" href="data:,"><title>new note</title>
@@ -58,11 +60,16 @@ before(async () => {
   target = await startTarget();
   app = createServer(async (req, res) => {
     const path = req.url ?? "/";
+    const signedIn = mode === "cookie" && /(?:^|; )session=abc(?:;|$)/.test(req.headers.cookie ?? "");
+    if (mode === "cookie" && !signedIn) {
+      rejected.push(`${req.method} ${path}`);
+      return res.writeHead(401, { "content-type": "text/html" }).end("sign in");
+    }
     if (!path.startsWith("/api/")) return res.writeHead(200, { "content-type": "text/html" }).end(path === "/new" ? form() : html());
     if (mode === "500") return res.writeHead(500).end("{}");
     let body = "";
     for await (const chunk of req) body += chunk;
-    const tenant = req.headers["x-tenant"];
+    const tenant = signedIn ? "a" : req.headers["x-tenant"];
     const answer = await fetch(target.url + path.slice(4), {
       method: req.method, body: body || undefined, headers: typeof tenant === "string" ? { "x-tenant": tenant } : {},
     });
@@ -72,7 +79,7 @@ before(async () => {
   appUrl = `http://127.0.0.1:${/** @type {import("node:net").AddressInfo} */ (app.address()).port}`;
 });
 after(() => Promise.all([target.close(), new Promise((done) => app.close(done))]));
-beforeEach(() => { mode = "healthy"; target.log.length = 0; });
+beforeEach(() => { mode = "healthy"; target.log.length = 0; rejected.length = 0; });
 
 const page = "/notes/note_prod99";
 const session = [
@@ -83,10 +90,10 @@ const session = [
 ];
 
 /** @param {string} [cwd] @param {import("../../shared/case.mjs").Case[]} [cases] */
-async function replayUi(cwd = root, cases = session) {
+async function replayUi(cwd = root, cases = session, signIn = adapter.signIn) {
   assert.ok(hasChrome, "the ui replay tests need Google Chrome installed (https://www.google.com/chrome/)");
   const [result] = await replaySessions({
-    sessions: [{ session: "u", cases }], target: target.url, uiTarget: appUrl, adapter, modes: ["ui"], idPattern: DEFAULT_ID_PATTERN, cwd,
+    sessions: [{ session: "u", cases }], target: target.url, uiTarget: appUrl, adapter: { ...adapter, signIn }, modes: ["ui"], idPattern: DEFAULT_ID_PATTERN, cwd,
   });
   return result.steps.map((step) => `${step.caseId} ${step.method} ${step.route} ${step.result}${step.reason ? `: ${step.reason}` : ""}${step.checked ? ` (${step.checked})` : ""}`);
 }
@@ -162,4 +169,12 @@ test("a write production answered with 400 passes when the replay is answered 40
   mode = "wrong-shape";
   const rejected = { ...writeSession[0], response: { ...writeSession[0].response, status: 400, ids: {} } };
   assert.deepEqual(await replayUi(root, [rejected]), ["w-1 note.add /new passed"]);
+});
+
+test("an adapter that signs in with a cookie reaches the app and the API on page loads, clicks and submitted forms", async () => {
+  mode = "cookie";
+  const signIn = async () => ({ cookie: "session=abc" });
+  assert.deepEqual(await replayUi(root, writeSession, signIn), ["w-1 note.add /new passed", "w-2 note.open /notes/note_prodW1 passed"]);
+  assert.deepEqual(rejected, [], "every request carried the session cookie");
+  assert.deepEqual(target.log.map((entry) => `${entry.method} ${entry.path} ${entry.headers["x-tenant"]}`), ["POST /notes a", "GET /notes/note_000001 a"]);
 });

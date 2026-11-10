@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // @ts-check
-const commands = ["init", "check", "lint", "gate", "replay", "actions", "pin", "collector", "deploy"];
-const readsCases = ["check", "replay", "actions", "pin"];
+const commands = ["init", "check", "lint", "gate", "replay", "actions", "audit", "pin", "collector", "deploy"];
+const readsCases = ["check", "replay", "actions", "audit", "pin"];
 const [command, ...argv] = process.argv.slice(2);
 
 if (!command || !commands.includes(command)) {
