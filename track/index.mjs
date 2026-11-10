@@ -29,6 +29,8 @@ const SESSION_KEY = "intersite-session";
  * @param {Pick<Storage, "getItem" | "setItem">} [options.storage]
  * @param {(event: UiEvent) => void} [options.onUi]
  * @param {string[]} [options.origins]  Extra origins (`https://api.example.com`) whose requests get the headers.
+ * @param {() => string} [options.page]  The current route as the router knows it (`/u/:handle`), used instead of the
+ *   address bar's path. Give this when a path can hold a name or handle, which looks like any other short word.
  * @param {string} [options.idPattern]  The project's `capture.idPattern`, so IDs in the page path are kept.
  * @param {() => number} [options.now]
  */
@@ -53,7 +55,7 @@ export function createTracker(options = {}) {
 
   const currentName = () => (current && now() - current.at < ACTION_MS ? current.name : undefined);
 
-  const page = () => reducePage(location.pathname, (segment) => idPattern.test(segment));
+  const page = () => reducePage(options.page?.() ?? location.pathname, (segment) => idPattern.test(segment));
 
   function session() {
     if (sessionId) return sessionId;

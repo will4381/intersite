@@ -69,7 +69,8 @@ markup can change freely as long as the element keeps its name.
 - `track/` notes the most recent action and stamps the requests that follow it. Capture stores it as
   `case.action = { name, page }`, where `page` is the browser path with every segment that is not an ID or a short
   lowercase word (`a` to `z`, at most 20 letters) replaced by `_`: `reducePage` in `shared/case.mjs`. Capture applies
-  it again on the server and never trusts the client's value.
+  it again on the server and never trusts the client's value. A name in a path (`/u/maria`) looks like any short
+  word, so an app whose paths can hold one passes the tracker `page: () => <route template>` (`/u/:handle`).
 - A client-side error or warning with no API call is stored as a **UI case**: `request.method` is `UI_METHOD`,
   `request.route` and `request.path` are the page, `response.status` is 0, and `response.errorCode` is the error's
   name (never its message).

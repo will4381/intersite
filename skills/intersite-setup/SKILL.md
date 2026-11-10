@@ -54,7 +54,8 @@ The examples for each are at the top of `node_modules/intersite/capture/index.mj
 ## 3. Name user actions (web apps)
 
 Create the tracker once at startup and use its `fetch` for API calls (see `node_modules/intersite/track/index.mjs`).
-Give each button, form and clickable element a stable name:
+If any page path can contain a username, handle or other name, pass the tracker `page: () => <current route
+template>` from the router, so the name is never sent. Give each button, form and clickable element a stable name:
 
 ```html
 <button data-intersite="program.save">Save</button>

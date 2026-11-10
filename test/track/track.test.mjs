@@ -125,3 +125,9 @@ test("stop() removes every listener", () => {
   tracker.stop();
   assert.equal(document.listeners.length + window.listeners.length, 0);
 });
+
+test("a route template from the app replaces the address bar's path, so a name in the URL is never sent", async () => {
+  const { tracker, headers } = setup({ page: () => "/u/:handle/posts" });
+  await tracker.fetch("https://app.test/api/x");
+  assert.equal(headers(0).get("x-intersite-page"), "/u/_/posts");
+});
