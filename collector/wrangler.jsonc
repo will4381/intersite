@@ -1,0 +1,11 @@
+// Local development only: `npx wrangler dev -c collector/wrangler.jsonc`.
+// Apply the schema first: `npx wrangler d1 execute DB --local --file collector/schema.sql -c collector/wrangler.jsonc`.
+// Put INGEST_TOKEN and READ_TOKEN in collector/.dev.vars. Deploys use the config `intersite deploy` generates.
+{
+  "name": "intersite-collector",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-11-01",
+  "d1_databases": [{ "binding": "DB", "database_name": "intersite-collector", "database_id": "local" }],
+  "triggers": { "crons": ["17 3 * * *"] },
+  "vars": { "DAILY_CAP_OK": "5000", "DAILY_CAP_OTHER": "5000" }
+}

@@ -1,0 +1,186 @@
+{
+  "rules": [
+    {
+      "id": "no-focused-tests",
+      "pack": "tests",
+      "selector": "CallExpression[callee.object.name=/^(describe|suite|it|test)$/][callee.property.name='only'], CallExpression[callee.name=/^(fit|fdescribe|ftest)$/], CallExpression[callee.name=/^(describe|suite|it|test)$/] > ObjectExpression > Property[key.name='only'][value.value=true]",
+      "message": "A focused test (.only) silently stops every other test from running. Remove the focus before committing.",
+      "bad": [
+        "it.only('adds', () => { expect(add(1, 2)).toBe(3); });",
+        "describe.only('math', () => {});",
+        "fit('adds', () => { expect(add(1, 2)).toBe(3); });",
+        "test('adds', { only: true }, () => { assert.equal(add(1, 2), 3); });"
+      ],
+      "good": [
+        "it('adds', () => { expect(add(1, 2)).toBe(3); });",
+        "const only = list.only(1);"
+      ]
+    },
+    {
+      "id": "no-skipped-tests",
+      "pack": "tests",
+      "selector": "CallExpression[callee.object.name=/^(describe|suite|it|test)$/][callee.property.name='skip'], CallExpression[callee.name=/^(xit|xdescribe|xtest)$/], CallExpression[callee.name=/^(describe|suite|it|test)$/] > ObjectExpression > Property[key.name='skip']",
+      "message": "A skipped test proves nothing and rots. Fix it so it passes, or delete it and track the work in an issue.",
+      "bad": [
+        "it.skip('adds', () => { expect(add(1, 2)).toBe(3); });",
+        "xdescribe('math', () => {});",
+        "test('adds', { skip: 'flaky' }, () => { assert.equal(add(1, 2), 3); });"
+      ],
+      "good": [
+        "it('adds', () => { expect(add(1, 2)).toBe(3); });",
+        "stream.skip(2);"
+      ]
+    },
+    {
+      "id": "no-constant-assertion",
+      "pack": "tests",
+      "selector": "CallExpression[callee.name=/^(expect|assert)$/][arguments.0.type='Literal'], CallExpression[callee.object.name='assert'][callee.property.name='ok'][arguments.0.type='Literal']",
+      "message": "This assertion checks a constant, so it can never fail. Assert on the value the code under test produced.",
+      "bad": [
+        "expect(true).toBe(true);",
+        "assert(true);",
+        "assert.ok(1);",
+        "expect(1).toEqual(1);"
+      ],
+      "good": [
+        "expect(add(1, 2)).toBe(3);",
+        "assert.ok(result.ok);",
+        "assert.equal(add(1, 2), 3);"
+      ]
+    },
+    {
+      "id": "no-existence-only-assertion",
+      "pack": "tests",
+      "selector": "CallExpression[callee.property.name=/^(toBeDefined|toBeTruthy)$/], CallExpression[callee.object.property.name='not'][callee.property.name=/^(toBeUndefined|toBeNull|toBeFalsy)$/]",
+      "message": "Checking that a value exists or is truthy passes for almost any wrong value. Assert the exact expected value with toBe/toEqual.",
+      "bad": [
+        "expect(user).toBeDefined();",
+        "expect(result.ok).toBeTruthy();",
+        "expect(user).not.toBeNull();",
+        "expect(user).not.toBeUndefined();"
+      ],
+      "good": [
+        "expect(user).toEqual({ id: 'u1', name: 'Ada' });",
+        "expect(result.ok).toBe(true);",
+        "expect(find('missing')).toBeUndefined();"
+      ]
+    },
+    {
+      "id": "no-swallowed-test-failure",
+      "pack": "tests",
+      "selector": "CallExpression[callee.name=/^(it|test)$/] CatchClause:not(:has(ThrowStatement))",
+      "message": "A try/catch in a test passes when nothing throws and can swallow failed assertions. Use assert.rejects/assert.throws or expect(...).rejects/toThrow instead.",
+      "bad": [
+        "it('rejects bad input', async () => { try { await parse('x'); } catch (error) { expect(error.message).toBe('bad'); } });",
+        "test('works', () => { try { assert.equal(run(), 1); } catch {} });"
+      ],
+      "good": [
+        "it('rejects bad input', async () => { await expect(parse('x')).rejects.toThrow('bad'); });",
+        "test('cleans up', () => { try { assert.equal(run(), 1); } finally { cleanup(); } });",
+        "function load() { try { return read(); } catch { return null; } }"
+      ]
+    },
+    {
+      "id": "no-module-mocking",
+      "pack": "tests",
+      "selector": "CallExpression[callee.object.name=/^(vi|jest)$/][callee.property.name=/^(mock|doMock|unstable_mockModule)$/], CallExpression[callee.object.name='mock'][callee.property.name='module'], CallExpression[callee.object.property.name='mock'][callee.property.name='module']",
+      "message": "Module mocking tests the mock, not the code. Pass the dependency in as a parameter, or run against a real or in-memory implementation.",
+      "bad": [
+        "vi.mock('./db.js');",
+        "jest.mock('../api', () => ({ get: jest.fn() }));",
+        "mock.module('./db.js', { namedExports: { query } });",
+        "t.mock.module('./db.js', { namedExports: { query } });"
+      ],
+      "good": [
+        "const db = createMemoryDb();",
+        "const spy = vi.fn();"
+      ]
+    },
+    {
+      "id": "no-empty-catch",
+      "pack": "slop",
+      "selector": "CatchClause > BlockStatement[body.length=0], CallExpression[callee.property.name='catch'] > :function[body.type='BlockStatement'][body.body.length=0]",
+      "message": "An empty catch hides the error. Handle it (return an explicit fallback and say why), rethrow it, or remove the try.",
+      "bad": [
+        "try { save(); } catch {}",
+        "try { save(); } catch (error) { /* ignore */ }",
+        "save().catch(() => {});"
+      ],
+      "good": [
+        "try { return JSON.parse(text); } catch { return null; }",
+        "save().catch((error) => { throw new SaveError(error); });"
+      ]
+    },
+    {
+      "id": "no-log-and-continue",
+      "pack": "slop",
+      "selector": "CatchClause > BlockStatement[body.length=1] > ExpressionStatement > CallExpression[callee.object.name='console'], CallExpression[callee.property.name='catch'] > MemberExpression[object.name='console'], CallExpression[callee.property.name='catch'] > :function > CallExpression.body[callee.object.name='console']",
+      "message": "Logging an error and carrying on hides the failure from callers. Rethrow it, return an explicit error result, or let it propagate.",
+      "bad": [
+        "try { save(); } catch (error) { console.error(error); }",
+        "save().catch(console.error);",
+        "save().catch((error) => console.warn(error));"
+      ],
+      "good": [
+        "try { save(); } catch (error) { console.error(error); throw error; }",
+        "try { save(); } catch (error) { console.error(error); process.exitCode = 1; }"
+      ]
+    },
+    {
+      "id": "no-as-any",
+      "pack": "slop",
+      "selector": "TSAsExpression[typeAnnotation.type='TSAnyKeyword'], TSTypeAssertion[typeAnnotation.type='TSAnyKeyword']",
+      "message": "Casting to any switches off type checking. Fix the type, narrow with a check, or describe the real shape.",
+      "bad": [
+        "const user = data as any;",
+        "const user = <any>data;"
+      ],
+      "good": [
+        "const user = data as User;",
+        "const user = parseUser(data);"
+      ]
+    },
+    {
+      "id": "no-double-assertion",
+      "pack": "slop",
+      "selector": "TSAsExpression[expression.type='TSAsExpression'][expression.typeAnnotation.type=/^TS(Unknown|Any)Keyword$/]",
+      "message": "Casting through unknown forces an unrelated type and hides a real mismatch. Validate the value or fix the types so one cast (or none) is enough.",
+      "bad": [
+        "const user = data as unknown as User;",
+        "const user = data as any as User;"
+      ],
+      "good": [
+        "const user = data as User;",
+        "const value = input as unknown;"
+      ]
+    },
+    {
+      "id": "no-explicit-any",
+      "pack": "slop",
+      "selector": ":not(TSAsExpression, TSTypeAssertion) > TSAnyKeyword",
+      "message": "An any type turns off checking for everything it touches. Use the real type, a generic, or unknown plus a check.",
+      "bad": [
+        "function load(input: any) { return input; }",
+        "const items: Array<any> = [];",
+        "type Handler = (event: any) => void;"
+      ],
+      "good": [
+        "function load(input: unknown) { return input; }",
+        "const items: string[] = [];"
+      ]
+    },
+    {
+      "id": "no-stub-implementation",
+      "pack": "slop",
+      "selector": "ThrowStatement > NewExpression[callee.name='Error'] > Literal.arguments[value=/not (yet )?implemented|todo/i]",
+      "message": "This is a stub, not an implementation. Implement it, or delete it and the code that calls it.",
+      "bad": [
+        "function charge() { throw new Error('Not implemented'); }",
+        "function charge() { throw new Error('TODO: implement charge'); }"
+      ],
+      "good": [
+        "function charge(amount) { if (amount <= 0) throw new Error('amount must be positive'); return pay(amount); }"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "name": "intersite",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "One testing library for every project: slop lint, traffic capture, replay, and gates.",
+  "engines": { "node": ">=22.12" },
+  "bin": { "intersite": "./bin/intersite.mjs" },
+  "exports": {
+    "./capture": "./capture/index.mjs",
+    "./lint": "./lint/plugin.mjs",
+    "./shared/*": "./shared/*.mjs",
+    "./intersite.schema.json": "./intersite.schema.json"
+  },
+  "scripts": {
+    "test": "node --test",
+    "lint": "node bin/intersite.mjs lint"
+  },
+  "peerDependencies": {
+    "@oxlint/plugins": ">=1.93.0",
+    "oxlint": ">=1.93.0"
+  },
+  "devDependencies": {
+    "@oxlint/plugins": "1.93.0",
+    "oxlint": "1.93.0",
+    "wrangler": "^4.0.0"
+  }
+}

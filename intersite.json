@@ -1,0 +1,4 @@
+{
+  "$schema": "./intersite.schema.json",
+  "project": "intersite"
+}

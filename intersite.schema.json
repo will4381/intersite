@@ -1,0 +1,111 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Intersite config",
+  "type": "object",
+  "required": ["project"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "project": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]{1,64}$",
+      "description": "Name this project's cases are stored under."
+    },
+    "collector": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "url": { "type": "string", "description": "Where the collector Worker answers. `intersite deploy` prints it." },
+        "name": { "type": "string", "default": "intersite-collector", "description": "Worker name used by `intersite deploy`." },
+        "domain": { "type": "string", "description": "Optional custom domain for the collector, such as intersite.example.com." },
+        "readTokenEnv": { "type": "string", "default": "INTERSITE_READ_TOKEN", "description": "Environment variable holding the read token." },
+        "ingestTokenEnv": { "type": "string", "default": "INTERSITE_INGEST_TOKEN", "description": "Environment variable holding the ingest token." },
+        "dailyCap": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Most cases stored per project per day; the overflow is dropped.",
+          "properties": {
+            "ok": { "type": "integer", "minimum": 1, "default": 5000 },
+            "other": { "type": "integer", "minimum": 1, "default": 5000 }
+          }
+        }
+      }
+    },
+    "lint": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "packs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["tests", "slop"],
+          "description": "Rule packs to turn on. Every rule in a listed pack is an error unless `rules` says otherwise."
+        },
+        "rules": {
+          "type": "object",
+          "additionalProperties": { "enum": ["off", "warn", "error"] },
+          "description": "Per-rule overrides by rule id."
+        },
+        "custom": {
+          "type": "array",
+          "description": "Project-local rules, in the same form as the package's lint/rules.json.",
+          "items": { "$ref": "#/definitions/rule" }
+        },
+        "baseline": { "type": "string", "default": "lint-baseline.json", "description": "Findings that already exist; the count per file and rule may only go down." },
+        "extends": { "type": "string", "default": ".oxlintrc.json", "description": "The project's own oxlint config, used when the file exists." }
+      }
+    },
+    "capture": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sample": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.05, "description": "Share of sessions recorded in full. Cases that are not ok are always recorded." },
+        "maxBodyBytes": { "type": "integer", "minimum": 0, "default": 32768, "description": "A larger request body is replaced with a marker." },
+        "include": { "type": "array", "items": { "type": "string" }, "default": ["/**"], "description": "Path globs to record." },
+        "exclude": { "type": "array", "items": { "type": "string" }, "default": [], "description": "Path globs never recorded, such as webhooks." },
+        "redactKeys": { "type": "array", "items": { "type": "string" }, "description": "Extra JSON keys whose values are always replaced, on top of the built-in list." },
+        "idPattern": { "type": "string", "description": "Regular expression for values that are IDs; they are kept so replay can remap them." },
+        "ttlDays": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "ok": { "type": "integer", "minimum": 1, "maximum": 365, "default": 14 },
+            "warn": { "type": "integer", "minimum": 1, "maximum": 365, "default": 90 },
+            "rejected": { "type": "integer", "minimum": 1, "maximum": 365, "default": 30 },
+            "error": { "type": "integer", "minimum": 1, "maximum": 365, "default": 90 }
+          }
+        }
+      }
+    },
+    "replay": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "target": { "type": "string", "default": "http://localhost:8787", "description": "Base URL the cases are replayed against." },
+        "adapter": { "type": "string", "default": "./intersite.adapter.mjs", "description": "Module that signs in seeded users and resolves IDs." },
+        "modes": {
+          "type": "array",
+          "items": { "enum": ["baseline", "twice", "cross-tenant"] },
+          "default": ["baseline"]
+        },
+        "sample": { "type": "integer", "minimum": 1, "maximum": 200, "default": 20, "description": "Sessions per run when no --sample is given." }
+      }
+    }
+  },
+  "definitions": {
+    "rule": {
+      "type": "object",
+      "required": ["id", "selector", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+        "pack": { "type": "string", "description": "Pack the rule belongs to. Custom rules are always on and need none." },
+        "selector": { "type": "string", "description": "ESLint-style syntax-tree selector; every match is reported." },
+        "message": { "type": "string", "description": "What is wrong and what to do instead." },
+        "files": { "type": "array", "items": { "type": "string" }, "description": "Path globs the rule applies to; all files when omitted." },
+        "bad": { "type": "array", "items": { "type": "string" }, "description": "Code that must be reported. Checked by the test suite." },
+        "good": { "type": "array", "items": { "type": "string" }, "description": "Code that must not be reported. Checked by the test suite." }
+      }
+    }
+  }
+}
