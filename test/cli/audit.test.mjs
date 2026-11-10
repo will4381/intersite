@@ -22,7 +22,7 @@ test("audit lists what capture kept, widest key first, and leaves fakes and IDs 
     id: `c${index}`, session: `s${index}`,
     request: {
       method: "POST", route: "/teams/:team/notes", path: "/teams/blue/notes", query: { sort: "newest" },
-      body: { who, status: "active", note: "text_0a1b2c3d", email: "u0a1b2c3d@example.test", owner: "user_8fK2abQ9", tags: [{ label: "urgent" }] },
+      body: { who, status: "active", note: "text-0a1b2c3d", email: "u0a1b2c3d@example.test", owner: "user_8fK2abQ9", tags: [{ label: "urgent" }] },
     },
   }));
   const sent = await fetch(`${collector.url}/v1/cases`, { method: "POST", headers: { authorization: "Bearer local-ingest", "content-type": "application/json" }, body: JSON.stringify({ cases }) });
@@ -36,6 +36,6 @@ test("audit lists what capture kept, widest key first, and leaves fakes and IDs 
     'body.tags.label: 1 kept value: "urgent"',
     'path /teams/:team/notes: 1 kept value: "blue"',
     'query.sort: 1 kept value: "newest"',
-    "ok audit: 3 cases, 5 keys with kept values; a key that holds personal data goes in capture.redactKeys",
+    "ok audit: 3 cases, 5 keys with kept values; a key that holds personal data goes in capture.redactKeys; an enum that was faked goes in capture.keepKeys",
   ]);
 });

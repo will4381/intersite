@@ -98,7 +98,8 @@ Then check what capture kept:
 npx intersite audit
 ```
 
-Any key whose kept values look like names, handles or free text goes in `capture.redactKeys`. Show the user this
+Any key whose kept values look like names, handles or free text goes in `capture.redactKeys`. A project enum
+whose values came out as `text-…` fakes (such as `sortBy`) goes in `capture.keepKeys`. Show the user this
 output; they decide when capture is safe for production.
 
 Set `replay.target` in `intersite.yml` to the dev server's URL if it is not `http://localhost:8787`. Fix adapter

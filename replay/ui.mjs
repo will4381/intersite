@@ -55,21 +55,26 @@ export async function openBrowser({ uiTarget, headed, cwd }) {
       /** @type {Map<string, string>} recorded ID -> replayed ID */
       const ids = new Map();
       const kind = cases.find((item) => item.actor.kind !== "anonymous")?.actor.kind;
-      const context = await browser.newContext({ extraHTTPHeaders: kind ? await adapter.signIn(kind, { target, other: false }) : {} });
+      const origins = new Set([new URL(base).origin, new URL(target).origin]);
+      const { cookies, headers: signInHeaders } = splitCookie(kind ? await adapter.signIn(kind, { target, other: false }) : {});
+      const context = await browser.newContext();
+      // ponytail: cookies are scoped by host, not port, so another server on the app's or the API's host also gets them.
+      await context.addCookies(cookies.flatMap((cookie) => [...origins].map((url) => ({ ...cookie, url }))));
       /** @type {string | undefined} */
       let skipped;
       try {
         const page = await context.newPage();
-        const origins = new Set([new URL(base).origin, new URL(target).origin]);
         /** @type {{ error: string[], server: string[], console: string[] }} */
         const problems = { error: [], server: [], console: [] };
         /** @type {import("playwright-core").Request[]} requests to the app or the API since the action began */
         const sent = [];
         /** @type {Map<import("playwright-core").Request, Promise<string>>} write answers, kept as they pass: a page that navigates afterwards takes the body with it */
         const bodies = new Map();
+        // The sign-in headers go to the app and the API only, never to a third party the page loads from.
         await page.route((url) => origins.has(url.origin), async (route) => {
-          if (!WRITES.includes(route.request().method())) return route.continue();
-          const answer = await route.fetch();
+          const headers = { ...(await route.request().allHeaders()), ...signInHeaders };
+          if (!WRITES.includes(route.request().method())) return route.continue({ headers });
+          const answer = await route.fetch({ headers });
           bodies.set(route.request(), answer.text());
           return route.fulfill({ response: answer });
         });
@@ -177,6 +182,25 @@ export async function openBrowser({ uiTarget, headed, cwd }) {
       return skipped;
     },
   };
+}
+
+/**
+ * The adapter's sign-in headers, with a `cookie` header taken out as browser cookies.
+ * @param {Record<string, string>} signIn
+ * @returns {{ cookies: { name: string, value: string }[], headers: Record<string, string> }}
+ */
+function splitCookie(signIn) {
+  /** @type {Record<string, string>} */
+  const headers = {};
+  const cookies = [];
+  for (const [name, value] of Object.entries(signIn)) {
+    if (name.toLowerCase() !== "cookie") { headers[name.toLowerCase()] = String(value); continue; }
+    for (const pair of String(value).split(";")) {
+      const at = pair.indexOf("=");
+      if (at > 0) cookies.push({ name: pair.slice(0, at).trim(), value: pair.slice(at + 1).trim() });
+    }
+  }
+  return { cookies, headers };
 }
 
 /**

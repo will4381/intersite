@@ -57,7 +57,9 @@ const enc = new TextEncoder();
  * @property {number} [maxBodyBytes]
  * @property {string[]} [include]
  * @property {string[]} [exclude]
- * @property {string[]} [redactKeys]
+ * @property {string[]} [redactKeys]  Keys whose values are always replaced, on top of the built-in list.
+ * @property {string[]} [keepKeys]    Keys whose short codes and dates are kept, on top of the built-in structural and
+ *                                    date words (`status`, `createdAt`). `redactKeys` and the sensitive list win.
  * @property {string} [idPattern]
  * @property {Partial<Record<"ok" | "warn" | "rejected" | "error", number>>} [ttlDays]
  */
@@ -245,7 +247,7 @@ export function createCapture(options) {
     const exclude = (options.exclude ?? []).map(globToRegExp);
     const ttlDays = { ...DEFAULT_TTL_DAYS, ...options.ttlDays };
     const idPattern = new RegExp(options.idPattern ?? DEFAULT_ID_PATTERN);
-    const scrubber = createScrubber({ salt, idPattern: idPattern.source, redactKeys: options.redactKeys });
+    const scrubber = createScrubber({ salt, idPattern: idPattern.source, redactKeys: options.redactKeys, keepKeys: options.keepKeys });
     const endpoint = `${url.replace(/\/+$/, "")}/v1/cases`;
 
     /** Synchronous, so an unsampled request costs nothing else. Whole sessions per UTC day. @param {string} outcome @param {string} session @param {number} ms */

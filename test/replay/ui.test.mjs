@@ -20,16 +20,24 @@ const hasChrome = existsSync("/Applications/Google Chrome.app")
 
 /** @type {Awaited<ReturnType<typeof startTarget>>} */
 let target;
-/** How the web app misbehaves: "healthy", "renamed", "throws", "console", "500", and on the form page "wrong-shape", "sends-nothing" or "no-color". "cookie" signs in by the `session` cookie instead of `x-tenant`. */
+/** How the web app misbehaves: "healthy", "renamed", "throws", "console", "500", and on the form page "wrong-shape", "sends-nothing" or "no-color". "cookie" signs in by the `session` cookie instead of `x-tenant`, and its pages load an image from a third party. */
 let mode = "healthy";
 let appUrl = "";
 /** @type {import("node:http").Server} */
 let app;
 /** Requests the app turned away in "cookie" mode for lacking the session cookie. */
 const rejected = [];
+/** The `x-sign-in` header of each request the app got in "cookie" mode. */
+const appSignIn = [];
+/** A third-party server on another host and port; every request it gets, with its headers. @type {import("node:http").Server} */
+let third;
+let thirdUrl = "";
+/** @type {import("node:http").IncomingHttpHeaders[]} */
+const thirdSeen = [];
+const thirdParty = () => (mode === "cookie" ? `<img src="${thirdUrl}/pixel.gif">` : "");
 
 /** The new-note page: a form whose controls are named after the API's body keys; saving opens the new note. */
-const form = () => `<!doctype html><link rel="icon" href="data:,"><title>new note</title>
+const form = () => `<!doctype html><link rel="icon" href="data:,"><title>new note</title>${thirdParty()}
 <form data-intersite="note.add" id="f"><input name="text">
 ${mode === "no-color" ? "" : '<select name="color"><option>red</option><option>blue</option></select>'}
 <input type="checkbox" id="pinned"><button>Save</button></form>
@@ -43,7 +51,7 @@ f.onsubmit = async (event) => {
 </script>`;
 
 /** The notes page: an Open button that reads the note in the address through /api, and a New button that writes. */
-const html = () => `<!doctype html><link rel="icon" href="data:,"><title>notes</title>
+const html = () => `<!doctype html><link rel="icon" href="data:,"><title>notes</title>${thirdParty()}
 <button id="open" data-intersite="${mode === "renamed" ? "note.view" : "note.open"}">Open</button>
 <button id="create" data-intersite="note.create">New</button><p id="out"></p>
 <script>
@@ -61,6 +69,7 @@ before(async () => {
   app = createServer(async (req, res) => {
     const path = req.url ?? "/";
     const signedIn = mode === "cookie" && /(?:^|; )session=abc(?:;|$)/.test(req.headers.cookie ?? "");
+    if (mode === "cookie") appSignIn.push(req.headers["x-sign-in"]);
     if (mode === "cookie" && !signedIn) {
       rejected.push(`${req.method} ${path}`);
       return res.writeHead(401, { "content-type": "text/html" }).end("sign in");
@@ -77,9 +86,16 @@ before(async () => {
   });
   await new Promise((done) => app.listen(0, "127.0.0.1", () => done(undefined)));
   appUrl = `http://127.0.0.1:${/** @type {import("node:net").AddressInfo} */ (app.address()).port}`;
+  third = createServer((req, res) => {
+    thirdSeen.push(req.headers);
+    res.writeHead(200, { "content-type": "image/gif" }).end();
+  });
+  await new Promise((done) => third.listen(0, "127.0.0.1", () => done(undefined)));
+  // Another host as well as another port: a browser scopes cookies by host, so 127.0.0.1:<any port> shares them.
+  thirdUrl = `http://localhost:${/** @type {import("node:net").AddressInfo} */ (third.address()).port}`;
 });
-after(() => Promise.all([target.close(), new Promise((done) => app.close(done))]));
-beforeEach(() => { mode = "healthy"; target.log.length = 0; rejected.length = 0; });
+after(() => Promise.all([target.close(), new Promise((done) => app.close(done)), new Promise((done) => third.close(done))]));
+beforeEach(() => { mode = "healthy"; target.log.length = 0; rejected.length = 0; thirdSeen.length = 0; appSignIn.length = 0; });
 
 const page = "/notes/note_prod99";
 const session = [
@@ -177,4 +193,17 @@ test("an adapter that signs in with a cookie reaches the app and the API on page
   assert.deepEqual(await replayUi(root, writeSession, signIn), ["w-1 note.add /new passed", "w-2 note.open /notes/note_prodW1 passed"]);
   assert.deepEqual(rejected, [], "every request carried the session cookie");
   assert.deepEqual(target.log.map((entry) => `${entry.method} ${entry.path} ${entry.headers["x-tenant"]}`), ["POST /notes a", "GET /notes/note_000001 a"]);
+});
+
+test("the sign-in cookie and headers reach the app and the API, never a third party the page loads from", async () => {
+  mode = "cookie";
+  const signIn = async () => ({ Cookie: "session=abc; theme=dark", "x-sign-in": "secret-header" });
+  assert.deepEqual(await replayUi(root, writeSession, signIn), ["w-1 note.add /new passed", "w-2 note.open /notes/note_prodW1 passed"]);
+  assert.deepEqual(rejected, [], "every request to the app carried the session cookie");
+  assert.ok(appSignIn.length > 0 && appSignIn.every((value) => value === "secret-header"), "every request to the app carried the sign-in header");
+  assert.ok(thirdSeen.length > 0, "the page loaded the third-party image");
+  for (const headers of thirdSeen) {
+    assert.equal(headers.cookie, undefined, "no cookie went to the third party");
+    assert.equal(headers["x-sign-in"], undefined, "no sign-in header went to the third party");
+  }
 });

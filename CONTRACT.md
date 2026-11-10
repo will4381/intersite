@@ -50,6 +50,9 @@ local collector accepts.
 Defined in `shared/case.mjs` (`Case` typedef, `caseProblem`). `response.shape` comes from `shapeOf` and is compared
 with `shapeDiff`; `response.ids` comes from `idsOf` (all in `shared/shape.mjs`). A case never holds cookies, tokens,
 `Authorization` or API-key headers, or a raw user identifier. Response bodies are not stored, only their shape and IDs.
+Request path, query and body values are scrubbed by `capture/scrub.mjs`: a string is kept only when it is an ID, a
+short digit string, an ISO date under a date-like key, or a short lowercase code under a structural key (or one in
+`capture.keepKeys`); every other string becomes a stable fake of the same form, such as `text-1a2b3c4d`.
 
 A **session** is every case with the same `session` value, ordered by `seq`. Capture samples whole sessions, and
 always records a case whose outcome is not `ok`. An `ok` request of an unsampled session costs one small hash: nothing
@@ -162,7 +165,8 @@ UI cases are skipped by every mode except `ui`.
   Each checked request is then sent as its owner so the session's state keeps moving.
 - `ui`: needs `replay.uiTarget` and `playwright-core`, and drives the installed Chrome. For each distinct
   `action` in the session, in order: open `uiTarget + action.page` (IDs remapped as below) signed in with the
-  adapter's headers; fail on a page error, a console error, or a 5xx from the API during load; fail when no element
+  adapter's headers (a `cookie` becomes browser cookies for the `uiTarget` and `target` origins only; other headers
+  go only to those two origins); fail on a page error, a console error, or a 5xx from the API during load; fail when no element
   carries `data-intersite="<name>"`. When every recorded case of that action is a GET, click the element and fail on
   the same three things. An action with exactly one write case (POST, PUT, PATCH, DELETE) whose body is a JSON object
   or empty is filled and submitted: its form is the element or its closest `<form>`; each top-level body key fills the

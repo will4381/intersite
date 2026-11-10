@@ -1,15 +1,19 @@
 // @ts-check
 
 /*
- * Default-deny scrubbing. A string is KEPT only when it is provably structural (an ID, a short number, an ISO date,
- * a short lowercase code under a key that is not sensitive); everything else is replaced with a stable fake derived
- * from HMAC-SHA256(salt, value) that keeps the value's form (email, URL, date, digits, phone, text).
+ * Default-deny scrubbing. A string is KEPT only when it is provably structural: an ID, a short number, an ISO date
+ * under a date-like key (`createdAt`, `dueDate`), or a short lowercase code under a structural key (`status`, `sort`).
+ * Everything else is replaced with a stable fake derived from HMAC-SHA256(salt, value) that keeps the value's form
+ * (email, URL, date, digits, phone, text). Keys are matched on their last word; `keepKeys` adds project keys, and the
+ * sensitive lists and `redactKeys` win over both.
  *
- * ponytail: residual risk, a short lowercase personal value under an unknown key is kept (a handle such as "jdoe" or
- * a name such as "maria" under "who"), as is any JSON number under an unknown key (a phone stored as a number) and an
- * ISO date under an unknown key (a birth date under "born"). Object keys that look like identifiers are kept, so a
- * map keyed by lowercase handles leaks them. Audit a sample of captured cases by hand before production use, and add
- * the project's own field names to `redactKeys`.
+ * ponytail: residual risk. JSON numbers, and digit strings of up to 4 digits, are kept under any key that is not
+ * sensitive, because replay needs amounts and counts (a phone stored as a number under "contact", or a birth year,
+ * leaks). A short lowercase code under a structural key is
+ * kept even when it is personal (a handle under "source", a state under "state"). Object keys that look like
+ * identifiers are kept, so a map keyed by lowercase handles leaks them. Action pages keep short lowercase segments
+ * (`reducePage` in shared/case.mjs), so `/u/maria` is stored as is. Run `intersite audit` before production use, and
+ * add the project's own field names to `redactKeys`.
  */
 
 const enc = new TextEncoder();
@@ -21,7 +25,23 @@ export const SENSITIVE_SUBSTRINGS = [
   "accountnumber", "routingnumber", "socialsecurity", "nationalid", "taxid", "passport", "license", "licence",
   "email", "phone", "mobile", "username", "nickname", "displayname", "firstname", "lastname", "middlename",
   "fullname", "surname", "address", "street", "postal", "postcode", "zipcode", "birth", "latitude", "longitude",
-  "geolocation",
+  "geolocation", "verification", "invite", "referral", "coupon", "voucher", "promo",
+];
+
+/** A short lowercase code is kept only under a key whose last word is one of these, or its plural. */
+export const STRUCTURAL_WORDS = [
+  "status", "state", "type", "kind", "mode", "role", "sort", "order", "direction", "dir", "format", "currency", "locale",
+  "lang", "language", "timezone", "tz", "unit", "period", "interval", "frequency", "granularity", "method", "action",
+  "event", "outcome", "source", "channel", "platform", "provider", "category", "level", "priority", "severity",
+  "visibility", "scope", "stage", "step", "phase", "plan", "tier", "variant", "theme", "layout", "view", "tab", "filter",
+  "field", "operator", "op", "reason", "code", "intent", "purpose", "flag", "feature", "env", "environment", "version",
+];
+
+/** An ISO date is kept only under a key whose last word is one of these, or its plural. */
+export const DATE_WORDS = [
+  "at", "on", "date", "time", "timestamp", "ts", "datetime", "day", "from", "to", "until", "since", "after", "before",
+  "start", "end", "expires", "expiry", "expiration", "due", "deadline", "created", "updated", "modified", "deleted",
+  "published", "scheduled", "completed", "cancelled", "canceled", "closed", "opened", "sent", "seen", "issued",
 ];
 
 /** Matched as whole words of the key ("ip_address" has "ip", "zip" has no "ip"), so short words do not over-match. */
@@ -46,16 +66,22 @@ function wordsOf(key) {
   return key.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
 }
 
+/** The word and its possible singulars: "phases" -> "phase", "statuses" -> "status", "currencies" -> "currency". @param {string} word */
+const forms = (word) => [word, word.replace(/s$/, ""), word.replace(/es$/, ""), word.replace(/ies$/, "y")];
+
 /** @param {string} text */
 const isIsoDate = (text) => ISO_DATE.test(text) && !Number.isNaN(Date.parse(text));
 
 /**
- * @param {{ salt: string, idPattern: string, redactKeys?: string[] }} options
+ * @param {{ salt: string, idPattern: string, redactKeys?: string[], keepKeys?: string[] }} options
  */
-export function createScrubber({ salt, idPattern, redactKeys = [] }) {
+export function createScrubber({ salt, idPattern, redactKeys = [], keepKeys = [] }) {
   const idRegex = new RegExp(idPattern);
   const substrings = [...SENSITIVE_SUBSTRINGS, ...redactKeys.map((key) => wordsOf(key).join("")).filter(Boolean)];
   const words = new Set(SENSITIVE_WORDS);
+  const structural = new Set(STRUCTURAL_WORDS);
+  const dateWords = new Set(DATE_WORDS);
+  const kept = keepKeys.map((key) => wordsOf(key).join(" ")).filter(Boolean);
   const hmacKey = crypto.subtle.importKey("raw", enc.encode(salt), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   // An unhandled rejection here would surface outside record(); callers see the failure when they await hash().
   // oxlint-disable-next-line intersite/no-empty-catch -- only marks the rejection handled; hash() rethrows it to its caller
@@ -81,9 +107,16 @@ export function createScrubber({ salt, idPattern, redactKeys = [] }) {
   /** Lowercase hex or digit-heavy strings are secrets, phone numbers or birth years, not enum codes. @param {string} text */
   const looksRandom = (text) => text.replace(/\D/g, "").length >= 4 || (text.length >= 16 && /^[0-9a-f]+$/.test(text));
 
-  /** @param {string} text */
-  function isStructural(text) {
-    return isId(text) || SHORT_NUMBER.test(text) || isIsoDate(text) || (CODE.test(text) && !looksRandom(text));
+  /** `keepKeys` match the key's last words: "sortBy" keeps "sort_by" and "listSortBy". @param {string[]} parts */
+  const isKept = (parts) => kept.some((needle) => ` ${parts.join(" ")}`.endsWith(` ${needle}`));
+
+  /** @param {string} text @param {string} key */
+  function isStructural(text, key) {
+    if (isId(text) || SHORT_NUMBER.test(text)) return true;
+    const parts = wordsOf(key);
+    const last = forms(parts.at(-1) ?? "");
+    if (isIsoDate(text)) return last.some((word) => dateWords.has(word)) || isKept(parts);
+    return CODE.test(text) && !looksRandom(text) && (last.some((word) => structural.has(word)) || isKept(parts));
   }
 
   /** A stable stand-in with the same form. @param {string} text */
@@ -100,7 +133,7 @@ export function createScrubber({ salt, idPattern, redactKeys = [] }) {
     if (DIGITS.test(text)) return digitStream.repeat(Math.ceil(text.length / 64)).slice(0, text.length);
     const digitCount = text.replace(/\D/g, "").length;
     if (PHONE.test(text) && digitCount >= 7 && digitCount <= 15) return `+1555${digitStream.slice(0, 7)}`;
-    return `text_${short}`;
+    return `text-${short}`; // never `text_…`: the default idPattern would take that for an ID and replay would try to remap it
   }
 
   /** Same number of integer digits and sign; a fraction stays a fraction. @param {number} number */
@@ -129,7 +162,7 @@ export function createScrubber({ salt, idPattern, redactKeys = [] }) {
     if (typeof value === "number") return hot ? fakeNumber(value) : value;
     if (typeof value === "string") {
       if (hot) return isIdKey(key) && isId(value) ? value : fakeString(value);
-      return isStructural(value) ? value : fakeString(value);
+      return isStructural(value, key) ? value : fakeString(value);
     }
     if (Array.isArray(value)) return Promise.all(value.map((item) => scrub(item, key, hot)));
     if (typeof value === "object") {

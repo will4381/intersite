@@ -286,6 +286,13 @@
               "default": 90
             }
           }
+        },
+        "keepKeys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Extra JSON keys whose short codes and ISO dates are kept, on top of the built-in structural and date words. redactKeys and the built-in sensitive list win."
         }
       }
     },

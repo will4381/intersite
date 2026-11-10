@@ -92,6 +92,22 @@ test("path parameters are scrubbed by their route name", async () => {
   assert.deepEqual(cases[0].response.ids, {});
 });
 
+test("path and query values are kept only under a parameter name known to hold a code or a date", async () => {
+  const { instance, cases } = capture();
+  const url = "https://api.acme.com/v1/teams/maria/boards/active?sort=newest&who=jdoe&from=2026-01-01&born=1990-04-02";
+  await instance.record({ request: req(url), response: new Response("ok"), route: "/v1/teams/:slug/boards/:state", actor: { kind: "user" }, session: "s" });
+  const [, v1, teams, slug, boards, state] = cases[0].request.path.split("/");
+  assert.deepEqual([v1, teams, boards, state], ["v1", "teams", "boards", "active"]);
+  assert.match(slug, /^text-[0-9a-f]{8}$/);
+  const { query } = cases[0].request;
+  assert.equal(query.sort, "newest");
+  assert.equal(query.from, "2026-01-01");
+  assert.match(query.who, /^text-[0-9a-f]{8}$/);
+  assert.match(query.born, /^\d{4}-\d{2}-\d{2}$/);
+  assert.notEqual(query.born, "1990-04-02");
+  assert.ok(!JSON.stringify(cases[0]).match(/maria|jdoe|1990/));
+});
+
 test("outcome, errorCode and ttlDays follow the status", async () => {
   const { instance, cases } = capture({ sample: 0, ttlDays: { rejected: 7 } });
   const base = { request: req("https://a.test/v1/x"), route: "/v1/x", actor: { kind: "anonymous" }, session: "s" };

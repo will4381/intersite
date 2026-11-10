@@ -15,16 +15,16 @@ test("replaces personal data, credentials and free text, keeping the form", asyn
     ["+1 (415) 555-0132", /^\+1555\d{7}$/],
     ["415-555-0132", /^\+1555\d{7}$/],
     ["4155550132", /^\d{10}$/],
-    ["I live at 12 Baker Street", /^text_[0-9a-f]{8}$/],
-    ["Alice", /^text_[0-9a-f]{8}$/],
-    ["eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.c2lnbmF0dXJl", /^text_[0-9a-f]{8}$/],
-    ["sk_4eC39HqLyjWDarjtT1zdp7dc", /^text_[0-9a-f]{8}$/],
+    ["I live at 12 Baker Street", /^text-[0-9a-f]{8}$/],
+    ["Alice", /^text-[0-9a-f]{8}$/],
+    ["eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.c2lnbmF0dXJl", /^text-[0-9a-f]{8}$/],
+    ["sk_4eC39HqLyjWDarjtT1zdp7dc", /^text-[0-9a-f]{8}$/],
     // oxlint-disable-next-line intersite/no-hardcoded-secret -- a made-up token the scrubber must replace; the fixture is the point
-    ["ghp_16C7e42F292c6912E7710c838347Ae178B4a", /^text_[0-9a-f]{8}$/],
-    ["deadbeefcafebabe0123456789abcdef", /^text_[0-9a-f]{8}$/],
-    ["deadbeefcafebabe", /^text_[0-9a-f]{8}$/],
-    ["jdoe1987", /^text_[0-9a-f]{8}$/],
-    ["a".repeat(33), /^text_[0-9a-f]{8}$/],
+    ["ghp_16C7e42F292c6912E7710c838347Ae178B4a", /^text-[0-9a-f]{8}$/],
+    ["deadbeefcafebabe0123456789abcdef", /^text-[0-9a-f]{8}$/],
+    ["deadbeefcafebabe", /^text-[0-9a-f]{8}$/],
+    ["jdoe1987", /^text-[0-9a-f]{8}$/],
+    ["a".repeat(33), /^text-[0-9a-f]{8}$/],
   ];
   for (const [input, form] of replaced) {
     const out = await scrubber.scrub(input, "note");
@@ -33,25 +33,49 @@ test("replaces personal data, credentials and free text, keeping the form", asyn
   }
 });
 
-test("keeps IDs, numbers, booleans, ISO dates and code-like enums", async () => {
-  const kept = [
-    "prog_8fK2abQ9",
-    "3f2b8c1e-1111-4222-8333-444455556666",
-    42,
-    -3.5,
-    true,
-    false,
-    null,
-    "2026-11-10",
-    "2026-11-10T08:15:00.000Z",
-    "2026-11-10T08:15:00+02:00",
-    "active",
-    "usd",
-    "en-us",
-    "plan.pro_2",
-    "12",
+test("keeps IDs, numbers and booleans under any key, ISO dates under date keys and code-like enums under structural keys", async () => {
+  for (const value of ["prog_8fK2abQ9", "3f2b8c1e-1111-4222-8333-444455556666", 42, -3.5, true, false, null, "12"]) {
+    assert.equal(await scrubber.scrub(value, "who"), value, String(value));
+  }
+  for (const value of ["2026-11-10", "2026-11-10T08:15:00.000Z", "2026-11-10T08:15:00+02:00"]) {
+    for (const key of ["createdAt", "dueDate", "starts_on", "expires", "updated"]) assert.equal(await scrubber.scrub(value, key), value, `${key}: ${value}`);
+  }
+  /** @type {[string, string][]} */
+  const codes = [["status", "active"], ["sort", "newest"], ["currency", "usd"], ["locale", "en-us"], ["planCode", "plan.pro_2"], ["user_role", "editor"], ["statuses", "active"], ["categories", "books"], ["phases", "beta"]];
+  for (const [key, value] of codes) assert.equal(await scrubber.scrub(value, key), value, `${key}: ${value}`);
+  assert.deepEqual(await scrubber.scrub({ kinds: ["a", "b"] }), { kinds: ["a", "b"] }, "array items inherit the array's key");
+});
+
+test("a short word or a date under a key not known to hold one is replaced", async () => {
+  /** @type {[string, string, RegExp][]} */
+  const cases = [
+    ["who", "maria", /^text-[0-9a-f]{8}$/],
+    ["ref", "jdoe", /^text-[0-9a-f]{8}$/],
+    ["", "maria", /^text-[0-9a-f]{8}$/],
+    ["sortBy", "newest", /^text-[0-9a-f]{8}$/],
+    ["born", "1990-04-02", /^\d{4}-\d{2}-\d{2}$/],
+    ["status", "2026-11-10", /^\d{4}-\d{2}-\d{2}$/],
+    ["checkpoint", "2026-11-10T08:15:00.000Z", /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/],
   ];
-  for (const value of kept) assert.equal(await scrubber.scrub(value, "status"), value, String(value));
+  for (const [key, value, form] of cases) {
+    const out = await scrubber.scrub(value, key);
+    assert.notEqual(out, value, `${key}: ${value} kept`);
+    assert.match(String(out), form, `${key}: ${value} -> ${out}`);
+  }
+  assert.notDeepEqual(await scrubber.scrub({ people: ["maria"] }), { people: ["maria"] });
+});
+
+test("keepKeys keeps a project's own codes and dates; redactKeys and the sensitive list still win", async () => {
+  const custom = createScrubber({ salt: "salt-one", idPattern: DEFAULT_ID_PATTERN, keepKeys: ["sortBy", "born", "nickname"], redactKeys: ["sort_by"] });
+  const plain = createScrubber({ salt: "salt-one", idPattern: DEFAULT_ID_PATTERN, keepKeys: ["sortBy", "born", "bucket"] });
+  assert.equal(await plain.scrub("newest", "sort_by"), "newest");
+  assert.equal(await plain.scrub("newest", "listSortBy"), "newest");
+  assert.equal(await plain.scrub("1990-04-02", "born"), "1990-04-02");
+  assert.equal(await plain.scrub("hot", "bucket"), "hot");
+  assert.notEqual(await plain.scrub("Call Alice", "bucket"), "Call Alice", "keepKeys keeps codes, not free text");
+  assert.notEqual(await plain.scrub("newest", "sorted"), "newest");
+  assert.notEqual(await custom.scrub("newest", "sortBy"), "newest", "redactKeys beats keepKeys");
+  assert.notEqual(await custom.scrub("ann", "nickname"), "ann", "the sensitive list beats keepKeys");
 });
 
 test("sensitive keys are always replaced, whatever the value looks like", async () => {
@@ -91,8 +115,9 @@ test("sensitive keys are always replaced, whatever the value looks like", async 
   assert.equal(typeof cvv, "number");
   assert.ok(Number(cvv) < 1000);
 
-  // Words are matched whole, so these ordinary keys are not sensitive.
-  for (const key of ["description", "shipping", "zipped_size", "status", "currency"]) assert.equal(await scrubber.scrub("active", key), "active", key);
+  // Words are matched whole, so these ordinary keys are not sensitive: a number under them is kept.
+  for (const key of ["description", "shipping", "zipped_size", "status", "currency"]) assert.equal(await scrubber.scrub(42, key), 42, key);
+  assert.equal(await scrubber.scrub("active", "status"), "active");
 });
 
 test("sensitivity is inherited by nested values, but an ID under an id key survives", async () => {
@@ -111,7 +136,7 @@ test("object keys that are not identifiers are replaced", async () => {
 
 test("equal inputs give equal fakes; another salt gives different fakes", async () => {
   const other = createScrubber({ salt: "salt-two", idPattern: DEFAULT_ID_PATTERN });
-  for (const value of ["alice@example.com", "Free text here", "+1 415 555 0132", "https://a.b/c"]) {
+  for (const value of ["alice@example.com", "Free text here", "+1 415 555 0132", "https://a.b/c", "maria", "1990-04-02"]) {
     const first = await scrubber.scrub(value, "x");
     assert.equal(await scrubber.scrub(value, "y"), first);
     assert.notEqual(await other.scrub(value, "x"), first);

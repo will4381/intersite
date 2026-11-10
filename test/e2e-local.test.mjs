@@ -107,7 +107,7 @@ test("named actions flow from the browser to stored cases, and the CLI reads the
   const caseId = String(fail).split(" ")[2];
   const rerun = await cli(dir, ["replay", "--id", caseId, "--mode", "baseline", "--verbose"]);
   assert.equal(rerun.code, 1);
-  assert.match(rerun.stdout, /\n {2}sent: GET \/notes\/note_000001\n {2}got: 200 \{"note":\{"id":"note_000001","body":"hi"\}\}/);
+  assert.match(rerun.stdout, /\n {2}sent: GET \/notes\/note_000001\n {2}got: 200 \{"note":\{"id":"note_000001","body":"text-[0-9a-f]{8}"\}\}/);
 
   assert.equal((await cli(dir, ["pin", caseId])).stdout, `ok pin: ${caseId} pinned\n`);
 });

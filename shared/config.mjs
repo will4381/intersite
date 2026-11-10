@@ -48,6 +48,8 @@ const defaults = {
     include: ["/**"],
     exclude: [],
     redactKeys: [],
+    /** @type {string[]} */
+    keepKeys: [],
     idPattern: DEFAULT_ID_PATTERN,
     ttlDays: { ok: 14, warn: 90, rejected: 30, error: 90 },
   },

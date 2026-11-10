@@ -93,6 +93,7 @@ gates:
 capture:
   exclude: [/webhooks/**]
   redactKeys: [nickname]
+  keepKeys: [sortBy]
 
 replay:
   target: http://localhost:8787
@@ -139,10 +140,12 @@ return response;
 Fastify, Next.js and browser-only (`wrapFetch`) forms are shown at the top of
 [capture/index.mjs](capture/index.mjs).
 
-- **Scrubbing is default-deny.** A string is kept only when it is an ID, a date, or a short code such as `active`.
+- **Scrubbing is default-deny.** A string is kept only when it is an ID, a date under a date key such as `createdAt`, or a short
+  code such as `active` under a structural key such as `status`. Numbers are kept so replay has amounts and counts.
   Everything else becomes a stable fake. No headers and no response bodies are stored. Before turning capture on in
   production, run `intersite audit`: it lists what was kept, per key, widest first. An enum has a handful of values;
-  a key with many distinct kept values is probably personal data and goes in `capture.redactKeys`. The known gaps
+  a key with many distinct kept values is probably personal data and goes in `capture.redactKeys`. A project enum that came out faked (such as `sortBy`)
+  goes in `capture.keepKeys`. The known gaps
   are listed in `capture/scrub.mjs`.
 - **Actions** are names you give to what users do: `<button data-intersite="program.save">`. The tracker
   (`intersite/track`) stamps each request with the action that caused it, so `intersite actions` shows which

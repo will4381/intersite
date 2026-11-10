@@ -1,11 +1,11 @@
 // @ts-check
 // `intersite audit [--sample 200] [--json]`: every value capture KEPT (did not replace with a fake), per key, widest
 // first. An enum has a handful of values; a key with hundreds of distinct kept values is probably personal data that
-// slipped through, and belongs in `capture.redactKeys`. Reading this list is the review to do before production.
+// slipped through, and belongs in `capture.redactKeys`; an enum key whose values were faked belongs in `capture.keepKeys`. Reading this list is the review to do before production.
 import { callCollector, SetupError } from "../collector/client.mjs";
 import { loadConfig } from "../shared/config.mjs";
 
-const FAKE = /^(?:text_[0-9a-f]{8}|u[0-9a-f]{8}@example\.test|https:\/\/example\.test\/[0-9a-f]{8}|\+1555\d{7})$/;
+const FAKE = /^(?:text-[0-9a-f]{8}|u[0-9a-f]{8}@example\.test|https:\/\/example\.test\/[0-9a-f]{8}|\+1555\d{7})$/;
 
 /**
  * Adds each kept string under `value` to `kept`, keyed by the dotted path of its key (array indexes dropped).
@@ -70,6 +70,6 @@ export default async function audit(argv, { cwd }) {
     const shown = row.values.slice(0, 8).map((value) => JSON.stringify(value.length > 40 ? `${value.slice(0, 40)}…` : value)).join(", ");
     console.log(`${row.key}: ${row.distinct} kept ${row.distinct === 1 ? "value" : "values"}: ${shown}${row.distinct > 8 ? `, +${row.distinct - 8} more` : ""}`);
   }
-  console.log(`ok audit: ${cases} cases, ${rows.length} keys with kept values; a key that holds personal data goes in capture.redactKeys`);
+  console.log(`ok audit: ${cases} cases, ${rows.length} keys with kept values; a key that holds personal data goes in capture.redactKeys; an enum that was faked goes in capture.keepKeys`);
   return 0;
 }
