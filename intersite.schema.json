@@ -396,6 +396,10 @@
         "unless": {
           "type": "string",
           "description": "With `comment`: a regular expression that exempts a comment it matches."
+        },
+        "ext": {
+          "type": "string",
+          "description": "File extension the `bad` and `good` examples are checked as; `ts` unless set (use `tsx` for JSX)."
         }
       },
       "anyOf": [

@@ -1,0 +1,3 @@
+# Rules for the react area. Same format as core.yml; `builtin` switches on rules oxlint already ships.
+rules: []
+builtin: []

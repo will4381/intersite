@@ -52,5 +52,5 @@ a selector.
 
 ## Sharing a rule across projects
 
-Move the entry from `lint.custom` into the Intersite package's `lint/rules.yml` with a `pack`. Its test suite
+Move the entry from `lint.custom` into the Intersite package's `lint/packs/` folder with a `pack`. Its test suite
 fails unless every `bad` example is reported and no `good` example is.

@@ -109,7 +109,7 @@ A rule is one YAML entry: a syntax-tree `selector` (or a `comment` pattern, for 
 that says what to do instead, and examples.
 
 - For one project: add it to `lint.custom` in `intersite.yml`.
-- For every project: add it to [lint/rules.yml](lint/rules.yml) with a `pack`, `bad` and `good` examples. The
+- For every project: add it to a file in [lint/packs/](lint/packs/) with a `pack`, `bad` and `good` examples. The
   test suite fails unless every `bad` example is reported and no `good` one is.
 - When a selector cannot express it: `lint/rules/<id>.mjs`, listed in `lint/rules/index.mjs`.
 

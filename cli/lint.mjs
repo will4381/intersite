@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { loadConfig } from "../shared/config.mjs";
-import { customRules, packageRules } from "../lint/plugin.mjs";
+import { builtinRules, customRules, packageRules } from "../lint/plugin.mjs";
 
 /** @typedef {Record<string, Record<string, number>>} Baseline */
 /** @typedef {{ file: string, line: number, column: number, rule: string, message: string }} Finding */
@@ -51,7 +51,9 @@ export default async function lint(argv, { cwd }) {
   const rules = {};
   for (const r of packageRules) if (r.pack && config.packs.includes(r.pack)) rules[`intersite/${r.id}`] = "error";
   for (const r of customRules(cwd)) rules[`intersite/${r.id}`] = "error";
-  for (const [id, level] of Object.entries(config.rules)) rules[`intersite/${id}`] = level;
+  for (const b of builtinRules) if (config.packs.includes(b.pack)) rules[b.rule] = "error";
+  // An override names an intersite rule by its bare id, or a built-in rule by oxlint's full name.
+  for (const [id, level] of Object.entries(config.rules)) rules[id.includes("/") ? id : `intersite/${id}`] = level;
   // Not an oxlint rule (see bareSuppressions), but switched on and off like one in the slop pack.
   const bareOn = (rules[BARE_RULE] ?? (config.packs.includes("slop") ? "error" : "off")) !== "off";
   delete rules[BARE_RULE];
@@ -61,6 +63,7 @@ export default async function lint(argv, { cwd }) {
     for (const r of [...packageRules, ...customRules(cwd).map((c) => ({ ...c, pack: "custom" }))]) {
       console.log(`${r.pack} ${r.id} ${(rules[`intersite/${r.id}`] ?? "off") === "off" ? "off" : "on"}`);
     }
+    for (const b of builtinRules) console.log(`${b.pack} ${b.rule} ${(rules[b.rule] ?? "off") === "off" ? "off" : "on"}`);
     return 0;
   }
 
@@ -74,11 +77,16 @@ export default async function lint(argv, { cwd }) {
   const configFile = join(cacheDir, "oxlintrc.json");
   const ownConfig = join(cwd, config.extends);
   mkdirSync(cacheDir, { recursive: true });
+  // Naming plugins replaces oxlint's default set, so start from the project's own list, or the defaults.
+  /** @type {string[]} */
+  const ownPlugins = (existsSync(ownConfig) ? JSON.parse(readFileSync(ownConfig, "utf8")).plugins : undefined) ?? ["unicorn", "typescript", "oxc"];
   writeFileSync(
     configFile,
     JSON.stringify({
       ...(existsSync(ownConfig) && { extends: [ownConfig] }),
       jsPlugins: [fileURLToPath(new URL("../lint/plugin.mjs", import.meta.url))],
+      // A built-in rule only runs when its plugin is on; `eslint` rules need none.
+      plugins: [...new Set([...ownPlugins, ...builtinRules.filter((b) => b.rule in rules).map((b) => b.rule.split("/")[0]).filter((name) => name !== "eslint")])],
       rules,
     }),
   );

@@ -1,7 +1,7 @@
 // @ts-check
-// The `intersite` oxlint plugin: every package rule (lint/rules.yml plus lint/rules/*.mjs) and the project's
+// The `intersite` oxlint plugin: every package rule (lint/packs/*.yml plus lint/rules/**) and the project's
 // `lint.custom` rules from intersite.yml in the working directory.
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { matchesGlob, relative } from "node:path";
 
 import { defineRule, eslintCompatPlugin } from "@oxlint/plugins";
@@ -17,8 +17,18 @@ import codeRules from "./rules/index.mjs";
  * @typedef {{ id: string, pack?: string, selector?: string, comment?: string, unless?: string, message: string, files?: string[], bad?: string[], good?: string[] }} JsonRule
  */
 
+/** Every file in lint/packs: `rules` are declared rules, `builtin` switches on rules oxlint already ships. */
+const packFiles = readdirSync(new URL("./packs/", import.meta.url)).filter((name) => name.endsWith(".yml")).sort()
+  .map((name) => parse(readFileSync(new URL(`./packs/${name}`, import.meta.url), "utf8")));
+
 /** @type {JsonRule[]} */
-export const jsonRules = parse(readFileSync(new URL("./rules.yml", import.meta.url), "utf8")).rules;
+export const jsonRules = packFiles.flatMap((file) => file.rules ?? []);
+
+/**
+ * Rules oxlint ships that a pack turns on, named as oxlint names them (`react/no-array-index-key`).
+ * @type {{ rule: string, pack: string }[]}
+ */
+export const builtinRules = packFiles.flatMap((file) => file.builtin ?? []);
 
 /** Every package rule as `{ id, pack, bad, good }`. */
 export const packageRules = [...jsonRules, ...codeRules];

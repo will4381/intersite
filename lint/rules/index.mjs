@@ -11,6 +11,10 @@ import * as noModuleScopeLet from "./no-module-scope-let.mjs";
 import * as noSelfComparisonAssertion from "./no-self-comparison-assertion.mjs";
 import * as noSilentFallback from "./no-silent-fallback.mjs";
 import * as requireAssertion from "./require-assertion.mjs";
+import asyncRules from "./async/index.mjs";
+import reactRules from "./react/index.mjs";
+import structureRules from "./structure/index.mjs";
+import webRules from "./web/index.mjs";
 
 export default [
   noBooleanStateCluster,
@@ -24,4 +28,8 @@ export default [
   noSelfComparisonAssertion,
   noSilentFallback,
   requireAssertion,
+  ...asyncRules,
+  ...reactRules,
+  ...structureRules,
+  ...webRules,
 ];
