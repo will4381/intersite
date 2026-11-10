@@ -29,7 +29,8 @@ function reply(res, status, body) {
 
 /**
  * Notes and comments in memory, two tenants chosen by `x-tenant`. Turn on bugs by adding to `bugs`:
- * "status", "shape", "twice" (repeat archive gives 500), "leak" (reads ignore the tenant), "ledger" (stats broken).
+ * "status", "shape", "twice" (repeat archive gives 500), "leak" (reads ignore the tenant), "ledger" (stats broken),
+ * "n+1" (each request runs more queries, as reported in its Server-Timing header).
  */
 export async function startTarget() {
   /** @type {Set<string>} */
@@ -52,10 +53,12 @@ export async function startTarget() {
     if (url.pathname === "/__reset") return reset(), reply(res, 200, {});
     if (url.pathname === "/stats") return reply(res, 200, { ok: !bugs.has("ledger") });
     log.push({ method, path: url.pathname, body, headers: req.headers });
+    res.setHeader("server-timing", `queries;desc=${bugs.has("n+1") ? 9 : 2}, db;dur=3.1`);
 
     const tenant = req.headers["x-tenant"];
     if (typeof tenant !== "string") return reply(res, 401, { error: "sign in" });
     if (method === "POST" && url.pathname === "/notes") {
+      if (typeof body?.text !== "string") return reply(res, 400, { error: "text is required" });
       const note = { id: `note_${String(++counter).padStart(6, "0")}`, tenant, text: body.text, archived: false };
       notes.set(note.id, note);
       return reply(res, 201, { note: { id: note.id, text: note.text } });

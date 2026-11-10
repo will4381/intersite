@@ -49,7 +49,7 @@ finding, exit code 0, 1 or 2.
 | `intersite lint [paths] [--write] [--rules]` | Lints; `--write` lowers the baseline; `--rules` lists what applies |
 | `intersite gate <name> [--base <ref>]` | Runs one gate against the diff |
 | `intersite collector` | Runs the local collector (SQLite file in `.intersite/`) |
-| `intersite replay [--id] [--tag] [--action] [--sample] [--mode] [--verbose]` | Replays recorded sessions against a local server |
+| `intersite replay [--id] [--tag] [--action] [--sample] [--mode] [--verbose] [--metrics-out] [--metrics-base]` | Replays recorded sessions against a local server |
 | `intersite actions` | Lists named user actions seen, with error counts |
 | `intersite pin <id>` | Keeps a recorded case from expiring |
 | `intersite deploy [--dry-run]` | Deploys the collector to Cloudflare (Worker and D1) |
@@ -146,14 +146,21 @@ Fastify, Next.js and browser-only (`wrapFetch`) forms are shown at the top of
   actions fail in production and `intersite replay --action program.save` replays exactly those. Markup can change
   freely as long as the name stays.
 - **Replay modes:** `baseline` (same status and response shape as production), `twice` (a repeated write must not
-  error), `cross-tenant` (another account must be refused), `ui` (each named action's page loads cleanly in Chrome
-  and the action is still there).
+  error), `cross-tenant` (another account must be refused), `ui` (each named action's page loads cleanly in Chrome;
+  reads are clicked, and writes fill the form from the recorded body, submit it and must get the recorded status).
 - **The adapter** (`intersite.adapter.mjs`) tells replay how to sign in a seeded test user and which seeded record
   stands in for an ID from production.
 - Replay refuses a target that is not local unless `--allow-remote` is passed.
 
 Nightly on the main branch, `intersite replay --sample 200 --mark --release <sha>` records which sessions pass. Pull
 requests then run `intersite replay --known-good`, so a failure there is a regression and not old noise.
+
+### Catching an endpoint that got slower
+
+Have the server report counts in the standard `Server-Timing` header (`queries;desc=7`). On the main branch run
+`intersite replay --seed 1 --metrics-out .intersite/metrics/main.json`, then on your branch, against the same local
+data, `intersite replay --metrics-base .intersite/metrics/main.json`. A request that now runs more queries fails,
+which is how an N+1 shows up before production.
 
 ### Checking a migration before it ships
 

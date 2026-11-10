@@ -1,9 +1,11 @@
 // @ts-check
-import { resolve } from "node:path";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
 import { LOCAL_HOST, getCase, listSessions, postResults } from "../replay/collector.mjs";
+import { compareMetrics } from "../replay/metrics.mjs";
 import { replaySessions } from "../replay/run.mjs";
 import { collectorTokens, loadConfig } from "../shared/config.mjs";
 
@@ -27,14 +29,22 @@ const options = /** @type {const} */ ({
   verbose: { type: "boolean" },
   concurrency: { type: "string" },
   headed: { type: "boolean" },
+  "metrics-out": { type: "string" },
+  "metrics-base": { type: "string" },
 });
+
+const USAGE = "usage: intersite replay [--id <caseId> | --seed <n> --sample <n> --tag <outcome> --since <7d> --route <route> --action <name> --known-good]"
+  + " [--mode <mode>]... [--target <url>] [--allow-remote] [--mark --release <sha>] [--concurrency <n>] [--headed] [--verbose] [--json]"
+  + " [--metrics-out <file>] [--metrics-base <file>] (--metrics-base compares Server-Timing counters with a --metrics-out file;"
+  + " both runs must replay the same sessions on the same local data, so it reuses that run's seed)";
 
 /** @param {string[]} argv @param {{ cwd: string }} context @returns {Promise<number>} */
 export default async function replay(argv, { cwd }) {
   try {
     return await main(argv, cwd);
   } catch (error) {
-    console.error(`intersite replay: ${error instanceof Error ? error.message : error}`);
+    const usage = String(/** @type {{ code?: unknown }} */ (error)?.code).startsWith("ERR_PARSE_ARGS") ? `; ${USAGE}` : "";
+    console.error(`intersite replay: ${error instanceof Error ? error.message : error}${usage}`);
     return 2;
   }
 }
@@ -57,6 +67,19 @@ async function main(argv, cwd) {
   let concurrency = Number(flags.concurrency ?? 1);
   if (!Number.isInteger(concurrency) || concurrency < 1) throw new Error("--concurrency must be a positive integer");
 
+  const metricsBase = flags["metrics-base"];
+  if ((metricsBase || flags["metrics-out"]) && !modes.includes("baseline")) throw new Error("--metrics-out and --metrics-base need the baseline mode");
+  /** @type {{ _meta: { seed: number | null, sessions: string[] } } & import("../replay/metrics.mjs").Metrics | undefined} */
+  let base;
+  if (metricsBase) {
+    try {
+      base = JSON.parse(readFileSync(resolve(cwd, metricsBase), "utf8"));
+    } catch (error) {
+      throw new Error(`cannot read --metrics-base ${metricsBase}; write it first with --metrics-out (${error instanceof Error ? error.message : error})`);
+    }
+    if (!Array.isArray(base?._meta?.sessions)) throw new Error(`--metrics-base ${metricsBase} has no _meta; write it with --metrics-out`);
+  }
+
   const collector = { url: config.collector.url, token: collectorTokens(config).read, project: config.project };
 
   const adapter = await import(pathToFileURL(resolve(cwd, config.replay.adapter)).href);
@@ -71,7 +94,7 @@ async function main(argv, cwd) {
   if (flags.id) {
     sessions = [await getCase(collector, flags.id)];
   } else {
-    seed = flags.seed ?? String(Math.floor(Math.random() * 2 ** 31));
+    seed = flags.seed ?? String(typeof base?._meta.seed === "number" ? base._meta.seed : Math.floor(Math.random() * 2 ** 31));
     const sample = flags.sample ?? String(config.replay.sample);
     if (!/^\d+$/.test(seed)) throw new Error("--seed must be a non-negative integer");
     if (!/^\d+$/.test(sample) || Number(sample) < 1 || Number(sample) > 200) throw new Error("--sample must be 1 to 200");
@@ -82,6 +105,16 @@ async function main(argv, cwd) {
     if (flags.action) query.push(["action", flags.action]);
     if (flags["known-good"]) query.push(["known_good", "1"]);
     sessions = await listSessions(collector, query);
+  }
+
+  if (base) {
+    const names = sessions.map((session) => session.session);
+    const same = flags.id ? names.every((name) => base._meta.sessions.includes(name))
+      : Number(seed) === base._meta.seed && names.join("\n") === base._meta.sessions.join("\n");
+    if (!same) {
+      throw new Error(`--metrics-base ${metricsBase} was written by a run of other sessions (seed ${base._meta.seed}); `
+        + `replay the same ones: same --seed, --sample and filters, on the same local data`);
+    }
   }
 
   const results = await replaySessions({
@@ -97,13 +130,27 @@ async function main(argv, cwd) {
   }
 
   const steps = results.flatMap((result) => result.steps);
+  /** @type {import("../replay/metrics.mjs").Metrics} */
+  const metrics = Object.fromEntries(steps.filter((step) => step.mode === "baseline" && step.counters).map((step) => [step.caseId, step.counters]));
+  if (flags["metrics-out"]) {
+    const file = resolve(cwd, flags["metrics-out"]);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, `${JSON.stringify({ _meta: { seed: seed === undefined ? null : Number(seed), sessions: sessions.map((s) => s.session) }, ...metrics }, null, 2)}\n`);
+  }
+  let metricFailures = /** @type {{ caseId: string, reason: string }[]} */ ([]);
+  if (base) {
+    const { _meta, ...before } = base;
+    metricFailures = compareMetrics(before, metrics);
+  }
   const count = (/** @type {string} */ kind) => steps.filter((step) => step.result === kind).length;
+  const failed = count("failed") + metricFailures.length;
   if (flags.json) {
-    console.log(JSON.stringify({ seed, sessions: results }));
+    console.log(JSON.stringify({ seed, sessions: results, ...(base && { metrics: metricFailures }) }));
   } else {
     const extra = (flags.target ? ` --target ${flags.target}` : "") + (flags["allow-remote"] ? " --allow-remote" : "");
-    const summary = `replay: ${results.length} sessions; steps: ${count("passed")} passed, ${count("failed")} failed, ${count("skipped")} skipped${seed === undefined ? "" : `; seed ${seed}`}`;
-    if (!count("failed")) {
+    const compared = base ? `; metrics: ${Object.keys(metrics).filter((id) => base[id]).length} cases compared, ${metricFailures.length} higher` : "";
+    const summary = `replay: ${results.length} sessions; steps: ${count("passed")} passed, ${count("failed")} failed, ${count("skipped")} skipped${seed === undefined ? "" : `; seed ${seed}`}${compared}`;
+    if (!failed) {
       console.log(`ok ${summary}`);
       return 0;
     }
@@ -115,11 +162,15 @@ async function main(argv, cwd) {
           `FAIL ${s.mode} ${s.caseId} ${s.method} ${s.route}: ${s.reason} | rerun: intersite replay --id ${s.caseId} --mode ${s.mode}${extra}`,
           ...(flags.verbose && s.sent !== undefined ? [`  sent: ${s.sent}`, `  got: ${s.got}`] : []),
         ]),
+      ...metricFailures.map(({ caseId, reason }) => {
+        const step = steps.find((s) => s.mode === "baseline" && s.caseId === caseId);
+        return `FAIL metrics ${caseId} ${step?.method} ${step?.route}: ${reason} | rerun: intersite replay --id ${caseId} --metrics-base ${metricsBase}${extra}`;
+      }),
       ...results.filter((result) => result.skipped).map((result) => `SKIP ${result.session}: ${result.skipped}`),
     ];
     console.log(lines.join("\n"));
   }
-  return count("failed") ? 1 : 0;
+  return failed ? 1 : 0;
 }
 
 /** "7d", "24h" or an ISO timestamp, as an ISO timestamp. @param {string} value */

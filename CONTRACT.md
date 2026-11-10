@@ -164,7 +164,13 @@ UI cases are skipped by every mode except `ui`.
   `action` in the session, in order: open `uiTarget + action.page` (IDs remapped as below) signed in with the
   adapter's headers; fail on a page error, a console error, or a 5xx from the API during load; fail when no element
   carries `data-intersite="<name>"`. When every recorded case of that action is a GET, click the element and fail on
-  the same three things. An action that wrote is checked for presence only, since the form's inputs are not recorded.
+  the same three things. An action with exactly one write case (POST, PUT, PATCH, DELETE) whose body is a JSON object
+  or empty is filled and submitted: its form is the element or its closest `<form>`; each top-level body key fills the
+  control with that `name` or `id` (IDs remapped, dates shifted; nested values left alone); then the form is
+  submitted. It passes when a request with the recorded method to a path matching the route template was answered
+  with the recorded status and none of the three checks fired. IDs the answer created are mapped for later actions.
+  When a key has no control, or there are several write cases, only presence is checked and the step carries
+  `checked: "presence"`.
   A page with a `_` segment cannot be rebuilt and is reported `skipped`. IDs in a page go through `resolveId`.
 
 IDs: an ID the recorded response created (in `response.ids`) maps to the ID at the same pointer in the replayed
@@ -174,3 +180,10 @@ response, and later requests in the session are rewritten with it. An ID the ses
 Dates: with `replay.shiftDates`, every ISO date or timestamp in a request's query and body is moved forward by the
 time between the case's `at` and now, so "starts tomorrow" is still in the future. Each value keeps its format, and a
 date without a time moves by whole days. `replaySessions` takes `now` as an option so this is exact in tests.
+
+Metrics: a server may report per-request counters in `Server-Timing` as entries whose `desc` is a number
+(`queries;desc=7`); entries with only `dur` are ignored, since durations vary and counts do not.
+`--metrics-out <file>` writes `{ "_meta": { seed, sessions }, "<caseId>": { "<counter>": n } }` from the baseline
+mode. `--metrics-base <file>` fails a case whose counter is higher than in that file (`FAIL metrics …`), and is a
+setup error when the run replays other sessions than the file's; without `--seed` it reuses the file's seed. Compare
+two local runs on the same data, never against production.

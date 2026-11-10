@@ -20,13 +20,27 @@ const hasChrome = existsSync("/Applications/Google Chrome.app")
 
 /** @type {Awaited<ReturnType<typeof startTarget>>} */
 let target;
-/** How the web app misbehaves: "healthy", "renamed", "throws", "console" or "500". */
+/** How the web app misbehaves: "healthy", "renamed", "throws", "console", "500", and on the form page "wrong-shape", "sends-nothing" or "no-color". */
 let mode = "healthy";
 let appUrl = "";
 /** @type {import("node:http").Server} */
 let app;
 
-/** The notes page: an Open button that reads through /api, and a New button that writes. */
+/** The new-note page: a form whose controls are named after the API's body keys; saving opens the new note. */
+const form = () => `<!doctype html><link rel="icon" href="data:,"><title>new note</title>
+<form data-intersite="note.add" id="f"><input name="text">
+${mode === "no-color" ? "" : '<select name="color"><option>red</option><option>blue</option></select>'}
+<input type="checkbox" id="pinned"><button>Save</button></form>
+<script>
+f.onsubmit = async (event) => {
+  event.preventDefault();
+  ${mode === "sends-nothing" ? "if (!f.dataset.ready) return;" : ""}
+  const response = await fetch("/api/notes", { method: "POST", body: JSON.stringify(${mode === "wrong-shape" ? "{ note: { text: f.text.value } }" : '{ text: f.text.value, color: f.elements.color?.value, pinned: f.querySelector("#pinned").checked }'}) });
+  if (response.ok) location.href = "/notes/" + (await response.json()).note.id;
+};
+</script>`;
+
+/** The notes page: an Open button that reads the note in the address through /api, and a New button that writes. */
 const html = () => `<!doctype html><link rel="icon" href="data:,"><title>notes</title>
 <button id="open" data-intersite="${mode === "renamed" ? "note.view" : "note.open"}">Open</button>
 <button id="create" data-intersite="note.create">New</button><p id="out"></p>
@@ -34,7 +48,7 @@ const html = () => `<!doctype html><link rel="icon" href="data:,"><title>notes</
 ${mode === "throws" ? 'throw new Error("boom on load");' : ""}
 document.getElementById("open").onclick = async () => {
   ${mode === "console" ? 'console.error("handler failed");' : ""}
-  const response = await fetch("/api/notes/note_seed01");
+  const response = await fetch("/api" + location.pathname);
   document.getElementById("out").textContent = response.status;
 };
 document.getElementById("create").onclick = () => fetch("/api/notes", { method: "POST", body: JSON.stringify({ text: "x" }) });
@@ -44,7 +58,7 @@ before(async () => {
   target = await startTarget();
   app = createServer(async (req, res) => {
     const path = req.url ?? "/";
-    if (!path.startsWith("/api/")) return res.writeHead(200, { "content-type": "text/html" }).end(html());
+    if (!path.startsWith("/api/")) return res.writeHead(200, { "content-type": "text/html" }).end(path === "/new" ? form() : html());
     if (mode === "500") return res.writeHead(500).end("{}");
     let body = "";
     for await (const chunk of req) body += chunk;
@@ -68,19 +82,19 @@ const session = [
   { ...recorded({ id: "u-4", session: "u", seq: 4, method: "GET", route: "/x/:slug", path: "/x/hello-world", status: 200, json: {} }), action: { name: "x.open", page: "/x/_" } },
 ];
 
-/** @param {string} [cwd] */
-async function replayUi(cwd = root) {
+/** @param {string} [cwd] @param {import("../../shared/case.mjs").Case[]} [cases] */
+async function replayUi(cwd = root, cases = session) {
   assert.ok(hasChrome, "the ui replay tests need Google Chrome installed (https://www.google.com/chrome/)");
   const [result] = await replaySessions({
-    sessions: [{ session: "u", cases: session }], target: target.url, uiTarget: appUrl, adapter, modes: ["ui"], idPattern: DEFAULT_ID_PATTERN, cwd,
+    sessions: [{ session: "u", cases }], target: target.url, uiTarget: appUrl, adapter, modes: ["ui"], idPattern: DEFAULT_ID_PATTERN, cwd,
   });
-  return result.steps.map((step) => `${step.caseId} ${step.method} ${step.route} ${step.result}${step.reason ? `: ${step.reason}` : ""}`);
+  return result.steps.map((step) => `${step.caseId} ${step.method} ${step.route} ${step.result}${step.reason ? `: ${step.reason}` : ""}${step.checked ? ` (${step.checked})` : ""}`);
 }
 
 test("a healthy page passes; a read action is clicked signed in, a write is only checked, a _ page is skipped", async () => {
   assert.deepEqual(await replayUi(), [
     "u-1 note.open /notes/note_prod99 passed",
-    "u-2 note.create /notes/note_prod99 passed",
+    "u-2 note.create /notes/note_prod99 passed (presence)",
     "u-3 UI /notes/note_prod99 passed",
     "u-4 x.open /x/_ skipped: page /x/_ has a segment capture reduced to _, which cannot be resolved",
   ]);
@@ -104,7 +118,7 @@ test("a click whose handler logs console.error or gets a 500 is reported", async
   mode = "console";
   assert.deepEqual((await replayUi()).slice(0, 2), [
     "u-1 note.open /notes/note_prod99 failed: console error: handler failed",
-    "u-2 note.create /notes/note_prod99 passed",
+    "u-2 note.create /notes/note_prod99 passed (presence)",
   ]);
   mode = "500";
   assert.equal((await replayUi())[0], "u-1 note.open /notes/note_prod99 failed: 500 from GET /api/notes/note_seed01");
@@ -113,4 +127,39 @@ test("a click whose handler logs console.error or gets a 500 is reported", async
 test("without playwright-core in the project, ui mode says what to install", async () => {
   const empty = realpathSync(mkdtempSync(join(tmpdir(), "intersite-ui-")));
   await assert.rejects(replayUi(empty), { message: "ui mode needs playwright-core in the project: npm install --save-dev playwright-core" });
+});
+
+/** Fill in the new-note form and save it, then open the note it created. */
+const writeSession = [
+  { ...recorded({ id: "w-1", session: "w", seq: 1, method: "POST", route: "/notes", path: "/notes", body: { text: "from prod", color: "blue", pinned: true }, status: 201, json: { note: { id: "note_prodW1", text: "from prod" } } }), action: { name: "note.add", page: "/new" } },
+  { ...recorded({ id: "w-2", session: "w", seq: 2, method: "GET", route: "/notes/:id", path: "/notes/note_prodW1", status: 200, json: { note: { id: "note_prodW1", text: "from prod" } } }), action: { name: "note.open", page: "/notes/note_prodW1" } },
+];
+
+test("a write action's form is filled from the recorded body and submitted; a later read opens the record it created", async () => {
+  assert.deepEqual(await replayUi(root, writeSession), ["w-1 note.add /new passed", "w-2 note.open /notes/note_prodW1 passed"]);
+  const posts = target.log.filter((entry) => entry.method === "POST");
+  assert.deepEqual(posts.map((entry) => entry.body), [{ text: "from prod", color: "blue", pinned: true }]);
+  assert.ok(target.log.some((entry) => entry.method === "GET" && entry.path === "/notes/note_000001"), "the Open button read the note the form created");
+});
+
+test("a form that sends the wrong payload shape fails with the status the server answered", async () => {
+  mode = "wrong-shape";
+  assert.equal((await replayUi(root, writeSession))[0], "w-1 note.add /new failed: status 400, recorded 201 for POST /notes");
+});
+
+test("a form whose submit handler sends nothing fails because the request never went out", async () => {
+  mode = "sends-nothing";
+  assert.equal((await replayUi(root, writeSession))[0], "w-1 note.add /new failed: no POST /notes request was sent");
+});
+
+test("a body key with no matching control falls back to checking the action is there", async () => {
+  mode = "no-color";
+  assert.equal((await replayUi(root, writeSession))[0], "w-1 note.add /new passed (presence)");
+  assert.ok(target.log.every((entry) => entry.method !== "POST"), "nothing was submitted");
+});
+
+test("a write production answered with 400 passes when the replay is answered 400 too", async () => {
+  mode = "wrong-shape";
+  const rejected = { ...writeSession[0], response: { ...writeSession[0].response, status: 400, ids: {} } };
+  assert.deepEqual(await replayUi(root, [rejected]), ["w-1 note.add /new passed"]);
 });

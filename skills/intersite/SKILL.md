@@ -29,6 +29,7 @@ collector is available. Success is one line starting `ok check:`. Each finding i
 | `FAIL twice` | Repeating a write caused a server error | Make the write safe to repeat |
 | `FAIL cross-tenant` | Another account could reach the record | Fix the authorization check |
 | `FAIL ui` | A page or named action broke | Run the rerun command with `--headed` to watch |
+| `FAIL metrics` | The endpoint now does more work for the same request (`queries 7 → 19`) | Look for a loop that issues one query per item |
 
 ## Never make a check pass by weakening it
 

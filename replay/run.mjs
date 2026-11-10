@@ -1,6 +1,7 @@
 // @ts-check
 import { UI_METHOD } from "../shared/case.mjs";
 import { shapeDiff, shapeOf } from "../shared/shape.mjs";
+import { countersOf } from "./metrics.mjs";
 
 /** @typedef {import("../shared/case.mjs").Case} Case */
 /** @typedef {"baseline" | "twice" | "cross-tenant" | "ui"} Mode */
@@ -22,11 +23,11 @@ import { shapeDiff, shapeOf } from "../shared/shape.mjs";
  * @property {string} [reason]
  * @property {string} [sent]   On a failed request step: "METHOD path body" as sent, at most 500 characters.
  * @property {string} [got]    On a failed request step: "status body" as answered, at most 500 characters.
+ * @property {Record<string, number>} [counters] On a baseline step: the counters the server reported in `Server-Timing`.
+ * @property {"presence"} [checked] On a `ui` write action that could not be filled from the recorded body: only its presence was checked.
  */
 /** @typedef {{ session: string, steps: Step[], skipped?: string }} SessionResult */
 /** @typedef {{ target: string, adapter: Adapter, pattern: RegExp, fetch: typeof fetch, startedAt: number | undefined }} Context */
-
-class Unresolved extends Error {}
 
 const DAY = 86_400_000;
 const CLIP = 500;
@@ -89,7 +90,8 @@ async function replaySession({ session, cases }, modes, context, ui) {
  * One pass over a session in one API mode. Returns the skip reason when an ID could not be resolved.
  * @param {Mode} mode @param {Case[]} cases @param {Step[]} steps @param {Context} context
  */
-async function replayOnce(mode, cases, steps, { target, adapter, pattern, fetch, startedAt }) {
+async function replayOnce(mode, cases, steps, context) {
+  const { target, adapter, pattern, fetch } = context;
   await adapter.reset?.({ target });
   /** @type {Map<string, string>} recorded ID -> replayed ID */
   const ids = new Map();
@@ -117,7 +119,7 @@ async function replayOnce(mode, cases, steps, { target, adapter, pattern, fetch,
     let json;
     try { json = JSON.parse(text); } catch { json = undefined; }
     const exchange = { sent: clip(`${request.method} ${url.pathname}${url.search}${body ? ` ${body}` : ""}`), got: clip(`${response.status} ${text}`) };
-    return { status: response.status, json, exchange };
+    return { status: response.status, json, exchange, counters: countersOf(response.headers.get("server-timing")) };
   };
 
   for (const [index, item] of cases.entries()) {
@@ -127,27 +129,12 @@ async function replayOnce(mode, cases, steps, { target, adapter, pattern, fetch,
     const record = (which, result, reason, exchange) =>
       steps.push({ mode, caseId: which.id, method: which.request.method, route: which.request.route, result, ...(reason && { reason }), ...(result === "failed" && exchange) });
 
-    /** @type {string[]} */
-    const found = [];
-    mapIds(item.request, pattern, (id) => (found.push(id), id));
-    try {
-      for (const id of found) {
-        if (ids.has(id)) continue;
-        if (!adapter.resolveId) throw new Unresolved(`${id} was not created by this session and the adapter has no resolveId`);
-        const resolved = await adapter.resolveId(id, { target });
-        if (resolved === undefined) throw new Unresolved(`resolveId gave nothing for ${id}`);
-        ids.set(id, resolved);
-      }
-    } catch (error) {
-      if (!(error instanceof Unresolved)) throw error;
-      for (const rest of cases.slice(index)) if (counts(mode, rest, pattern)) record(rest, "skipped", error.message);
-      return error.message;
+    const prepared = await prepare(item, ids, context);
+    if (prepared.skip !== undefined) {
+      for (const rest of cases.slice(index)) if (counts(mode, rest, pattern)) record(rest, "skipped", prepared.skip);
+      return prepared.skip;
     }
-    let request = mapIds(item.request, pattern, (id) => /** @type {string} */ (ids.get(id)));
-    if (startedAt !== undefined) {
-      const shift = (/** @type {unknown} */ value) => (typeof value === "string" ? shiftDate(value, startedAt - Date.parse(item.at)) : value);
-      request = { ...request, query: mapValues(request.query, shift), body: deep(request.body, shift) };
-    }
+    const { request } = prepared;
 
     // Another account's request goes first, so a leaky DELETE is not hidden by the owner's DELETE.
     if (mode === "cross-tenant" && counts(mode, item, pattern)) {
@@ -157,16 +144,14 @@ async function replayOnce(mode, cases, steps, { target, adapter, pattern, fetch,
     }
 
     const first = await send(request, item, await auth(kind, false));
-    for (const [pointer, recordedId] of Object.entries(item.response.ids)) {
-      const value = valueAt(first.json, pointer);
-      if (typeof value === "string") ids.set(recordedId, value);
-    }
+    learnIds(item, first.json, ids);
 
     if (mode === "baseline") {
       const reason = first.status !== item.response.status
         ? `status recorded ${item.response.status}, got ${first.status}`
         : shapeDiff(item.response.shape, shapeOf(first.json));
       record(item, reason ? "failed" : "passed", reason, first.exchange);
+      if (Object.keys(first.counters).length) /** @type {Step} */ (steps.at(-1)).counters = first.counters;
     }
     if (mode === "twice" && method !== "GET") {
       const second = await send(request, item, await auth(kind, false));
@@ -175,6 +160,48 @@ async function replayOnce(mode, cases, steps, { target, adapter, pattern, fetch,
     }
   }
   return undefined;
+}
+
+/**
+ * The case's request with IDs swapped for replayed ones (created earlier in the session, or from `resolveId`) and,
+ * with `shiftDates`, dates moved forward. Returns `skip` when an ID cannot be resolved.
+ * @param {Case} item @param {Map<string, string>} ids recorded ID -> replayed ID, filled as IDs are resolved
+ * @param {Context} context
+ * @returns {Promise<{ request: Case["request"], skip?: undefined } | { skip: string }>}
+ */
+export async function prepare(item, ids, { target, adapter, pattern, startedAt }) {
+  /** @type {string[]} */
+  const found = [];
+  mapIds(item.request, pattern, (id) => (found.push(id), id));
+  const skip = await resolveIds(found, ids, { target, adapter });
+  if (skip) return { skip };
+  const request = mapIds(item.request, pattern, (id) => /** @type {string} */ (ids.get(id)));
+  if (startedAt === undefined) return { request };
+  const shift = (/** @type {unknown} */ value) => (typeof value === "string" ? shiftDate(value, startedAt - Date.parse(item.at)) : value);
+  return { request: { ...request, query: mapValues(request.query, shift), body: deep(request.body, shift) } };
+}
+
+/**
+ * Adds each ID not yet in `ids` from `resolveId`. Returns why one could not be resolved.
+ * @param {string[]} found @param {Map<string, string>} ids @param {{ target: string, adapter: Adapter }} context
+ */
+export async function resolveIds(found, ids, { target, adapter }) {
+  for (const id of found) {
+    if (ids.has(id)) continue;
+    if (!adapter.resolveId) return `${id} was not created by this session and the adapter has no resolveId`;
+    const resolved = await adapter.resolveId(id, { target });
+    if (resolved === undefined) return `resolveId gave nothing for ${id}`;
+    ids.set(id, resolved);
+  }
+  return undefined;
+}
+
+/** Maps each ID the recorded response created to the one at the same pointer in the replayed answer. @param {Case} item @param {unknown} json @param {Map<string, string>} ids */
+export function learnIds(item, json, ids) {
+  for (const [pointer, recordedId] of Object.entries(item.response.ids)) {
+    const value = valueAt(json, pointer);
+    if (typeof value === "string") ids.set(recordedId, value);
+  }
 }
 
 /**

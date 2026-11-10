@@ -1,7 +1,7 @@
 // @ts-check
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { existsSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { after, before, beforeEach, test } from "node:test";
@@ -153,4 +153,51 @@ test("an unreachable remote collector is a setup error that says what to check",
   assert.equal(run.code, 2);
   assert.equal(run.stdout, "");
   assert.equal(run.stderr, "intersite replay: cannot reach the collector at http://collector.invalid; check collector.url in intersite.yml\n");
+});
+
+test("--metrics-out writes each baseline case's Server-Timing counters, with the seed and sessions, creating the folder", async () => {
+  const run = await cli(["--seed", "7", "--metrics-out", "out/metrics/main.json"]);
+  assert.equal(run.code, 0, run.stderr);
+  assert.match(run.stdout, /^ok replay: 3 sessions; steps: 10 passed, 0 failed, 1 skipped; seed 7\n$/);
+  const written = JSON.parse(readFileSync(join(cwd, "out/metrics/main.json"), "utf8"));
+  assert.deepEqual(written._meta, { seed: 7, sessions: ["s-a", "s-b", "s-gone"] });
+  assert.deepEqual(written["s-a-3"], { queries: 2 });
+  assert.equal(Object.keys(written).length, 9, "_meta and the 8 cases that ran");
+});
+
+test("--metrics-base fails each case whose counters went up, and its rerun command reproduces it", async () => {
+  assert.equal((await cli(["--seed", "7", "--metrics-out", "base.json"])).code, 0);
+  target.bugs.add("n+1");
+  const run = await cli(["--metrics-base", "base.json"]);
+  assert.equal(run.code, 1, run.stderr);
+  const lines = run.stdout.trim().split("\n");
+  assert.equal(lines[0], "replay: 3 sessions; steps: 10 passed, 0 failed, 1 skipped; seed 7; metrics: 8 cases compared, 8 higher");
+  const fail = "FAIL metrics s-a-3 POST /notes/:id/comments: queries 2 → 9 | rerun: intersite replay --id s-a-3 --metrics-base base.json";
+  assert.ok(lines.includes(fail), run.stdout);
+
+  const rerun = await cli(fail.split("rerun: intersite replay ")[1].split(" "));
+  assert.equal(rerun.code, 1, rerun.stderr);
+  assert.ok(rerun.stdout.trim().split("\n").includes(fail), rerun.stdout);
+});
+
+test("--metrics-base passes when counters are equal or lower, and reuses the base run's seed", async () => {
+  target.bugs.add("n+1");
+  assert.equal((await cli(["--seed", "7", "--metrics-out", "heavy.json"])).code, 0);
+  target.bugs.clear();
+  const lower = await cli(["--metrics-base", "heavy.json"]);
+  assert.equal(lower.code, 0, lower.stderr);
+  assert.equal(lower.stdout, "ok replay: 3 sessions; steps: 10 passed, 0 failed, 1 skipped; seed 7; metrics: 8 cases compared, 0 higher\n");
+  assert.ok(collector.requests.every((request) => request.includes("seed=7")), collector.requests.join("\n"));
+
+  assert.equal((await cli(["--seed", "7", "--metrics-out", "light.json"])).code, 0);
+  const equal = await cli(["--metrics-base", "light.json", "--metrics-out", "light.json"]);
+  assert.equal(equal.code, 0, equal.stdout);
+});
+
+test("--metrics-base from a run of other sessions is a setup error", async () => {
+  assert.equal((await cli(["--seed", "7", "--metrics-out", "seven.json"])).code, 0);
+  const run = await cli(["--seed", "8", "--metrics-base", "seven.json"]);
+  assert.equal(run.code, 2);
+  assert.equal(run.stdout, "");
+  assert.equal(run.stderr, "intersite replay: --metrics-base seven.json was written by a run of other sessions (seed 7); replay the same ones: same --seed, --sample and filters, on the same local data\n");
 });

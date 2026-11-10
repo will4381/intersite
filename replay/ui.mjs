@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 
 import { UI_METHOD } from "../shared/case.mjs";
+import { learnIds, prepare, resolveIds } from "./run.mjs";
 
 /** @typedef {import("../shared/case.mjs").Case} Case */
 /** @typedef {import("./run.mjs").Step} Step */
@@ -15,6 +16,7 @@ const SETTLE_CAP = 3000;
 const QUIET = 300;
 const FIND_CAP = 1000;
 const READS = ["GET", "HEAD", UI_METHOD];
+const WRITES = ["POST", "PUT", "PATCH", "DELETE"];
 
 /** @param {unknown} error */
 const firstLine = (error) => String(error instanceof Error ? error.message : error).split("\n")[0];
@@ -45,10 +47,13 @@ export async function openBrowser({ uiTarget, headed, cwd }) {
     close: () => browser.close(),
     /**
      * Every distinct action of one session, in order. Returns the first skip reason, if any.
-     * @param {Case[]} cases @param {Step[]} steps @param {Context} context
+     * @param {Case[]} cases @param {Step[]} steps @param {Context} replayContext
      */
-    async replay(cases, steps, { target, adapter, pattern }) {
+    async replay(cases, steps, replayContext) {
+      const { target, adapter } = replayContext;
       await adapter.reset?.({ target });
+      /** @type {Map<string, string>} recorded ID -> replayed ID */
+      const ids = new Map();
       const kind = cases.find((item) => item.actor.kind !== "anonymous")?.actor.kind;
       const context = await browser.newContext({ extraHTTPHeaders: kind ? await adapter.signIn(kind, { target, other: false }) : {} });
       /** @type {string | undefined} */
@@ -58,11 +63,25 @@ export async function openBrowser({ uiTarget, headed, cwd }) {
         const origins = new Set([new URL(base).origin, new URL(target).origin]);
         /** @type {{ error: string[], server: string[], console: string[] }} */
         const problems = { error: [], server: [], console: [] };
+        /** @type {import("playwright-core").Request[]} requests to the app or the API since the action began */
+        const sent = [];
+        /** @type {Map<import("playwright-core").Request, Promise<string>>} write answers, kept as they pass: a page that navigates afterwards takes the body with it */
+        const bodies = new Map();
+        await page.route((url) => origins.has(url.origin), async (route) => {
+          if (!WRITES.includes(route.request().method())) return route.continue();
+          const answer = await route.fetch();
+          bodies.set(route.request(), answer.text());
+          return route.fulfill({ response: answer });
+        });
         let inflight = 0;
         let lastActivity = Date.now();
         page.on("pageerror", (error) => problems.error.push(`page error: ${firstLine(error)}`));
         page.on("console", (message) => { if (message.type() === "error") problems.console.push(`console error: ${message.text()}`); });
-        page.on("request", () => { inflight++; lastActivity = Date.now(); });
+        page.on("request", (request) => {
+          inflight++;
+          lastActivity = Date.now();
+          if (origins.has(new URL(request.url()).origin)) sent.push(request);
+        });
         const finished = () => { inflight--; lastActivity = Date.now(); };
         page.on("requestfinished", finished);
         page.on("requestfailed", finished);
@@ -88,9 +107,9 @@ export async function openBrowser({ uiTarget, headed, cwd }) {
         }
 
         for (const { name, page: path, cases: group } of actions.values()) {
-          /** @param {Step["result"]} result @param {string} [reason] */
-          const record = (result, reason) => steps.push({ mode: "ui", caseId: group[0].id, method: name, route: path, result, ...(reason && { reason }) });
-          const url = await remap(path, pattern, (id) => adapter.resolveId?.(id, { target }));
+          /** @param {Step["result"]} result @param {string} [reason] @param {Partial<Step>} [extra] */
+          const record = (result, reason, extra) => steps.push({ mode: "ui", caseId: group[0].id, method: name, route: path, result, ...(reason && { reason }), ...extra });
+          const url = await remap(path, ids, replayContext);
           if (url.skip) {
             record("skipped", url.skip);
             skipped ??= url.skip;
@@ -111,11 +130,43 @@ export async function openBrowser({ uiTarget, headed, cwd }) {
               await element.click({ timeout: 2000 });
               await settle();
               record(problem() ? "failed" : "passed", problem());
-            } else if (!(await element.isVisible()) || !(await element.isEnabled())) {
-              record("failed", `action ${name} on ${path} is hidden or disabled`);
-            } else {
-              record("passed");
+              continue;
             }
+            if (!(await element.isVisible()) || !(await element.isEnabled())) {
+              record("failed", `action ${name} on ${path} is hidden or disabled`);
+              continue;
+            }
+            const writes = group.filter((item) => WRITES.includes(item.request.method));
+            const prepared = writes.length === 1 ? await prepare(writes[0], ids, replayContext) : undefined;
+            if (prepared?.skip !== undefined) {
+              record("skipped", prepared.skip);
+              skipped ??= prepared.skip;
+              continue;
+            }
+            const fills = prepared && (await fillsFor(element, prepared.request.body));
+            if (!fills) { record("passed", undefined, { checked: "presence" }); continue; }
+
+            const write = writes[0];
+            sent.length = 0;
+            bodies.clear();
+            for (const fill of fills.steps) await fill();
+            await fills.submit();
+            await settle();
+            const route = routePattern(write.request.route);
+            const request = sent.find((item) => item.method() === write.request.method && route.test(new URL(item.url()).pathname));
+            const response = await request?.response();
+            const wanted = `${write.request.method} ${write.request.route}`;
+            if (!request) { record("failed", `no ${wanted} request was sent`); continue; }
+            if (!response) { record("failed", `${wanted} got no answer`); continue; }
+            if (response.status() !== write.response.status) { record("failed", `status ${response.status()}, recorded ${write.response.status} for ${wanted}`); continue; }
+            // Chrome logs every 4xx/5xx answer as a console error; the recorded status was expected, so its log is too.
+            const expected = `console error: Failed to load resource: the server responded with a status of ${response.status()} `;
+            problems.console = problems.console.filter((message) => !message.startsWith(expected));
+            if (problem()) { record("failed", problem()); continue; }
+            let json;
+            try { json = JSON.parse((await bodies.get(request)) ?? ""); } catch { json = undefined; } // not JSON: it created no IDs to map
+            learnIds(write, json, ids);
+            record("passed");
           } catch (error) {
             record("failed", firstLine(error));
           }
@@ -129,19 +180,69 @@ export async function openBrowser({ uiTarget, headed, cwd }) {
 }
 
 /**
- * The page path with recorded IDs swapped for ones from `resolve`. A `_` segment (capture reduced it) cannot be
- * rebuilt, so the action is skipped.
- * @param {string} page @param {RegExp} pattern @param {(id: string) => Promise<string | undefined> | undefined} resolve
+ * The page path with recorded IDs swapped for replayed ones (created earlier in the session, or from `resolveId`).
+ * A `_` segment (capture reduced it) cannot be rebuilt, so the action is skipped.
+ * @param {string} page @param {Map<string, string>} ids @param {Context} context
  * @returns {Promise<{ path: string, skip?: undefined } | { skip: string }>}
  */
-async function remap(page, pattern, resolve) {
-  const segments = [];
-  for (const segment of page.split("/")) {
-    if (segment === "_") return { skip: `page ${page} has a segment capture reduced to _, which cannot be resolved` };
-    if (!pattern.test(segment)) { segments.push(segment); continue; }
-    const resolved = await resolve(segment);
-    if (resolved === undefined) return { skip: `resolveId gave nothing for ${segment}` };
-    segments.push(resolved);
+async function remap(page, ids, context) {
+  const segments = page.split("/");
+  if (segments.includes("_")) return { skip: `page ${page} has a segment capture reduced to _, which cannot be resolved` };
+  const skip = await resolveIds(segments.filter((segment) => context.pattern.test(segment)), ids, context);
+  return skip ? { skip } : { path: segments.map((segment) => ids.get(segment) ?? segment).join("/") };
+}
+
+/**
+ * How to fill the action's form from a recorded JSON body and submit it, or undefined when the body is not a JSON
+ * object (or empty) or a top-level key names no control in the form. The form is the element itself, or its closest
+ * `<form>` ancestor; nested objects and arrays are left as the page has them.
+ * @param {import("playwright-core").Locator} element @param {unknown} body
+ * @returns {Promise<{ steps: (() => Promise<unknown>)[], submit: () => Promise<unknown> } | undefined>}
+ */
+async function fillsFor(element, body) {
+  if (body !== undefined && body !== null && (typeof body !== "object" || Array.isArray(body))) return undefined;
+  const form = element.locator("xpath=ancestor-or-self::form[1]");
+  const hasForm = (await form.count()) > 0;
+  const steps = [];
+  for (const [key, value] of Object.entries(body ?? {})) {
+    const named = JSON.stringify(key);
+    const control = form.locator(`[name=${named}], [id=${named}]`).first();
+    if (!hasForm || !(await control.count())) return undefined;
+    if (value !== null && typeof value === "object") continue;
+    const kind = await control.evaluate((el) => (el instanceof HTMLInputElement ? el.type : el.tagName.toLowerCase()));
+    const text = String(value ?? "");
+    if (kind === "radio") {
+      const option = typeof value === "boolean" ? control : form.locator(`input[type=radio][name=${named}][value=${JSON.stringify(text)}]`).first();
+      if (!(await option.count())) return undefined;
+      if (value !== false) steps.push(() => option.check());
+    } else if (kind === "checkbox") {
+      const on = typeof value === "boolean" ? value : text === (await control.inputValue());
+      steps.push(() => control.setChecked(on));
+    } else if (kind === "select") {
+      steps.push(() => control.selectOption(text));
+    } else if (kind === "hidden") {
+      steps.push(() => control.evaluate((el, v) => { /** @type {HTMLInputElement} */ (el).value = v; }, text));
+    } else {
+      steps.push(() => control.fill(text));
+    }
   }
-  return { path: segments.join("/") };
+  const isSubmit = await element.evaluate((el) => el instanceof HTMLButtonElement || (el instanceof HTMLInputElement && ["submit", "image"].includes(el.type)));
+  const control = form.locator("button:not([type]), button[type=submit], input[type=submit], input[type=image]").first();
+  const submit = async () => {
+    if (isSubmit || !hasForm) return element.click({ timeout: 2000 });
+    if (await control.count()) return control.click({ timeout: 2000 });
+    return form.evaluate((el) => /** @type {HTMLFormElement} */ (el).requestSubmit());
+  };
+  return { steps, submit };
+}
+
+/**
+ * Matches a request path against a recorded route template: `:name` stands for one segment, and the path may carry a
+ * prefix (the web app's `/api` in front of the server's routes).
+ * @param {string} route
+ */
+function routePattern(route) {
+  // ponytail: knows only `:name` parameters; add `{name}`, `[name]` and `*` if a project's capture records those.
+  const body = route.split("/").map((segment) => (segment.startsWith(":") ? "[^/]+" : segment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))).join("/");
+  return new RegExp(`^(?:/.*)?${body}$`);
 }

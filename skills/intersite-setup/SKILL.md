@@ -60,7 +60,8 @@ Give each button, form and clickable element a stable name:
 <button data-intersite="program.save">Save</button>
 ```
 
-Names are `<area>.<verb>`, lowercase. Add `"actions"` to `lint.packs` so new elements without a name are reported;
+Names are `<area>.<verb>`, lowercase. Name form controls after the API body's keys (`name="title"`), so the `ui`
+replay can fill and submit the form. Add `"actions"` to `lint.packs` so new elements without a name are reported;
 baseline the existing ones.
 
 ## 4. Write the replay adapter
@@ -69,6 +70,9 @@ Open `intersite.adapter.mjs`. Find how this project's tests or seed scripts sign
 headers from `signIn(actorKind, { other })`. `other: true` must return a user from a different account. Implement
 `resolveId` by mapping an ID's prefix to a seeded record of that kind, and `reset` if there is a reseed command.
 Never use real user credentials: only seeded test accounts.
+
+Optional: have the server send `Server-Timing: queries;desc=<n>` per request (count queries in the database
+wrapper), so `intersite replay --metrics-base` can catch an N+1 before it ships.
 
 ## 5. Try the loop locally
 
