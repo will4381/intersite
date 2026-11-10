@@ -1,14 +1,19 @@
 {
   "name": "intersite",
-  "version": "0.1.0",
+  "version": "1.0.0-beta.1",
   "private": true,
   "type": "module",
   "description": "One testing library for every project: slop lint, traffic capture, replay, and gates.",
-  "engines": { "node": ">=22.12" },
-  "bin": { "intersite": "./bin/intersite.mjs" },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "bin": {
+    "intersite": "./bin/intersite.mjs"
+  },
   "exports": {
     "./capture": "./capture/index.mjs",
     "./lint": "./lint/plugin.mjs",
+    "./track": "./track/index.mjs",
     "./shared/*": "./shared/*.mjs",
     "./intersite.schema.json": "./intersite.schema.json"
   },
@@ -18,11 +23,21 @@
   },
   "peerDependencies": {
     "@oxlint/plugins": ">=1.93.0",
-    "oxlint": ">=1.93.0"
+    "oxlint": ">=1.93.0",
+    "playwright-core": ">=1.40.0"
+  },
+  "peerDependenciesMeta": {
+    "playwright-core": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@oxlint/plugins": "1.93.0",
     "oxlint": "1.93.0",
+    "playwright-core": "^1.65.0",
     "wrangler": "^4.0.0"
+  },
+  "dependencies": {
+    "yaml": "^2.9.1"
   }
 }

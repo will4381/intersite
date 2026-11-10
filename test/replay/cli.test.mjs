@@ -1,7 +1,7 @@
 // @ts-check
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { after, before, beforeEach, test } from "node:test";
@@ -35,21 +35,19 @@ beforeEach(() => {
   collector.requests.length = 0;
 });
 
-/** Runs the real CLI. @param {string[]} args @returns {Promise<{ code: number, stdout: string, stderr: string }>} */
-function cli(args) {
+/** Runs the real CLI. @param {string[]} args @param {string} [dir] @returns {Promise<{ code: number, stdout: string, stderr: string }>} */
+function cli(args, dir = cwd) {
   return new Promise((done) => {
-    execFile(process.execPath, [bin, "replay", ...args], { cwd, env: { ...process.env, INTERSITE_READ_TOKEN: READ_TOKEN } }, (error, stdout, stderr) =>
+    execFile(process.execPath, [bin, "replay", ...args], { cwd: dir, env: { ...process.env, INTERSITE_READ_TOKEN: READ_TOKEN } }, (error, stdout, stderr) =>
       done({ code: error ? Number(error.code) : 0, stdout, stderr }));
   });
 }
 
-test("a healthy run exits 0, prints counts and the seed it picked, and marks passing sessions", async () => {
+test("a healthy run prints one ok line with counts and the seed it picked, and marks passing sessions", async () => {
   const run = await cli(["--mark", "--release", "abc123"]);
   assert.equal(run.code, 0, run.stderr);
-  const lines = run.stdout.trim().split("\n");
-  assert.match(lines[0], /^replay: 3 sessions; steps: 10 passed, 0 failed, 1 skipped; seed \d+$/);
-  assert.deepEqual(lines.slice(1), ["SKIP s-gone: resolveId gave nothing for note_gone77"]);
-  const seed = lines[0].split("seed ")[1];
+  assert.match(run.stdout, /^ok replay: 3 sessions; steps: 10 passed, 0 failed, 1 skipped; seed \d+\n$/);
+  const seed = run.stdout.trim().split("seed ")[1];
   assert.ok(collector.requests.some((r) => r.includes(`seed=${seed}`)), "the printed seed is the one sent");
   assert.deepEqual(collector.results, [{ project: "demo", release: "abc123", results: [{ session: "s-a", pass: true }, { session: "s-b", pass: true }] }]);
 });
@@ -72,7 +70,7 @@ test("a failing run exits 1 with one FAIL line, marks the failure, and its rerun
 test("--id replays the case together with the earlier cases of its session", async () => {
   const run = await cli(["--id", "s-b-3"]);
   assert.equal(run.code, 0, run.stderr);
-  assert.equal(run.stdout.trim(), "replay: 1 sessions; steps: 4 passed, 0 failed, 0 skipped");
+  assert.equal(run.stdout, "ok replay: 1 sessions; steps: 4 passed, 0 failed, 0 skipped\n");
   assert.deepEqual(collector.requests, ["GET /v1/cases/s-b-3?project=demo"]);
 });
 
@@ -98,4 +96,61 @@ test("usage errors exit 2 with one line", async () => {
     assert.equal(run.code, 2, args.join(" "));
     assert.equal(run.stderr.trim().split("\n").length, 1, run.stderr);
   }
+});
+
+test("--action reaches the collector query", async () => {
+  const run = await cli(["--action", "note.save", "--seed", "3"]);
+  assert.equal(run.code, 0, run.stderr);
+  assert.deepEqual(collector.requests, ["GET /v1/sessions?project=demo&sample=20&seed=3&action=note.save"]);
+});
+
+test("--verbose adds what was sent and what came back under each FAIL line, and nothing to a pass", async () => {
+  const pass = await cli(["--id", "s-a-2", "--verbose"]);
+  assert.equal(pass.stdout, "ok replay: 1 sessions; steps: 3 passed, 0 failed, 0 skipped\n");
+
+  target.bugs.add("status");
+  const run = await cli(["--id", "s-a-3", "--verbose"]);
+  assert.equal(run.code, 1, run.stderr);
+  assert.deepEqual(run.stdout.trim().split("\n"), [
+    "replay: 1 sessions; steps: 3 passed, 1 failed, 0 skipped",
+    "FAIL baseline s-a-2 GET /notes/:id: status recorded 200, got 410 | rerun: intersite replay --id s-a-2 --mode baseline",
+    "  sent: GET /notes/note_000001",
+    '  got: 410 {"error":"gone"}',
+  ]);
+});
+
+test("--concurrency is ignored with a note when the adapter resets shared state", async () => {
+  const run = await cli(["--concurrency", "4", "--seed", "1"]);
+  assert.equal(run.code, 0, run.stderr);
+  assert.equal(run.stderr, "note: --concurrency 4 ignored; sessions run one at a time because the adapter resets shared state\n");
+  assert.match(run.stdout, /^ok replay: 3 sessions/);
+});
+
+test("with no local collector running, the command serves the project's own case database itself", async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "intersite-replay-")));
+  const closed = await startTarget();
+  await closed.close();
+  writeFileSync(join(dir, "intersite.json"), JSON.stringify({
+    project: "demo",
+    collector: { url: closed.url },
+    replay: { target: target.url, adapter: relative(dir, adapterFile) },
+  }));
+  const run = await cli(["--seed", "1"], dir);
+  assert.equal(run.stderr, "");
+  assert.equal(run.stdout, "ok replay: 0 sessions; steps: 0 passed, 0 failed, 0 skipped; seed 1\n");
+  assert.equal(run.code, 0);
+  assert.ok(existsSync(join(dir, ".intersite/cases.db")));
+});
+
+test("an unreachable remote collector is a setup error that says what to check", async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "intersite-replay-")));
+  writeFileSync(join(dir, "intersite.json"), JSON.stringify({
+    project: "demo",
+    collector: { url: "http://collector.invalid" },
+    replay: { target: target.url, adapter: relative(dir, adapterFile) },
+  }));
+  const run = await cli([], dir);
+  assert.equal(run.code, 2);
+  assert.equal(run.stdout, "");
+  assert.equal(run.stderr, "intersite replay: cannot reach the collector at http://collector.invalid; check collector.url in intersite.yml\n");
 });

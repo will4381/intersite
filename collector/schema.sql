@@ -21,6 +21,11 @@ CREATE INDEX IF NOT EXISTS cases_by_time ON cases (project, at_ms);
 CREATE INDEX IF NOT EXISTS cases_by_outcome ON cases (project, outcome, at_ms);
 -- GET /v1/sessions?route=: newest cases of a project on that route.
 CREATE INDEX IF NOT EXISTS cases_by_route ON cases (project, route, at_ms);
+-- GET /v1/actions (forced with INDEXED BY) and GET /v1/sessions?action=. Expressions over the stored JSON rather than new
+-- columns, so the file stays idempotent on databases created before actions existed (SQLite has no ADD COLUMN IF NOT
+-- EXISTS). Partial, so a case without an action costs no extra row written.
+CREATE INDEX IF NOT EXISTS cases_by_action ON cases (project, json_extract(body, '$.action.name'), at_ms, json_extract(body, '$.action.page'), outcome)
+  WHERE json_extract(body, '$.action.name') IS NOT NULL;
 -- Loading the sampled sessions' cases in seq order; earlier cases for GET /v1/cases/:id; cleanup of orphaned results.
 CREATE INDEX IF NOT EXISTS cases_by_session ON cases (project, session, seq);
 -- Cleanup: expired cases that are not pinned. Partial, so pinned cases cost nothing here.

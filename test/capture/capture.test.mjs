@@ -180,7 +180,8 @@ test("record resolves, and the response stays readable, when the collector fails
     const result = await instance.record({ request: req("https://a.test/v1/x"), response, route: "/v1/x", actor: { kind: "user" }, session: "s" });
     assert.equal(result, undefined, name);
     assert.deepEqual(await response.json(), { hello: "world" }, name);
-    if (name === "hangs") assert.ok(Date.now() - started >= 2900 && Date.now() - started < 5000, `timed out after ${Date.now() - started}ms`);
+    const elapsed = Date.now() - started;
+    assert.ok(name !== "hangs" || (elapsed >= 2900 && elapsed < 5000), `${name} timed out after ${elapsed}ms`);
   }
 
   // A real unreachable collector over global fetch.

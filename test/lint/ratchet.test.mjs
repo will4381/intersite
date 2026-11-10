@@ -14,7 +14,7 @@ test("baseline ratchet: new findings fail, recorded ones pass, fixed ones demand
     ".oxlintrc.json": { rules: { "no-debugger": "error" } },
     "src/a.ts": emptyCatch + "debugger;\n",
   });
-  const baseline = () => JSON.parse(readFileSync(join(cwd, "lint-baseline.json"), "utf8"));
+  const baseline = () => JSON.parse(readFileSync(join(cwd, "intersite-baseline.json"), "utf8"));
 
   let r = await runLint(cwd);
   assert.equal(r.code, 1);
@@ -42,7 +42,7 @@ test("baseline ratchet: new findings fail, recorded ones pass, fixed ones demand
   assert.deepEqual(baseline(), { "src/a.ts": { "eslint/no-debugger": 1 } }, "--write never raises");
 });
 
-test("custom rules from intersite.json are enforced within their files globs", async () => {
+test("custom rules from intersite.yml are enforced within their files globs", async () => {
   const cwd = fixture({
     "intersite.json": {
       project: "custom",

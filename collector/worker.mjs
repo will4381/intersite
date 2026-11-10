@@ -13,18 +13,36 @@ const json = (body, status = 200) => Response.json(body, { status });
 /** @param {string} message @param {number} status */
 const fail = (message, status) => json({ error: message }, status);
 
+/** Only POST /v1/cases is open to browsers, so a page can send UI cases. */
+const CORS = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "POST",
+  "access-control-allow-headers": "authorization, content-type",
+  "access-control-max-age": "86400",
+};
+
 const encoder = new TextEncoder();
-/** Constant-time: compares SHA-256 digests, so lengths never differ. @param {string} given @param {string} secret */
+/**
+ * Constant-time: compares SHA-256 digests, so lengths never differ. A plain XOR loop, because `timingSafeEqual` on
+ * `crypto.subtle` exists in workerd but not in Node.
+ * @param {string} given @param {string} secret
+ */
 async function same(given, secret) {
-  const [a, b] = await Promise.all([given, secret].map((text) => crypto.subtle.digest("SHA-256", encoder.encode(text))));
-  return /** @type {any} */ (crypto.subtle).timingSafeEqual(a, b);
+  const [a, b] = await Promise.all([given, secret].map(async (text) => new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(text)))));
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+  return diff === 0;
 }
+
+/** @param {URLSearchParams} query @returns {number | undefined} NaN when malformed */
+const sinceOf = (query) => (query.has("since") ? Date.parse(/** @type {string} */ (query.get("since"))) : undefined);
 
 /** @param {Request} request @returns {Promise<any>} */
 async function body(request) {
   try {
     return await request.json();
   } catch {
+    // Not JSON: every route treats undefined as a malformed body and answers 400.
     return undefined;
   }
 }
@@ -32,86 +50,104 @@ async function body(request) {
 /** @param {unknown} value */
 const isName = (value) => typeof value === "string" && value.length > 0 && value.length <= 128;
 
+/** @param {Request} request @param {Env} env @returns {Promise<Response>} */
+async function handle(request, env) {
+  const url = new URL(request.url);
+  if (request.method === "GET" && url.pathname === "/health") return json({ ok: true });
+  if (!env.INGEST_TOKEN || !env.READ_TOKEN) return fail("collector is not configured: set the INGEST_TOKEN and READ_TOKEN secrets", 503);
+
+  const token = /^Bearer (.+)$/.exec(request.headers.get("authorization") ?? "")?.[1] ?? "";
+  const [ingestToken, readToken] = await Promise.all([same(token, env.INGEST_TOKEN), same(token, env.READ_TOKEN)]);
+  if (!ingestToken && !readToken) return fail("missing or wrong bearer token", 401);
+
+  const now = Date.now();
+  const route = `${request.method} ${url.pathname}`;
+
+  if (route === "POST /v1/cases") {
+    if (!ingestToken) return fail("this route needs the ingest token", 403);
+    const input = await body(request);
+    if (!Array.isArray(input?.cases)) return fail("body must be { cases: Case[] }", 400);
+    if (input.cases.length > MAX_CASES) return fail(`at most ${MAX_CASES} cases per request`, 413);
+    const cap = { ok: Number(env.DAILY_CAP_OK) || 5000, other: Number(env.DAILY_CAP_OTHER) || 5000 };
+    return json(await store.ingest(env.DB, input.cases, cap, now));
+  }
+
+  if (!readToken) return fail("this route needs the read token", 403);
+
+  if (route === "GET /v1/sessions") {
+    const query = url.searchParams;
+    const project = query.get("project");
+    if (!isName(project)) return fail("project is required", 400);
+    const outcomes = query.getAll("outcome");
+    const unknown = outcomes.find((outcome) => !OUTCOMES.includes(/** @type {any} */ (outcome)));
+    if (unknown !== undefined) return fail(`outcome must be one of ${OUTCOMES.join(", ")}`, 400);
+    const since = sinceOf(query);
+    if (Number.isNaN(since)) return fail("since must be an ISO timestamp", 400);
+    const seed = query.has("seed") ? Number(query.get("seed")) : Math.floor(Math.random() * 2 ** 32);
+    if (!Number.isSafeInteger(seed)) return fail("seed must be an integer", 400);
+    const sample = Math.min(MAX_SAMPLE, Math.max(1, Number.parseInt(query.get("sample") ?? "", 10) || 20));
+    const found = await store.sessions(env.DB, {
+      project: /** @type {string} */ (project),
+      outcomes: [...new Set(outcomes)],
+      route: query.get("route") ?? undefined,
+      action: query.get("action") ?? undefined,
+      since,
+      knownGood: query.get("known_good") === "1",
+      sample,
+      seed,
+    });
+    return json({ sessions: found });
+  }
+
+  if (route === "GET /v1/actions") {
+    const project = url.searchParams.get("project");
+    if (!isName(project)) return fail("project is required", 400);
+    const since = sinceOf(url.searchParams);
+    if (Number.isNaN(since)) return fail("since must be an ISO timestamp", 400);
+    return json({ actions: await store.actions(env.DB, /** @type {string} */ (project), since ?? 0) });
+  }
+
+  if (route === "POST /v1/results") {
+    const input = await body(request);
+    const results = input?.results;
+    if (!isName(input?.project) || typeof input.release !== "string" || !Array.isArray(results)) {
+      return fail("body must be { project, release, results: { session, pass }[] }", 400);
+    }
+    if (results.length > MAX_SAMPLE) return fail(`at most ${MAX_SAMPLE} results per request`, 413);
+    if (!results.every((result) => isName(result?.session) && typeof result.pass === "boolean")) {
+      return fail("each result needs session (string) and pass (boolean)", 400);
+    }
+    return json({ recorded: await store.recordResults(env.DB, input.project, input.release, results, now) });
+  }
+
+  const caseRoute = /^\/v1\/cases\/([^/]+)(\/pin)?$/.exec(url.pathname);
+  if (caseRoute) {
+    const id = decodeURIComponent(caseRoute[1]);
+    if (request.method === "GET" && !caseRoute[2]) {
+      const project = url.searchParams.get("project");
+      if (!isName(project)) return fail("project is required", 400);
+      const found = await store.caseWithHistory(env.DB, /** @type {string} */ (project), id);
+      return found ? json(found) : fail("case not found", 404);
+    }
+    if (request.method === "POST" && caseRoute[2]) {
+      const input = await body(request);
+      if (!isName(input?.project) || typeof input.pinned !== "boolean") return fail("body must be { project, pinned: boolean }", 400);
+      const exists = await store.pin(env.DB, input.project, id, input.pinned);
+      return exists ? json({ pinned: input.pinned }) : fail("case not found", 404);
+    }
+  }
+
+  return fail("not found", 404);
+}
+
 export default {
   /** @param {Request} request @param {Env} env */
   async fetch(request, env) {
-    const url = new URL(request.url);
-    if (request.method === "GET" && url.pathname === "/health") return json({ ok: true });
-    if (!env.INGEST_TOKEN || !env.READ_TOKEN) return fail("collector is not configured: set the INGEST_TOKEN and READ_TOKEN secrets", 503);
-
-    const token = /^Bearer (.+)$/.exec(request.headers.get("authorization") ?? "")?.[1] ?? "";
-    const [ingestToken, readToken] = await Promise.all([same(token, env.INGEST_TOKEN), same(token, env.READ_TOKEN)]);
-    if (!ingestToken && !readToken) return fail("missing or wrong bearer token", 401);
-
-    const now = Date.now();
-    const route = `${request.method} ${url.pathname}`;
-
-    if (route === "POST /v1/cases") {
-      if (!ingestToken) return fail("this route needs the ingest token", 403);
-      const input = await body(request);
-      if (!Array.isArray(input?.cases)) return fail("body must be { cases: Case[] }", 400);
-      if (input.cases.length > MAX_CASES) return fail(`at most ${MAX_CASES} cases per request`, 413);
-      const cap = { ok: Number(env.DAILY_CAP_OK) || 5000, other: Number(env.DAILY_CAP_OTHER) || 5000 };
-      return json(await store.ingest(env.DB, input.cases, cap, now));
-    }
-
-    if (!readToken) return fail("this route needs the read token", 403);
-
-    if (route === "GET /v1/sessions") {
-      const query = url.searchParams;
-      const project = query.get("project");
-      if (!isName(project)) return fail("project is required", 400);
-      const outcomes = query.getAll("outcome");
-      const unknown = outcomes.find((outcome) => !OUTCOMES.includes(/** @type {any} */ (outcome)));
-      if (unknown !== undefined) return fail(`outcome must be one of ${OUTCOMES.join(", ")}`, 400);
-      const since = query.has("since") ? Date.parse(/** @type {string} */ (query.get("since"))) : undefined;
-      if (Number.isNaN(since)) return fail("since must be an ISO timestamp", 400);
-      const seed = query.has("seed") ? Number(query.get("seed")) : Math.floor(Math.random() * 2 ** 32);
-      if (!Number.isSafeInteger(seed)) return fail("seed must be an integer", 400);
-      const sample = Math.min(MAX_SAMPLE, Math.max(1, Number.parseInt(query.get("sample") ?? "", 10) || 20));
-      const found = await store.sessions(env.DB, {
-        project: /** @type {string} */ (project),
-        outcomes: [...new Set(outcomes)],
-        route: query.get("route") ?? undefined,
-        since,
-        knownGood: query.get("known_good") === "1",
-        sample,
-        seed,
-      });
-      return json({ sessions: found });
-    }
-
-    if (route === "POST /v1/results") {
-      const input = await body(request);
-      const results = input?.results;
-      if (!isName(input?.project) || typeof input.release !== "string" || !Array.isArray(results)) {
-        return fail("body must be { project, release, results: { session, pass }[] }", 400);
-      }
-      if (results.length > MAX_SAMPLE) return fail(`at most ${MAX_SAMPLE} results per request`, 413);
-      if (!results.every((result) => isName(result?.session) && typeof result.pass === "boolean")) {
-        return fail("each result needs session (string) and pass (boolean)", 400);
-      }
-      return json({ recorded: await store.recordResults(env.DB, input.project, input.release, results, now) });
-    }
-
-    const caseRoute = /^\/v1\/cases\/([^/]+)(\/pin)?$/.exec(url.pathname);
-    if (caseRoute) {
-      const id = decodeURIComponent(caseRoute[1]);
-      if (request.method === "GET" && !caseRoute[2]) {
-        const project = url.searchParams.get("project");
-        if (!isName(project)) return fail("project is required", 400);
-        const found = await store.caseWithHistory(env.DB, /** @type {string} */ (project), id);
-        return found ? json(found) : fail("case not found", 404);
-      }
-      if (request.method === "POST" && caseRoute[2]) {
-        const input = await body(request);
-        if (!isName(input?.project) || typeof input.pinned !== "boolean") return fail("body must be { project, pinned: boolean }", 400);
-        const exists = await store.pin(env.DB, input.project, id, input.pinned);
-        return exists ? json({ pinned: input.pinned }) : fail("case not found", 404);
-      }
-    }
-
-    return fail("not found", 404);
+    if (new URL(request.url).pathname !== "/v1/cases") return handle(request, env);
+    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
+    const response = await handle(request, env);
+    if (request.method === "POST") for (const [name, value] of Object.entries(CORS)) response.headers.set(name, value);
+    return response;
   },
 
   /** Daily cron: delete expired data. @param {{ scheduledTime: number }} controller @param {Env} env */

@@ -2,7 +2,8 @@
 
 /**
  * Capture: samples real API requests in production, scrubs them, and sends each as a case to the collector.
- * `record` never rejects and never touches the response the caller returns.
+ * `record` never rejects and never touches the response the caller returns. An unsampled `ok` request costs one
+ * small synchronous hash: nothing is cloned or read.
  *
  * @example Cloudflare Worker
  * import { createCapture } from "intersite/capture";
@@ -11,13 +12,29 @@
  *     const capture = createCapture({ project: "acme", url: env.INTERSITE_URL, token: env.INTERSITE_INGEST_TOKEN, release: env.RELEASE });
  *     const copy = request.clone();
  *     const { response, route, user } = await handle(request, env); // your router
- *     ctx.waitUntil(capture.record({ request: copy, response, route, actor: { kind: user?.role ?? "anonymous" }, session: user?.id ?? "anonymous" }));
+ *     ctx.waitUntil(capture.record({ request: copy, response, route, actor: { kind: user?.role ?? "anonymous" }, session: user?.id }));
  *     return response;
  *   },
  * };
+ *
+ * @example Fastify (plain objects; `payload` is the serialized body)
+ * fastify.addHook("onSend", async (request, reply, payload) => {
+ *   capture.record({ request: { method: request.method, url: request.url, headers: request.headers, body: request.body },
+ *     response: { status: reply.statusCode, headers: reply.getHeaders(), body: payload },
+ *     route: request.routeOptions.url, actor: { kind: request.user?.role ?? "anonymous" }, session: request.user?.id });
+ *   return payload;
+ * });
+ *
+ * @example Next.js route handler (`after` from "next/server"; call `record` before returning, so it can clone)
+ * export async function POST(request) {
+ *   const copy = request.clone();
+ *   const response = await handle(request);
+ *   after(capture.record({ request: copy, response, route: "/api/programs", actor: { kind: "user" } }));
+ *   return response;
+ * }
  */
 
-import { caseProblem } from "../shared/case.mjs";
+import { ACTION_NAME, ERROR_NAME, OUTCOMES, UI_METHOD, caseProblem, reducePage as reduce } from "../shared/case.mjs";
 import { DEFAULT_ID_PATTERN, idsOf, shapeOf } from "../shared/shape.mjs";
 import { createScrubber } from "./scrub.mjs";
 
@@ -25,6 +42,8 @@ const DEFAULT_TTL_DAYS = { ok: 14, warn: 90, rejected: 30, error: 90 };
 // ponytail: response bodies over 1 MiB are recorded with shape "null", make it an option if large list endpoints matter.
 const MAX_RESPONSE_BYTES = 1_048_576;
 const TIMEOUT_MS = 3000;
+const MAX_BATCH = 50;
+const enc = new TextEncoder();
 
 /**
  * @typedef {object} CaptureOptions
@@ -44,16 +63,38 @@ const TIMEOUT_MS = 3000;
  */
 
 /**
+ * Headers as a `Headers` or a plain object with lowercase keys (as Node servers give them).
+ * @typedef {Headers | Record<string, string | string[] | number | undefined>} HeaderBag
+ */
+
+/** @typedef {{ method: string, url: string, headers?: HeaderBag, body?: unknown }} PlainRequest  `url` may be a path; `body` is parsed JSON or a JSON string. */
+/** @typedef {{ status: number, headers?: HeaderBag, body?: unknown }} PlainResponse */
+
+/**
  * @typedef {object} RecordInput
- * @property {Request} request   A clone taken before handling, body unread.
- * @property {Response} response The response being returned; `record` clones it.
+ * @property {Request | PlainRequest} request   A Request clone taken before handling (body unread), or a plain object.
+ * @property {Response | PlainResponse} response The response being returned; a Response is cloned only when sampled.
  * @property {string} route      Route template such as `/v1/programs/:id`.
- * @property {{ kind: string }} actor
- * @property {string} session    A stable caller identifier; only its salted daily hash is stored.
+ * @property {{ kind: string }} [actor]
+ * @property {string} [session]  A stable caller identifier; only its salted daily hash is stored. Defaults to the
+ *                               `x-intersite-session` header, then `anonymous`.
  * @property {"ok" | "warn" | "rejected" | "error"} [outcome]
  * @property {string} [id]
  * @property {string | Date} [at]
  */
+
+/**
+ * @typedef {object} UiInput
+ * @property {string} page        Browser path; reduced again here.
+ * @property {string} [name]      Action name, when the event happened during one.
+ * @property {"ok" | "warn" | "rejected" | "error"} outcome
+ * @property {string} [errorName] Such as `TypeError`. Never the message.
+ * @property {string} [session]
+ * @property {{ kind: string }} [actor]
+ * @property {string} [release]
+ */
+
+/** @typedef {{ route: string, actor?: { kind: string }, session?: string } | undefined} Described */
 
 /** `*` is one path segment, `**` is any depth. @param {string} glob */
 function globToRegExp(glob) {
@@ -65,10 +106,45 @@ function globToRegExp(glob) {
   return new RegExp(`^${source}$`);
 }
 
-/** @param {ReadableStream | null | undefined} body */
+/** cyrb53: a fast 53-bit non-cryptographic hash, used only for the sampling decision. @param {string} text */
+function quickHash(text) {
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (let index = 0; index < text.length; index++) {
+    const code = text.charCodeAt(index);
+    h1 = Math.imul(h1 ^ code, 2654435761);
+    h2 = Math.imul(h2 ^ code, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return 4294967296 * (2097151 & h2) + (h1 >>> 0);
+}
+
+/** @param {unknown} message @returns {message is Request | Response} */
+const isFetchMessage = (message) => typeof (/** @type {{ arrayBuffer?: unknown }} */ (message)?.arrayBuffer) === "function";
+
+/** @param {HeaderBag | undefined} headers @param {string} name @returns {string | null} */
+function header(headers, name) {
+  if (!headers || typeof headers !== "object") return null;
+  if (typeof headers.get === "function") return /** @type {Headers} */ (headers).get(name);
+  const value = /** @type {Record<string, unknown>} */ (headers)[name];
+  if (value === undefined || value === null) return null;
+  return Array.isArray(value) ? value.join(", ") : String(value);
+}
+
+/** @param {unknown} body */
 function discard(body) {
+  const stream = /** @type {ReadableStream | undefined} */ (body);
   // oxlint-disable-next-line intersite/no-empty-catch -- cancelling a body that already closed can reject; nothing to recover
-  if (body && !body.locked) body.cancel().catch(() => {});
+  if (typeof stream?.cancel === "function" && !stream.locked) stream.cancel().catch(() => {});
+}
+
+/** Plain JSON data only: a Buffer or class instance under a body is not something the scrubber understands. @param {unknown} value */
+function isJsonData(value) {
+  if (Array.isArray(value) || ["number", "boolean"].includes(typeof value)) return true;
+  if (value === null || typeof value !== "object") return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
 }
 
 /** Reads at most `limit` bytes; undefined when the stream is longer. @param {ReadableStream<Uint8Array>} stream @param {number} limit */
@@ -98,15 +174,26 @@ async function readLimited(stream, limit) {
 }
 
 /**
- * @param {Request | Response} message @param {number} limit
+ * @param {Request | Response | PlainRequest | PlainResponse} message @param {number} limit
  * @returns {Promise<{ json: unknown } | { omitted: "not json" | "too large" }>}
  */
 async function readJson(message, limit) {
-  if (!message.body) return { json: null };
-  if (!/\bjson\b/i.test(message.headers.get("content-type") ?? "")) return { omitted: "not json" };
-  if (Number(message.headers.get("content-length")) > limit) return { omitted: "too large" };
-  const text = await readLimited(message.body, limit);
-  if (text === undefined) return { omitted: "too large" };
+  const plain = !isFetchMessage(message);
+  const body = message.body;
+  if (body === undefined || body === null || (plain && body === "")) return { json: null };
+  const type = header(message.headers, "content-type");
+  // A Request or Response must say it is JSON; a plain object with no content-type is trusted to be parsed JSON.
+  if (type === null ? !plain : !/\bjson\b/i.test(type)) return { omitted: "not json" };
+  if (Number(header(message.headers, "content-length")) > limit) return { omitted: "too large" };
+  let text;
+  if (plain) {
+    text = typeof body === "string" ? body : isJsonData(body) ? JSON.stringify(body) : undefined;
+    if (text === undefined) return { omitted: "not json" };
+    if (enc.encode(text).byteLength > limit) return { omitted: "too large" };
+  } else {
+    text = await readLimited(/** @type {ReadableStream<Uint8Array>} */ (body), limit);
+    if (text === undefined) return { omitted: "too large" };
+  }
   if (text.trim() === "") return { json: null };
   try {
     return { json: JSON.parse(text) };
@@ -115,15 +202,36 @@ async function readJson(message, limit) {
   }
 }
 
+/** Gives up on a case that takes too long to build (a stalled body), so it cannot hold its batch. @template T @param {Promise<T>} promise */
+function withDeadline(promise) {
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let timer;
+  const late = new Promise((resolve) => {
+    timer = setTimeout(resolve, TIMEOUT_MS, undefined);
+  });
+  return /** @type {Promise<T | undefined>} */ (Promise.race([promise, late])).finally(() => clearTimeout(timer));
+}
+
+const resolved = Promise.resolve();
+
 /** @param {string} reason */
 const disabled = (reason) => {
   console.error(`intersite capture disabled: ${reason}`);
-  return { record: () => Promise.resolve() };
+  return {
+    record: () => resolved,
+    recordUi: () => resolved,
+    /** @param {typeof fetch} fetcher */
+    wrapFetch: (fetcher) => fetcher,
+  };
 };
 
 /**
  * @param {CaptureOptions} options
- * @returns {{ record(input: RecordInput): Promise<void> }}
+ * @returns {{
+ *   record(input: RecordInput): Promise<void>,
+ *   recordUi(input: UiInput): Promise<void>,
+ *   wrapFetch(fetcher: typeof fetch, describe: (request: Request) => Described): typeof fetch,
+ * }}
  */
 export function createCapture(options) {
   // Construction must not throw either: a Worker usually builds this per request, so a missing secret would 500 everything.
@@ -131,27 +239,107 @@ export function createCapture(options) {
     const { project, url, token, fetcher, release } = options;
     if (!project || !url || !token) return disabled("project, url and token are required");
     const sample = options.sample ?? 0.05;
+    const salt = options.salt ?? token;
     const maxBodyBytes = options.maxBodyBytes ?? 32_768;
     const include = (options.include ?? ["/**"]).map(globToRegExp);
     const exclude = (options.exclude ?? []).map(globToRegExp);
     const ttlDays = { ...DEFAULT_TTL_DAYS, ...options.ttlDays };
     const idPattern = new RegExp(options.idPattern ?? DEFAULT_ID_PATTERN);
-    const scrubber = createScrubber({ salt: options.salt ?? token, idPattern: idPattern.source, redactKeys: options.redactKeys });
+    const scrubber = createScrubber({ salt, idPattern: idPattern.source, redactKeys: options.redactKeys });
     const endpoint = `${url.replace(/\/+$/, "")}/v1/cases`;
 
-    /** @param {RecordInput} input @param {Response} response */
-    async function run(input, response) {
-      const { request, route } = input;
-      if (request.headers.has("x-intersite-replay")) return;
-      const requestUrl = new URL(request.url);
-      const path = requestUrl.pathname;
-      if (!include.some((glob) => glob.test(path)) || exclude.some((glob) => glob.test(path))) return;
+    /** Synchronous, so an unsampled request costs nothing else. Whole sessions per UTC day. @param {string} outcome @param {string} session @param {number} ms */
+    const sampled = (outcome, session, ms) =>
+      outcome !== "ok" || (Number.isFinite(ms) && quickHash(`${salt}|${session}|${Math.floor(ms / 86_400_000)}`) / 2 ** 53 < sample);
 
-      const status = response.status;
-      const outcome = input.outcome ?? (status >= 500 ? "error" : status >= 400 ? "rejected" : "ok");
-      const at = new Date(input.at ?? Date.now()).toISOString();
-      const session = (await scrubber.hash(`${input.session}|${at.slice(0, 10)}`)).slice(0, 32);
-      if (outcome === "ok" && Number.parseInt(session.slice(0, 13), 16) / 2 ** 52 >= sample) return;
+    /** Every segment that is not an ID or a short lowercase word becomes `_`. Never trusts the client's reduction. @param {unknown} page */
+    function reducePage(page) {
+      if (typeof page !== "string" || !page.startsWith("/") || page.length > 2048) return undefined;
+      const reduced = reduce(page, scrubber.isId);
+      return reduced.length <= 256 ? reduced : undefined;
+    }
+
+    /** @param {unknown} name @param {unknown} page */
+    function actionOf(name, page) {
+      const reduced = reducePage(page);
+      return typeof name === "string" && ACTION_NAME.test(name) && reduced ? { action: { name, page: reduced } } : {};
+    }
+
+    /** @param {{ kind: string } | undefined} actor */
+    const actorOf = (actor) => ({ kind: /^[a-z][a-z0-9_-]{0,31}$/.test(actor?.kind ?? "") ? /** @type {{ kind: string }} */ (actor).kind : "unknown" });
+
+    /**
+     * Fields every case shares. `session` is the raw caller value; only its salted daily HMAC is stored.
+     * @param {string} rawSession @param {string} at @param {string} outcome @param {string} [id]
+     */
+    async function base(rawSession, at, outcome, id) {
+      return {
+        v: /** @type {1} */ (1),
+        id: id ?? crypto.randomUUID(),
+        project,
+        session: (await scrubber.hash(`${rawSession}|${at.slice(0, 10)}`)).slice(0, 32),
+        seq: Date.parse(at),
+        at,
+        release,
+        outcome: /** @type {import("../shared/case.mjs").Case["outcome"]} */ (outcome),
+        ttlDays: ttlDays[/** @type {keyof typeof ttlDays} */ (outcome)],
+      };
+    }
+
+    // ponytail: the queue lives in this capture instance and flushes on a timer; in a Worker build one per request (as in
+    // the example), since workerd forbids I/O across request contexts. A shared cross-request queue needs waitUntil plumbing.
+    /** @type {{ item: Promise<unknown>, done: () => void }[]} */
+    let queue = [];
+    /** @type {ReturnType<typeof setTimeout> | undefined} */
+    let timer;
+
+    /** Sends up to 50 queued cases as one POST. Entries join a batch when `record` is called, so one tick's cases share a POST. */
+    function flush() {
+      clearTimeout(timer);
+      timer = undefined;
+      const batch = queue.slice(0, MAX_BATCH);
+      queue = queue.slice(MAX_BATCH);
+      if (queue.length > 0) timer = setTimeout(flush, 0);
+      if (batch.length === 0) return;
+      Promise.all(batch.map((entry) => withDeadline(entry.item)))
+        .then(async (items) => {
+          const cases = items.filter((item) => item !== undefined);
+          if (cases.length === 0) return;
+          const sent = await (fetcher ?? globalThis).fetch(endpoint, {
+            method: "POST",
+            headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+            body: JSON.stringify({ cases }),
+            signal: AbortSignal.timeout(TIMEOUT_MS),
+          });
+          discard(sent.body);
+        })
+        // oxlint-disable-next-line intersite/no-empty-catch -- a failed send drops its cases; record() must never reject into the request it observes
+        .catch(() => {})
+        .finally(() => {
+          for (const entry of batch) entry.done();
+        });
+    }
+
+    /** @param {Promise<unknown>} build A case, or undefined to drop it. @returns {Promise<void>} */
+    function enqueue(build) {
+      // oxlint-disable-next-line intersite/no-empty-catch -- a case that fails to build is dropped, never surfaced
+      const item = build.then((value) => (caseProblem(value) ? undefined : value)).catch(() => undefined);
+      return new Promise((done) => {
+        queue.push({ item, done: () => done(undefined) });
+        if (queue.length >= MAX_BATCH) flush();
+        else timer ??= setTimeout(flush, 0);
+      });
+    }
+
+    /**
+     * @param {RecordInput} input @param {Request | PlainRequest} request @param {Response | PlainResponse} response
+     * @param {{ status: number, outcome: string, at: string, session: string }} known
+     */
+    async function build(input, request, response, { status, outcome, at, session }) {
+      const { route } = input;
+      const requestUrl = new URL(request.url, "http://localhost");
+      const path = requestUrl.pathname;
+      if (!include.some((glob) => glob.test(path)) || exclude.some((glob) => glob.test(path))) return undefined;
 
       const routeParts = route.split("/");
       const pathParts = await Promise.all(
@@ -180,19 +368,12 @@ export function createCapture(options) {
 
       const responseBody = await readJson(response, MAX_RESPONSE_BYTES);
       const json = "json" in responseBody ? await scrubber.scrubKeys(responseBody.json) : null;
-      const code = /** @type {any} */ (json)?.code;
+      const code = /** @type {{ code?: unknown } | null} */ (json)?.code;
       /** @type {import("../shared/case.mjs").Case} */
       const item = {
-        v: 1,
-        id: input.id ?? crypto.randomUUID(),
-        project,
-        session,
-        seq: Date.parse(at),
-        at,
-        release,
-        outcome,
-        actor: { kind: /^[a-z][a-z0-9_-]{0,31}$/.test(input.actor?.kind ?? "") ? input.actor.kind : "unknown" },
-        request: { method: request.method, route, path: pathParts.join("/"), query, body },
+        ...(await base(session, at, outcome, input.id)),
+        actor: actorOf(input.actor),
+        request: { method: request.method.toUpperCase(), route, path: pathParts.join("/"), query, body },
         response: {
           status,
           shape: shapeOf(json),
@@ -200,42 +381,101 @@ export function createCapture(options) {
           // Only on errors: a 2xx `code` is as likely an invite or verification code as an error code.
           ...(status >= 400 && typeof code === "string" && /^[A-Za-z][A-Za-z0-9_.:-]{0,63}$/.test(code) ? { errorCode: code } : {}),
         },
-        ttlDays: ttlDays[outcome],
+        ...actionOf(header(request.headers, "x-intersite-action"), header(request.headers, "x-intersite-page")),
       };
       if (caseProblem(item)) item.request.body = { $omitted: "too large" };
-      if (caseProblem(item)) return;
-
-      // ponytail: one case per POST, batch per isolate (the collector takes up to 50) if request volume makes this costly.
-      const sent = await (fetcher ?? globalThis).fetch(endpoint, {
-        method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-        body: JSON.stringify({ cases: [item] }),
-        signal: AbortSignal.timeout(TIMEOUT_MS),
-      });
-      discard(sent.body);
+      return item;
     }
 
-    return {
-      record(input) {
+    /** @param {RecordInput} input @returns {Promise<void>} */
+    function record(input) {
+      const request = input?.request;
+      // Skipped or unusable: free the request copy's body (cancelling is not reading) so its tee does not buffer.
+      const skip = () => {
+        discard(isFetchMessage(request) ? request.body : undefined);
+        return resolved;
+      };
+      try {
+        const response = input.response;
+        const status = response?.status;
+        if (!Number.isInteger(status) || typeof request?.url !== "string" || typeof request.method !== "string") return skip();
+        if (header(request.headers, "x-intersite-replay") !== null) return skip();
+        // The outcome comes from the status alone, so the sampling decision is made before any body is touched.
+        const outcome = input.outcome ?? (status >= 500 ? "error" : status >= 400 ? "rejected" : "ok");
+        const ms = input.at === undefined ? Date.now() : new Date(input.at).getTime();
+        const session = String(input.session ?? header(request.headers, "x-intersite-session") ?? "anonymous");
+        if (!sampled(outcome, session, ms)) return skip();
         // Clone synchronously, before the caller returns the original and the runtime starts streaming it.
-        /** @type {Response | undefined} */
-        let response;
+        const copy = isFetchMessage(response) ? response.clone() : response;
+        const known = { status: /** @type {number} */ (status), outcome, at: new Date(ms).toISOString(), session };
+        return enqueue(
+          build(input, request, copy, known).finally(() => {
+            discard(isFetchMessage(copy) ? copy.body : undefined);
+            discard(isFetchMessage(request) ? request.body : undefined);
+          }),
+        );
+      } catch {
+        return skip();
+      }
+    }
+
+    /** @param {UiInput} input @returns {Promise<void>} */
+    function recordUi(input) {
+      try {
+        const page = reducePage(input?.page);
+        const outcome = input.outcome;
+        const ms = Date.now();
+        const at = new Date(ms).toISOString();
+        const session = String(input.session ?? "anonymous");
+        if (!page || !OUTCOMES.includes(outcome) || !sampled(outcome, session, ms)) return resolved;
+        const errorName = typeof input.errorName === "string" && ERROR_NAME.test(input.errorName) ? { errorCode: input.errorName } : {};
+        return enqueue(
+          base(session, at, outcome).then((fields) => ({
+            ...fields,
+            release: typeof input.release === "string" ? input.release : release,
+            actor: actorOf(input.actor),
+            request: { method: UI_METHOD, route: page, path: page, query: {}, body: null },
+            response: { status: 0, shape: "null", ids: {}, ...errorName },
+            ...actionOf(input.name, page),
+          })),
+        );
+      } catch {
+        return resolved;
+      }
+    }
+
+    /** @param {typeof fetch} inner @param {(request: Request) => Described} describe @returns {typeof fetch} */
+    function wrapFetch(inner, describe) {
+      return (input, init) => {
+        /** @type {Request | undefined} */
+        let copy;
+        /** @type {Described} */
+        let described;
         try {
-          response = input.response.clone();
+          // A copy taken before `inner` consumes the original; a streamed body is left out rather than stolen.
+          const source = input instanceof Request ? input.clone() : input;
+          copy = new Request(source, init?.body instanceof ReadableStream ? { ...init, body: null } : init);
+          described = copy.url.startsWith(endpoint) ? undefined : describe(copy);
         } catch {
-          discard(input?.request?.body);
-          return Promise.resolve();
+          described = undefined;
         }
-        const copy = response;
-        return run(input, copy)
-          // oxlint-disable-next-line intersite/no-empty-catch -- record() must never reject into the request it observes
-          .catch(() => {})
-          .finally(() => {
-            discard(copy.body);
-            discard(input.request?.body);
-          });
-      },
-    };
+        const pending = inner(input, init);
+        if (!copy || !described || typeof described.route !== "string") {
+          discard(copy?.body);
+          return pending;
+        }
+        const request = copy;
+        const { route, actor, session } = described;
+        // Registered before the caller's own `then`, so the response is cloned before the caller reads it.
+        Promise.resolve(pending).then(
+          (response) => record({ request, response, route, actor, session }),
+          () => discard(request.body),
+        );
+        return pending;
+      };
+    }
+
+    return { record, recordUi, wrapFetch };
   } catch (error) {
     return disabled(error instanceof Error ? error.message : String(error));
   }

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, test } from "node:test";
 import { replaySessions } from "../../replay/run.mjs";
 import { DEFAULT_ID_PATTERN } from "../../shared/shape.mjs";
 import * as adapter from "./adapter.mjs";
-import { notesSession, preexistingSession, startTarget } from "./helpers.mjs";
+import { notesSession, preexistingSession, recorded, startTarget } from "./helpers.mjs";
 
 /** @type {Awaited<ReturnType<typeof startTarget>>} */
 let target;
@@ -86,4 +86,77 @@ test("cross-tenant catches a read of another tenant's record", async () => {
 test("a failing invariant is reported", async () => {
   target.bugs.add("ledger");
   assert.deepEqual(failures(await replay(notesSession())), ["baseline s-notes-4 ledger is off by 1"]);
+});
+
+/** A fetch that remembers each request's URL, headers and body, and how many were in flight at once. */
+function spyFetch() {
+  /** @type {{ url: string, headers: Record<string, string>, body: any }[]} */
+  const sent = [];
+  let inFlight = 0;
+  let most = 0;
+  /** @type {typeof fetch} */
+  const spy = async (url, init) => {
+    sent.push({ url: String(url), headers: /** @type {Record<string, string>} */ (init?.headers), body: init?.body ? JSON.parse(String(init.body)) : undefined });
+    most = Math.max(most, ++inFlight);
+    try { return await fetch(url, init); } finally { inFlight--; }
+  };
+  return { spy, sent, most: () => most };
+}
+
+const DAY = 86_400_000;
+
+test("dates in the query and body move forward by the case's age and keep their format; x-intersite-time is sent", async () => {
+  const at = Date.now() - 10 * DAY;
+  const item = recorded({ id: "d-1", session: "d", seq: at, method: "POST", route: "/notes", path: "/notes", status: 201, json: { note: { id: "note_prodD1", text: "hi" } },
+    body: { text: "hi", startsAt: "2026-03-01T09:30:00.250Z", day: "2026-03-01", local: "2026-03-01T23:30:00+02:00", prose: "due 2026-03-01 at noon" } });
+  item.request.query = { from: "2026-03-01T09:30:00Z", on: "2026-03-01" };
+
+  const { spy, sent } = spyFetch();
+  await replaySessions({ sessions: [{ session: "d", cases: [item] }], target: target.url, adapter, modes: ["baseline"], idPattern: DEFAULT_ID_PATTERN, fetch: spy, now: at + 10 * DAY });
+  const [request] = sent;
+  const query = new URL(request.url).searchParams;
+  /** @param {string} shifted @param {string} original */
+  const movedBy = (shifted, original) => Date.parse(shifted) - Date.parse(original);
+  for (const [shifted, original] of [[request.body.startsAt, "2026-03-01T09:30:00.250Z"], [query.get("from"), "2026-03-01T09:30:00Z"], [request.body.local, "2026-03-01T23:30:00+02:00"]]) {
+    const moved = movedBy(String(shifted), original);
+    assert.equal(moved, 10 * DAY, `${original} -> ${shifted}`);
+  }
+  assert.match(request.body.startsAt, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
+  assert.match(String(query.get("from")), /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/);
+  assert.match(request.body.local, /^2026-03-1[12]T\d\d:\d\d:\d\d\+02:00$/);
+  assert.equal(request.body.day, "2026-03-11");
+  assert.equal(query.get("on"), "2026-03-11");
+  assert.equal(request.body.prose, "due 2026-03-01 at noon");
+  assert.equal(request.headers["x-intersite-time"], item.at);
+
+  const unchanged = spyFetch();
+  await replaySessions({ sessions: [{ session: "d", cases: [item] }], target: target.url, adapter, modes: ["baseline"], idPattern: DEFAULT_ID_PATTERN, fetch: unchanged.spy, shiftDates: false });
+  assert.deepEqual(unchanged.sent[0].body, item.request.body);
+  assert.equal(new URL(unchanged.sent[0].url).search, "?from=2026-03-01T09%3A30%3A00Z&on=2026-03-01");
+});
+
+test("UI cases are left out of baseline, twice and cross-tenant without counting as skipped", async () => {
+  const uiCase = recorded({ id: "s-notes-ui", session: "s-notes", seq: 1002, method: "UI", route: "/notes/:id", path: "/notes/note_prodA1", status: 0, json: null });
+  const result = await replay([...notesSession(), uiCase], ["baseline", "twice", "cross-tenant"]);
+  assert.ok(result.steps.every((step) => step.caseId !== "s-notes-ui"));
+  assert.ok(result.steps.every((step) => step.result === "passed"), failures(result).join("\n"));
+  assert.equal(result.skipped, undefined);
+});
+
+test("--concurrency runs sessions at once, each with its own ID map, and one at a time when the adapter resets", async () => {
+  const { reset: _reset, ...noReset } = adapter;
+  const sessions = ["c1", "c2", "c3", "c4", "c5", "c6"].map((name, i) => ({ session: name, cases: notesSession(name, 1000 * i) }));
+  const parallel = spyFetch();
+  const results = await replaySessions({ sessions, target: target.url, adapter: noReset, modes: ["baseline"], idPattern: DEFAULT_ID_PATTERN, fetch: parallel.spy, concurrency: 6 });
+  assert.ok(parallel.most() > 1, "requests overlapped");
+  assert.deepEqual(results.map((result) => result.session), ["c1", "c2", "c3", "c4", "c5", "c6"]);
+  assert.deepEqual(results.flatMap(failures), []);
+  const comments = target.log.filter((entry) => entry.path.endsWith("/comments"));
+  assert.equal(comments.length, 6);
+  for (const entry of comments) assert.equal(entry.path, `/notes/${entry.body.noteId}/comments`);
+  assert.equal(new Set(comments.map((entry) => entry.body.noteId)).size, 6, "each session commented on the note it created");
+
+  const serial = spyFetch();
+  await replaySessions({ sessions, target: target.url, adapter, modes: ["baseline"], idPattern: DEFAULT_ID_PATTERN, fetch: serial.spy, concurrency: 6 });
+  assert.equal(serial.most(), 1);
 });

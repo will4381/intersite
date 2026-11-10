@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // @ts-check
-const commands = ["lint", "replay", "gate", "deploy"];
+const commands = ["init", "check", "lint", "gate", "replay", "actions", "pin", "collector", "deploy"];
+const readsCases = ["check", "replay", "actions", "pin"];
 const [command, ...argv] = process.argv.slice(2);
 
 if (!command || !commands.includes(command)) {
@@ -8,6 +9,10 @@ if (!command || !commands.includes(command)) {
   process.exit(2);
 }
 
+const cwd = process.cwd();
+const stopCollector = readsCases.includes(command) ? await (await import("../cli/local.mjs")).ensureLocalCollector(cwd) : undefined;
 /** Each command module default-exports `async (argv, { cwd }) => exitCode`. */
 const { default: run } = await import(`../cli/${command}.mjs`);
-process.exit(await run(argv, { cwd: process.cwd() }));
+const code = await run(argv, { cwd });
+await stopCollector?.();
+process.exit(code);

@@ -151,5 +151,5 @@ export function createScrubber({ salt, idPattern, redactKeys = [] }) {
     return out;
   }
 
-  return { hash, scrub, scrubKey, scrubKeys };
+  return { hash, scrub, scrubKey, scrubKeys, isId };
 }

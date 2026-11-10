@@ -98,7 +98,7 @@ export async function ingest(db, items, cap, now) {
  * Deterministic for a given seed: candidates are sorted, then shuffled with a seeded PRNG.
  * Reads: at most CANDIDATE_ROWS case rows for candidates, plus every case of the sampled sessions.
  * @param {D1} db
- * @param {{ project: string, outcomes: string[], route?: string, since?: number, knownGood: boolean, sample: number, seed: number }} query
+ * @param {{ project: string, outcomes: string[], route?: string, action?: string, since?: number, knownGood: boolean, sample: number, seed: number }} query
  */
 export async function sessions(db, query) {
   // ponytail: outcome, route and since must all hold on the same case; per-filter session matching needs one candidate query per filter.
@@ -112,6 +112,10 @@ export async function sessions(db, query) {
   if (query.route !== undefined) {
     where.push("route = ?");
     params.push(query.route);
+  }
+  if (query.action !== undefined) {
+    where.push("json_extract(body, '$.action.name') = ?");
+    params.push(query.action);
   }
   if (query.since !== undefined) {
     where.push("at_ms >= ?");
@@ -150,6 +154,32 @@ export async function sessions(db, query) {
     for (const row of rows) cases.get(row.session)?.push(JSON.parse(row.body));
   }
   return picked.map((session) => ({ session, cases: cases.get(session) ?? [] }));
+}
+
+/**
+ * One row per action name and page: a count per outcome and the latest time, errors first.
+ * Reads: one index row per case with an action in the project (cases_by_action holds no others), whatever `since` is.
+ * @param {D1} db @param {string} project @param {number} since epoch ms
+ */
+export async function actions(db, project, since) {
+  const { results } = await db
+    .prepare(
+      "SELECT json_extract(body, '$.action.name') AS name, json_extract(body, '$.action.page') AS page, outcome, COUNT(*) AS n, MAX(at_ms) AS last FROM cases INDEXED BY cases_by_action WHERE project = ? AND json_extract(body, '$.action.name') IS NOT NULL AND at_ms >= ? GROUP BY 1, 2, 3",
+    )
+    .bind(project, since)
+    .all();
+  /** @type {Map<string, { name: string, page: string, ok: number, warn: number, rejected: number, error: number, lastAt: number | string }>} */
+  const rows = new Map();
+  for (const { name, page, outcome, n, last } of results) {
+    const key = JSON.stringify([name, page]);
+    const row = rows.get(key) ?? { name, page, ok: 0, warn: 0, rejected: 0, error: 0, lastAt: 0 };
+    row[/** @type {"ok" | "warn" | "rejected" | "error"} */ (outcome)] = n;
+    row.lastAt = Math.max(/** @type {number} */ (row.lastAt), last);
+    rows.set(key, row);
+  }
+  const order = (/** @type {any} */ a, /** @type {any} */ b) =>
+    b.error - a.error || b.rejected - a.rejected || b.warn - a.warn || a.name.localeCompare(b.name) || a.page.localeCompare(b.page);
+  return [...rows.values()].sort(order).map((row) => ({ ...row, lastAt: new Date(row.lastAt).toISOString() }));
 }
 
 /**

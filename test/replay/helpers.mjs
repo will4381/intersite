@@ -92,6 +92,7 @@ export async function startCollector(cases) {
   const results = [];
   const server = await listen(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://x");
+    if (url.pathname === "/health") return reply(res, 200, { ok: true });
     requests.push(`${req.method} ${url.pathname}${url.search}`);
     if (req.headers.authorization !== `Bearer ${READ_TOKEN}`) return reply(res, 401, { error: "bad token" });
     const project = url.searchParams.get("project");

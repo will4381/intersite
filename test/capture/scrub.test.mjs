@@ -19,6 +19,7 @@ test("replaces personal data, credentials and free text, keeping the form", asyn
     ["Alice", /^text_[0-9a-f]{8}$/],
     ["eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.c2lnbmF0dXJl", /^text_[0-9a-f]{8}$/],
     ["sk_4eC39HqLyjWDarjtT1zdp7dc", /^text_[0-9a-f]{8}$/],
+    // oxlint-disable-next-line intersite/no-hardcoded-secret -- a made-up token the scrubber must replace; the fixture is the point
     ["ghp_16C7e42F292c6912E7710c838347Ae178B4a", /^text_[0-9a-f]{8}$/],
     ["deadbeefcafebabe0123456789abcdef", /^text_[0-9a-f]{8}$/],
     ["deadbeefcafebabe", /^text_[0-9a-f]{8}$/],

@@ -2,10 +2,14 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Intersite config",
   "type": "object",
-  "required": ["project"],
+  "required": [
+    "project"
+  ],
   "additionalProperties": false,
   "properties": {
-    "$schema": { "type": "string" },
+    "$schema": {
+      "type": "string"
+    },
     "project": {
       "type": "string",
       "pattern": "^[a-z0-9-]{1,64}$",
@@ -15,18 +19,45 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "url": { "type": "string", "description": "Where the collector Worker answers. `intersite deploy` prints it." },
-        "name": { "type": "string", "default": "intersite-collector", "description": "Worker name used by `intersite deploy`." },
-        "domain": { "type": "string", "description": "Optional custom domain for the collector, such as intersite.example.com." },
-        "readTokenEnv": { "type": "string", "default": "INTERSITE_READ_TOKEN", "description": "Environment variable holding the read token." },
-        "ingestTokenEnv": { "type": "string", "default": "INTERSITE_INGEST_TOKEN", "description": "Environment variable holding the ingest token." },
+        "url": {
+          "type": "string",
+          "description": "Where the collector answers. Defaults to the local one started by `intersite collector`.",
+          "default": "http://127.0.0.1:8790"
+        },
+        "name": {
+          "type": "string",
+          "default": "intersite-collector",
+          "description": "Worker name used by `intersite deploy`."
+        },
+        "domain": {
+          "type": "string",
+          "description": "Optional custom domain for the collector, such as intersite.example.com."
+        },
+        "readTokenEnv": {
+          "type": "string",
+          "default": "INTERSITE_READ_TOKEN",
+          "description": "Environment variable holding the read token."
+        },
+        "ingestTokenEnv": {
+          "type": "string",
+          "default": "INTERSITE_INGEST_TOKEN",
+          "description": "Environment variable holding the ingest token."
+        },
         "dailyCap": {
           "type": "object",
           "additionalProperties": false,
           "description": "Most cases stored per project per day; the overflow is dropped.",
           "properties": {
-            "ok": { "type": "integer", "minimum": 1, "default": 5000 },
-            "other": { "type": "integer", "minimum": 1, "default": 5000 }
+            "ok": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 5000
+            },
+            "other": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 5000
+            }
           }
         }
       }
@@ -37,42 +68,223 @@
       "properties": {
         "packs": {
           "type": "array",
-          "items": { "type": "string" },
-          "default": ["tests", "slop"],
-          "description": "Rule packs to turn on. Every rule in a listed pack is an error unless `rules` says otherwise."
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "tests",
+            "slop",
+            "security",
+            "state"
+          ],
+          "description": "Rule packs to turn on. Every rule in a listed pack is an error unless `rules` says otherwise. On by default: tests, slop, security, state. Opt-in: runtime, actions."
         },
         "rules": {
           "type": "object",
-          "additionalProperties": { "enum": ["off", "warn", "error"] },
+          "additionalProperties": {
+            "enum": [
+              "off",
+              "warn",
+              "error"
+            ]
+          },
           "description": "Per-rule overrides by rule id."
         },
         "custom": {
           "type": "array",
-          "description": "Project-local rules, in the same form as the package's lint/rules.json.",
-          "items": { "$ref": "#/definitions/rule" }
+          "description": "Project-local rules, in the same form as the package's lint/rules.yml.",
+          "items": {
+            "$ref": "#/definitions/rule"
+          }
         },
-        "baseline": { "type": "string", "default": "lint-baseline.json", "description": "Findings that already exist; the count per file and rule may only go down." },
-        "extends": { "type": "string", "default": ".oxlintrc.json", "description": "The project's own oxlint config, used when the file exists." }
+        "baseline": {
+          "type": "string",
+          "default": "intersite-baseline.json",
+          "description": "Findings that already exist; the count per file and rule may only go down."
+        },
+        "extends": {
+          "type": "string",
+          "default": ".oxlintrc.json",
+          "description": "The project's own oxlint config, used when the file exists."
+        }
+      }
+    },
+    "gates": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Checks on a change (the diff against `base`), run by `intersite check` and `intersite gate <name>`.",
+      "properties": {
+        "base": {
+          "type": "string",
+          "default": "origin/main",
+          "description": "Git ref the change is compared with."
+        },
+        "run": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "test-integrity",
+              "duplicates",
+              "new-deps",
+              "artifacts",
+              "unused",
+              "fails-on-base",
+              "mutation"
+            ]
+          },
+          "default": [
+            "test-integrity",
+            "duplicates",
+            "new-deps",
+            "artifacts",
+            "unused"
+          ],
+          "description": "Gates `intersite check` runs. `fails-on-base` and `mutation` run the tests and need `testCmd`."
+        },
+        "testPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Globs for test files."
+        },
+        "testCmd": {
+          "type": "string",
+          "description": "Command that runs the tests; exits non-zero on failure. Keep it fast."
+        },
+        "setup": {
+          "type": "string",
+          "description": "Command run in a temporary worktree before `testCmd`. When empty, the checkout's node_modules is linked in."
+        },
+        "duplicateLines": {
+          "type": "integer",
+          "minimum": 3,
+          "default": 6,
+          "description": "An added block of this many lines that already exists elsewhere is reported."
+        },
+        "mutants": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 20,
+          "description": "Most mutants the mutation gate tries per run."
+        },
+        "acknowledged": {
+          "type": "array",
+          "description": "Deliberate exceptions. Each one is visible in review: the gate, what it applies to, and why.",
+          "items": {
+            "type": "object",
+            "required": [
+              "gate",
+              "target",
+              "why"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "gate": {
+                "type": "string",
+                "description": "Gate name, such as test-integrity or new-deps."
+              },
+              "target": {
+                "type": "string",
+                "description": "File path or dependency name the exception covers."
+              },
+              "why": {
+                "type": "string",
+                "minLength": 10
+              }
+            }
+          }
+        },
+        "entryPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Extra globs for files that are loaded by convention and never imported (routes, pages, scripts), so `unused` leaves them alone."
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Extra globs for leftover files `artifacts` should report, on top of the built-in list."
+        }
       }
     },
     "capture": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "sample": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.05, "description": "Share of sessions recorded in full. Cases that are not ok are always recorded." },
-        "maxBodyBytes": { "type": "integer", "minimum": 0, "default": 32768, "description": "A larger request body is replaced with a marker." },
-        "include": { "type": "array", "items": { "type": "string" }, "default": ["/**"], "description": "Path globs to record." },
-        "exclude": { "type": "array", "items": { "type": "string" }, "default": [], "description": "Path globs never recorded, such as webhooks." },
-        "redactKeys": { "type": "array", "items": { "type": "string" }, "description": "Extra JSON keys whose values are always replaced, on top of the built-in list." },
-        "idPattern": { "type": "string", "description": "Regular expression for values that are IDs; they are kept so replay can remap them." },
+        "sample": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.05,
+          "description": "Share of sessions recorded in full. Cases that are not ok are always recorded."
+        },
+        "maxBodyBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 32768,
+          "description": "A larger request body is replaced with a marker."
+        },
+        "include": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "/**"
+          ],
+          "description": "Path globs to record."
+        },
+        "exclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Path globs never recorded, such as webhooks."
+        },
+        "redactKeys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Extra JSON keys whose values are always replaced, on top of the built-in list."
+        },
+        "idPattern": {
+          "type": "string",
+          "description": "Regular expression for values that are IDs; they are kept so replay can remap them."
+        },
         "ttlDays": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "ok": { "type": "integer", "minimum": 1, "maximum": 365, "default": 14 },
-            "warn": { "type": "integer", "minimum": 1, "maximum": 365, "default": 90 },
-            "rejected": { "type": "integer", "minimum": 1, "maximum": 365, "default": 30 },
-            "error": { "type": "integer", "minimum": 1, "maximum": 365, "default": 90 }
+            "ok": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 365,
+              "default": 14
+            },
+            "warn": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 365,
+              "default": 90
+            },
+            "rejected": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 365,
+              "default": 30
+            },
+            "error": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 365,
+              "default": 90
+            }
           }
         }
       }
@@ -81,31 +293,116 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "target": { "type": "string", "default": "http://localhost:8787", "description": "Base URL the cases are replayed against." },
-        "adapter": { "type": "string", "default": "./intersite.adapter.mjs", "description": "Module that signs in seeded users and resolves IDs." },
+        "target": {
+          "type": "string",
+          "default": "http://localhost:8787",
+          "description": "Base URL the cases are replayed against."
+        },
+        "adapter": {
+          "type": "string",
+          "default": "./intersite.adapter.mjs",
+          "description": "Module that signs in seeded users and resolves IDs."
+        },
         "modes": {
           "type": "array",
-          "items": { "enum": ["baseline", "twice", "cross-tenant"] },
-          "default": ["baseline"]
+          "items": {
+            "enum": [
+              "baseline",
+              "twice",
+              "cross-tenant",
+              "ui"
+            ]
+          },
+          "default": [
+            "baseline"
+          ]
         },
-        "sample": { "type": "integer", "minimum": 1, "maximum": 200, "default": 20, "description": "Sessions per run when no --sample is given." }
+        "sample": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200,
+          "default": 20,
+          "description": "Sessions per run when no --sample is given."
+        },
+        "uiTarget": {
+          "type": "string",
+          "description": "Base URL of the web app, for the `ui` mode."
+        },
+        "shiftDates": {
+          "type": "boolean",
+          "default": true,
+          "description": "Move recorded timestamps in requests forward by the time since capture, so date validation still passes."
+        }
       }
     }
   },
   "definitions": {
     "rule": {
       "type": "object",
-      "required": ["id", "selector", "message"],
+      "required": [
+        "id",
+        "message"
+      ],
       "additionalProperties": false,
       "properties": {
-        "id": { "type": "string", "pattern": "^[a-z0-9-]+$" },
-        "pack": { "type": "string", "description": "Pack the rule belongs to. Custom rules are always on and need none." },
-        "selector": { "type": "string", "description": "ESLint-style syntax-tree selector; every match is reported." },
-        "message": { "type": "string", "description": "What is wrong and what to do instead." },
-        "files": { "type": "array", "items": { "type": "string" }, "description": "Path globs the rule applies to; all files when omitted." },
-        "bad": { "type": "array", "items": { "type": "string" }, "description": "Code that must be reported. Checked by the test suite." },
-        "good": { "type": "array", "items": { "type": "string" }, "description": "Code that must not be reported. Checked by the test suite." }
-      }
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]+$"
+        },
+        "pack": {
+          "type": "string",
+          "description": "Pack the rule belongs to. Custom rules are always on and need none."
+        },
+        "selector": {
+          "type": "string",
+          "description": "ESLint-style syntax-tree selector; every match is reported."
+        },
+        "message": {
+          "type": "string",
+          "description": "What is wrong and what to do instead."
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Path globs the rule applies to; all files when omitted."
+        },
+        "bad": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Code that must be reported. Checked by the test suite."
+        },
+        "good": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Code that must not be reported. Checked by the test suite."
+        },
+        "comment": {
+          "type": "string",
+          "description": "Regular expression (case-insensitive) tested against the first line of every comment; a match is reported. Use this instead of `selector` for rules about comments."
+        },
+        "unless": {
+          "type": "string",
+          "description": "With `comment`: a regular expression that exempts a comment it matches."
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "selector"
+          ]
+        },
+        {
+          "required": [
+            "comment"
+          ]
+        }
+      ]
     }
   }
 }

@@ -1,0 +1,22 @@
+# yaml-language-server: $schema=./node_modules/intersite/intersite.schema.json
+# Everything has a default; this file only holds what differs. Every field is documented in the schema above.
+project: PROJECT
+
+# lint:
+#   packs: [tests, slop, security, state]   # opt-in: runtime, actions
+#   rules: { no-explicit-any: off }
+#   custom:
+#     - id: no-raw-fetch
+#       selector: CallExpression[callee.name='fetch']
+#       message: Call the API through apiClient so errors and auth are handled.
+#       files: [src/**]
+
+# gates:
+#   base: origin/main
+#   testCmd: npm test
+#   acknowledged:
+#     - { gate: new-deps, target: zod, why: "validates every request body" }
+
+# replay:
+#   target: http://localhost:8787
+#   modes: [baseline, twice, cross-tenant]

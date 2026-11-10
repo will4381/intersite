@@ -1,0 +1,230 @@
+# Intersite's selector rules. One entry is one rule: no code needed.
+#   id        unique, kebab-case
+#   pack      tests | slop | security | runtime | actions | state
+#   selector  ESLint-style syntax-tree selector; every match is reported
+#   message   what is wrong AND what to do instead
+#   files     optional path globs the rule is limited to
+#   bad/good  code that must / must not be reported; `npm test` checks every one
+rules:
+  - id: no-focused-tests
+    pack: tests
+    selector: CallExpression[callee.object.name=/^(describe|suite|it|test)$/][callee.property.name='only'], CallExpression[callee.name=/^(fit|fdescribe|ftest)$/], CallExpression[callee.name=/^(describe|suite|it|test)$/] > ObjectExpression > Property[key.name='only'][value.value=true]
+    message: A focused test (.only) silently stops every other test from running. Remove the focus before committing.
+    bad:
+      - it.only('adds', () => { expect(add(1, 2)).toBe(3); });
+      - describe.only('math', () => {});
+      - fit('adds', () => { expect(add(1, 2)).toBe(3); });
+      - "test('adds', { only: true }, () => { assert.equal(add(1, 2), 3); });"
+    good:
+      - it('adds', () => { expect(add(1, 2)).toBe(3); });
+      - const only = list.only(1);
+  - id: no-skipped-tests
+    pack: tests
+    selector: CallExpression[callee.object.name=/^(describe|suite|it|test)$/][callee.property.name='skip'], CallExpression[callee.name=/^(xit|xdescribe|xtest)$/], CallExpression[callee.name=/^(describe|suite|it|test)$/] > ObjectExpression > Property[key.name='skip']
+    message: A skipped test proves nothing and rots. Fix it so it passes, or delete it and track the work in an issue.
+    bad:
+      - it.skip('adds', () => { expect(add(1, 2)).toBe(3); });
+      - xdescribe('math', () => {});
+      - "test('adds', { skip: 'flaky' }, () => { assert.equal(add(1, 2), 3); });"
+    good:
+      - it('adds', () => { expect(add(1, 2)).toBe(3); });
+      - stream.skip(2);
+  - id: no-constant-assertion
+    pack: tests
+    selector: CallExpression[callee.name='expect'][arguments.length=1][arguments.0.type='Literal'], CallExpression[callee.name='assert'][arguments.0.type='Literal'], CallExpression[callee.object.name='assert'][callee.property.name='ok'][arguments.0.type='Literal']
+    message: This assertion checks a constant, so it can never fail. Assert on the value the code under test produced.
+    bad:
+      - expect(true).toBe(true);
+      - assert(true);
+      - assert.ok(1);
+      - expect(1).toEqual(1);
+    good:
+      - expect(add(1, 2)).toBe(3);
+      - assert.ok(result.ok);
+      - assert.equal(add(1, 2), 3);
+      - const me = parse(await expect(200, send('/v1/me')));
+      - "await expect(422, send('/v1/creators/c1', { method: 'PATCH' }));"
+  - id: no-existence-only-assertion
+    pack: tests
+    selector: CallExpression[callee.property.name=/^(toBeDefined|toBeTruthy)$/]:not([callee.object.callee.property.name='poll'], CallExpression[callee.name='waitFor'] *), CallExpression[callee.object.property.name='not'][callee.property.name=/^(toBeUndefined|toBeNull|toBeFalsy)$/]:not([callee.object.object.callee.property.name='poll'], CallExpression[callee.name='waitFor'] *)
+    message: Checking that a value exists or is truthy passes for almost any wrong value. Assert the exact expected value with toBe/toEqual, or for a generated value such as an ID or timestamp, its form with toMatch. Waiting for a value to appear is fine through expect.poll or waitFor.
+    bad:
+      - expect(user).toBeDefined();
+      - expect(result.ok).toBeTruthy();
+      - expect(user).not.toBeNull();
+      - expect(user).not.toBeUndefined();
+    good:
+      - "expect(user).toEqual({ id: 'u1', name: 'Ada' });"
+      - expect(result.ok).toBe(true);
+      - expect(find('missing')).toBeUndefined();
+      - await expect.poll(() => imagePath(image)).not.toBeNull();
+      - "await expect.poll(read, { timeout: 30_000 }).toBeTruthy();"
+      - await waitFor(() => expect(result.current.data).toBeDefined());
+  - id: no-swallowed-test-failure
+    pack: tests
+    selector: CallExpression[callee.name=/^(it|test)$/] CatchClause:not(:has(ThrowStatement))
+    message: A try/catch in a test passes when nothing throws and can swallow failed assertions. Use assert.rejects/assert.throws or expect(...).rejects/toThrow instead.
+    bad:
+      - it('rejects bad input', async () => { try { await parse('x'); } catch (error) { expect(error.message).toBe('bad'); } });
+      - test('works', () => { try { assert.equal(run(), 1); } catch {} });
+    good:
+      - it('rejects bad input', async () => { await expect(parse('x')).rejects.toThrow('bad'); });
+      - test('cleans up', () => { try { assert.equal(run(), 1); } finally { cleanup(); } });
+      - function load() { try { return read(); } catch { return null; } }
+  - id: no-module-mocking
+    pack: tests
+    selector: CallExpression[callee.object.name=/^(vi|jest)$/][callee.property.name=/^(mock|doMock|unstable_mockModule)$/], CallExpression[callee.object.name='mock'][callee.property.name='module'], CallExpression[callee.object.property.name='mock'][callee.property.name='module']
+    message: Module mocking tests the mock, not the code. Pass the dependency in as a parameter, or run against a real or in-memory implementation.
+    bad:
+      - vi.mock('./db.js');
+      - "jest.mock('../api', () => ({ get: jest.fn() }));"
+      - "mock.module('./db.js', { namedExports: { query } });"
+      - "t.mock.module('./db.js', { namedExports: { query } });"
+    good:
+      - const db = createMemoryDb();
+      - const spy = vi.fn();
+  - id: no-empty-catch
+    pack: slop
+    selector: CatchClause > BlockStatement[body.length=0], CallExpression[callee.property.name='catch'] > :function[body.type='BlockStatement'][body.body.length=0]
+    message: An empty catch hides the error. Handle it (return an explicit fallback and say why), rethrow it, or remove the try.
+    bad:
+      - try { save(); } catch {}
+      - try { save(); } catch (error) { /* ignore */ }
+      - save().catch(() => {});
+    good:
+      - |-
+        try { return JSON.parse(text); } catch { return null; // not JSON: callers treat null as absent
+        }
+      - save().catch((error) => { throw new SaveError(error); });
+  - id: no-log-and-continue
+    pack: slop
+    selector: CatchClause > BlockStatement[body.length=1] > ExpressionStatement > CallExpression[callee.object.name='console'], CallExpression[callee.property.name='catch'] > MemberExpression[object.name='console'], CallExpression[callee.property.name='catch'] > :function > CallExpression.body[callee.object.name='console']
+    message: Logging an error and carrying on hides the failure from callers. Rethrow it, return an explicit error result, or let it propagate.
+    bad:
+      - try { save(); } catch (error) { console.error(error); }
+      - save().catch(console.error);
+      - save().catch((error) => console.warn(error));
+    good:
+      - try { save(); } catch (error) { console.error(error); throw error; }
+      - try { save(); } catch (error) { console.error(error); process.exitCode = 1; }
+  - id: no-as-any
+    pack: slop
+    selector: TSAsExpression[typeAnnotation.type='TSAnyKeyword'], TSTypeAssertion[typeAnnotation.type='TSAnyKeyword']
+    message: Casting to any switches off type checking. Fix the type, narrow with a check, or describe the real shape.
+    bad:
+      - const user = data as any;
+      - const user = <any>data;
+    good:
+      - const user = data as User;
+      - const user = parseUser(data);
+  - id: no-double-assertion
+    pack: slop
+    selector: TSAsExpression[expression.type='TSAsExpression'][expression.typeAnnotation.type=/^TS(Unknown|Any)Keyword$/]
+    message: Casting through unknown forces an unrelated type and hides a real mismatch. Validate the value or fix the types so one cast (or none) is enough.
+    bad:
+      - const user = data as unknown as User;
+      - const user = data as any as User;
+    good:
+      - const user = data as User;
+      - const value = input as unknown;
+  - id: no-explicit-any
+    pack: slop
+    selector: :not(TSAsExpression, TSTypeAssertion) > TSAnyKeyword
+    message: An any type turns off checking for everything it touches. Use the real type, a generic, or unknown plus a check.
+    bad:
+      - "function load(input: any) { return input; }"
+      - "const items: Array<any> = [];"
+      - "type Handler = (event: any) => void;"
+    good:
+      - "function load(input: unknown) { return input; }"
+      - "const items: string[] = [];"
+  - id: no-stub-implementation
+    pack: slop
+    selector: ThrowStatement > NewExpression[callee.name='Error'] > Literal.arguments[value=/not (yet )?implemented|todo/i]
+    message: This is a stub, not an implementation. Implement it, or delete it and the code that calls it.
+    bad:
+      - function charge() { throw new Error('Not implemented'); }
+      - "function charge() { throw new Error('TODO: implement charge'); }"
+    good:
+      - function charge(amount) { if (amount <= 0) throw new Error('amount must be positive'); return pay(amount); }
+  - id: no-hardcoded-secret
+    pack: security
+    selector: Literal[value=/\b((sk|rk)_live_[0-9A-Za-z]{16,}|gh[pousr]_[0-9A-Za-z]{36}|github_pat_[0-9A-Za-z_]{40,}|(AKIA|ASIA)[0-9A-Z]{16}|xox[bp]-[0-9A-Za-z-]{20,}|sk-ant-[0-9A-Za-z_-]{20,}|sk-proj-[0-9A-Za-z_-]{20,}|AIza[0-9A-Za-z_-]{35}|npm_[0-9A-Za-z]{36}|glpat-[0-9A-Za-z_-]{20,})\b|-----BEGIN ([A-Z]+ )*PRIVATE KEY-----(\s|\\[nr])*[A-Za-z0-9+\/=]{40}/], TemplateElement[value.raw=/\b((sk|rk)_live_[0-9A-Za-z]{16,}|gh[pousr]_[0-9A-Za-z]{36}|github_pat_[0-9A-Za-z_]{40,}|(AKIA|ASIA)[0-9A-Z]{16}|xox[bp]-[0-9A-Za-z-]{20,}|sk-ant-[0-9A-Za-z_-]{20,}|sk-proj-[0-9A-Za-z_-]{20,}|AIza[0-9A-Za-z_-]{35}|npm_[0-9A-Za-z]{36}|glpat-[0-9A-Za-z_-]{20,})\b|-----BEGIN ([A-Z]+ )*PRIVATE KEY-----(\s|\\[nr])*[A-Za-z0-9+\/=]{40}/]
+    message: "This looks like a live credential in source code. Read it from an environment variable or secret store, and rotate it: anyone with the repository has it. Tests use test-mode keys such as sk_test_."
+    bad:
+      - const stripe = new Stripe('sk_live_51HxQ2bLk8dPq3RtY7uVw9ZaB');
+      - const token = 'ghp_aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5';
+      - "const aws = { accessKeyId: 'AKIAQ7XKZ2M4PL9RT3VW' };"
+      - const slack = `xoxb-2741936517-5829104736281-Qz8LmN4pRt7Vx2Kc`;
+      - const key = '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA7vbqajDw4o6gJy8UtmIbkcpnkO3Kwc4qsEnSZp\n-----END RSA PRIVATE KEY-----';
+      - const key = `-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg`;
+      - "fetch(url, { headers: { authorization: 'Bearer github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyzABCDEF' } });"
+    good:
+      - const stripe = new Stripe('sk_test_51HxQ2bLk8dPq3RtY7uVw9ZaB');
+      - const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+      - if (key.startsWith('sk_live_')) throw new Error('live key in test');
+      - const pattern = /ghp_[0-9A-Za-z]{36}/;
+      - const label = 'AKIA prefix marks an AWS access key';
+      - const body = pem.replace('-----BEGIN PRIVATE KEY-----', '').replace('-----END PRIVATE KEY-----', '');
+      - const pem = `-----BEGIN PRIVATE KEY-----\n${base64(der)}\n-----END PRIVATE KEY-----`;
+      - const header = '-----BEGIN RSA PRIVATE KEY-----\n';
+  - id: no-interpolated-sql
+    pack: security
+    selector: CallExpression[callee.property.name=/^(query|raw|unsafe|\$queryRawUnsafe|\$executeRawUnsafe)$/] > TemplateLiteral.arguments:has(> .expressions:not(Identifier[name=/^[A-Z][A-Z0-9_]*$/])), CallExpression[callee.property.name=/^(exec|execute)$/] > TemplateLiteral.arguments[quasis.0.value.raw=/^\s*(SELECT|INSERT|UPDATE|DELETE|WITH|CREATE|ALTER|DROP)\b/i]:has(> .expressions:not(Identifier[name=/^[A-Z][A-Z0-9_]*$/]))
+    message: Interpolating values into SQL lets input rewrite the query (SQL injection). Pass them as parameters, as in query('SELECT * FROM users WHERE id = $1', [id]), or use a tagged template such as sql`...` that parameterizes them.
+    bad:
+      - await db.query(`SELECT * FROM users WHERE id = ${id}`);
+      - await knex.raw(`DELETE FROM orders WHERE user_id = ${req.params.id}`);
+      - await sql.unsafe(`UPDATE users SET name = '${name}' WHERE id = ${id}`);
+      - db.exec(`INSERT INTO log VALUES ('${message}')`);
+      - await prisma.$queryRawUnsafe(`SELECT * FROM users WHERE email = '${email}'`);
+    good:
+      - await db.query(sql`SELECT * FROM users WHERE id = ${id}`);
+      - await db.query('SELECT * FROM users WHERE id = $1', [id]);
+      - await db.query(`SELECT * FROM ${USERS_TABLE} WHERE id = $1`, [id]);
+      - const match = pattern.exec(`${first} ${last}`);
+      - await db.query(`SELECT * FROM users`);
+  - id: require-action-name
+    pack: actions
+    selector: JSXOpeningElement:matches([name.name=/^(button|form)$/], :has(> JSXAttribute[name.name='onClick'])):not(:has(> JSXAttribute[name.name='data-intersite'])):not(:has(> JSXSpreadAttribute)):not(:has(> JSXAttribute[name.name='type'][value.value='submit']))
+    message: 'This control has no action name. Add a stable one such as data-intersite="program.save": tests and replay find the element by it, so they survive markup and text changes.'
+    bad:
+      - export const Save = () => <button onClick={save}>Save</button>;
+      - export const Edit = () => <form onSubmit={submit}><input name="title" /></form>;
+      - export const Row = () => <div onClick={open}>Open</div>;
+      - export const Close = () => <Button onClick={close}>Close</Button>;
+    good:
+      - export const Save = () => <button data-intersite="program.save" onClick={save}>Save</button>;
+      - export const Edit = () => <form data-intersite="program.edit" onSubmit={submit}><button type="submit">Save</button></form>;
+      - export const Action = (props) => <button {...props}>Go</button>;
+      - export const Link = () => <a href="/programs">Programs</a>;
+  - id: no-placeholder-comment
+    pack: slop
+    comment: \b(in a (real|production) (implementation|app|application|system|world|scenario)|placeholder (implementation|logic|for now|value)|(simplified|naive|dummy|mock|fake) implementation|this is (just )?a (stub|placeholder|mock)|for now,? (just|we|simply|return|use|hard-?code)|todo:? implement|not (yet )?implemented\b.*\b(later|todo)|would (normally|typically) (be|go|come|call|use))\b
+    message: This comment admits the code is a stand-in, not the real thing. Write the real implementation, or stop and say what is missing; never leave a stub that looks finished.
+    bad:
+      - |-
+        // In a real implementation, this would call the payment API
+        const paid = true;
+      - |-
+        // Placeholder implementation
+        export function total() { return 0; }
+      - |-
+        // For now, just return an empty list
+        const items = [];
+      - |-
+        /* TODO: implement retry */
+        send();
+    good:
+      - |-
+        // Retries twice, then gives up: the provider rate-limits a third attempt.
+        send();
+      - |-
+        // The placeholder shown while the image loads.
+        const blur = "data:image/png;base64,AAAA";
+      - |-
+        // Implements the provider's v2 signature scheme.
+        sign();
+      - |-
+        // TODO(will): move to the queue once it supports delays
+        send();

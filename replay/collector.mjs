@@ -5,12 +5,19 @@
 /** @typedef {{ url: string, token: string, project: string }} Collector */
 /** @typedef {{ session: string, cases: Case[] }} Session */
 
+/** Hosts on this machine (or reserved for local testing). */
+export const LOCAL_HOST = /^(?:localhost|127\.0\.0\.1|\[::1\])$|\.(?:localhost|test)$/;
+
 /** @param {Collector} collector @param {string} method @param {string} path @param {unknown} [body] */
 async function call(collector, method, path, body) {
   const response = await fetch(collector.url.replace(/\/$/, "") + path, {
     method,
     headers: { authorization: `Bearer ${collector.token}`, ...(body !== undefined && { "content-type": "application/json" }) },
     body: body === undefined ? undefined : JSON.stringify(body),
+  }).catch(() => {
+    let local = false;
+    try { local = LOCAL_HOST.test(new URL(collector.url).hostname); } catch { local = false; }
+    throw new Error(`cannot reach the collector at ${collector.url}; ${local ? "start it with `intersite collector`" : "check collector.url in intersite.yml"}`);
   });
   const json = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(`collector ${method} ${path.split("?")[0]}: ${response.status} ${json.error ?? ""}`.trim());

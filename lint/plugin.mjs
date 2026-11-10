@@ -1,29 +1,42 @@
 // @ts-check
-// The `intersite` oxlint plugin: every package rule (lint/rules.json plus lint/rules/*.mjs) and the project's
-// `lint.custom` rules from intersite.json in the working directory.
-import { existsSync, readFileSync } from "node:fs";
-import { join, matchesGlob, relative } from "node:path";
+// The `intersite` oxlint plugin: every package rule (lint/rules.yml plus lint/rules/*.mjs) and the project's
+// `lint.custom` rules from intersite.yml in the working directory.
+import { readFileSync } from "node:fs";
+import { matchesGlob, relative } from "node:path";
 
 import { defineRule, eslintCompatPlugin } from "@oxlint/plugins";
+import { parse } from "yaml";
 
-import { CONFIG_FILE, loadConfig } from "../shared/config.mjs";
+import { loadConfig } from "../shared/config.mjs";
+import { commentRule } from "./comment-rule.mjs";
 import codeRules from "./rules/index.mjs";
 
-/** @typedef {{ id: string, pack?: string, selector: string, message: string, files?: string[], bad?: string[], good?: string[] }} JsonRule */
+/**
+ * A rule declared in YAML: a `selector` over the syntax tree, or a `comment` regular expression (optionally with
+ * `unless`, a second expression that exempts a comment).
+ * @typedef {{ id: string, pack?: string, selector?: string, comment?: string, unless?: string, message: string, files?: string[], bad?: string[], good?: string[] }} JsonRule
+ */
 
 /** @type {JsonRule[]} */
-export const jsonRules = JSON.parse(readFileSync(new URL("./rules.json", import.meta.url), "utf8")).rules;
+export const jsonRules = parse(readFileSync(new URL("./rules.yml", import.meta.url), "utf8")).rules;
 
 /** Every package rule as `{ id, pack, bad, good }`. */
 export const packageRules = [...jsonRules, ...codeRules];
 
 /** @returns {JsonRule[]} */
 export function customRules(cwd = process.cwd()) {
-  return existsSync(join(cwd, CONFIG_FILE)) ? loadConfig(cwd).lint.custom : [];
+  return loadConfig(cwd).lint.custom;
 }
 
 /** @param {JsonRule} r */
-function selectorRule(r) {
+function declaredRule(r) {
+  if (r.comment) {
+    const comment = new RegExp(r.comment, "i");
+    const unless = r.unless ? new RegExp(r.unless, "i") : undefined;
+    return commentRule(r.message, (first) => comment.test(first) && !unless?.test(first), r.files);
+  }
+  if (!r.selector) throw new Error(`intersite rule "${r.id}" needs a selector or a comment`);
+  const selector = r.selector;
   return defineRule({
     meta: { type: "problem", messages: { found: r.message } },
     createOnce(context) {
@@ -32,7 +45,7 @@ function selectorRule(r) {
           const file = relative(context.cwd, context.filename);
           return !r.files || r.files.some((glob) => matchesGlob(file, glob));
         },
-        [r.selector](/** @type {any} */ node) {
+        [selector](/** @type {any} */ node) {
           context.report({ node, messageId: "found" });
         },
       };
@@ -43,8 +56,8 @@ function selectorRule(r) {
 export default eslintCompatPlugin({
   meta: { name: "intersite" },
   rules: Object.fromEntries([
-    ...jsonRules.map((r) => [r.id, selectorRule(r)]),
+    ...jsonRules.map((r) => [r.id, declaredRule(r)]),
     ...codeRules.map((r) => [r.id, r.rule]),
-    ...customRules().map((r) => [r.id, selectorRule(r)]),
+    ...customRules().map((r) => [r.id, declaredRule(r)]),
   ]),
 });

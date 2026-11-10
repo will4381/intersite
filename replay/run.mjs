@@ -1,8 +1,9 @@
 // @ts-check
+import { UI_METHOD } from "../shared/case.mjs";
 import { shapeDiff, shapeOf } from "../shared/shape.mjs";
 
 /** @typedef {import("../shared/case.mjs").Case} Case */
-/** @typedef {"baseline" | "twice" | "cross-tenant"} Mode */
+/** @typedef {"baseline" | "twice" | "cross-tenant" | "ui"} Mode */
 /**
  * The project's replay adapter (see CONTRACT.md "Replay adapter").
  * @typedef {object} Adapter
@@ -15,52 +16,80 @@ import { shapeDiff, shapeOf } from "../shared/shape.mjs";
  * @typedef {object} Step
  * @property {Mode} mode
  * @property {string} caseId
- * @property {string} method   "INVARIANT" for an adapter invariant, whose route is the invariant's name.
- * @property {string} route
+ * @property {string} method   "INVARIANT" for an adapter invariant, whose route is the invariant's name. In `ui` mode, the action name.
+ * @property {string} route    In `ui` mode, the page.
  * @property {"passed" | "failed" | "skipped"} result
  * @property {string} [reason]
+ * @property {string} [sent]   On a failed request step: "METHOD path body" as sent, at most 500 characters.
+ * @property {string} [got]    On a failed request step: "status body" as answered, at most 500 characters.
  */
 /** @typedef {{ session: string, steps: Step[], skipped?: string }} SessionResult */
+/** @typedef {{ target: string, adapter: Adapter, pattern: RegExp, fetch: typeof fetch, startedAt: number | undefined }} Context */
 
 class Unresolved extends Error {}
 
+const DAY = 86_400_000;
+const CLIP = 500;
+
 /**
  * Replay each session against `target` in every mode and compare with what was recorded.
- * @param {{ sessions: { session: string, cases: Case[] }[], target: string, adapter: Adapter, modes: Mode[], idPattern: string, fetch?: typeof fetch }} options
+ * `concurrency` sessions run at once, except when the adapter has `reset` (shared state), when they run one at a time.
+ * @param {{ sessions: { session: string, cases: Case[] }[], target: string, adapter: Adapter, modes: Mode[], idPattern: string,
+ *   fetch?: typeof fetch, shiftDates?: boolean, now?: number, concurrency?: number, uiTarget?: string, headed?: boolean, cwd?: string }} options
  * @returns {Promise<SessionResult[]>}
  */
-export async function replaySessions({ sessions, target, adapter, modes, idPattern, fetch = globalThis.fetch }) {
-  const context = { target: target.replace(/\/$/, ""), adapter, pattern: new RegExp(idPattern), fetch };
-  /** @type {SessionResult[]} */
-  const results = [];
-  for (const { session, cases } of sessions) {
-    const ordered = [...cases].sort((a, b) => a.seq - b.seq);
-    /** @type {SessionResult} */
-    const result = { session, steps: [] };
-    for (const mode of modes) {
-      const skipped = await replayOnce(mode, ordered, result.steps, context);
-      if (skipped && !result.skipped) result.skipped = skipped;
-      const last = ordered.at(-1);
-      if (mode !== "baseline" || !last || skipped) continue;
-      for (const invariant of adapter.invariants ?? []) {
-        const message = await invariant.check({ target: context.target, fetch });
-        result.steps.push({
-          mode, caseId: last.id, method: "INVARIANT", route: invariant.name,
-          ...(message ? { result: "failed", reason: message } : { result: "passed" }),
-        });
-      }
-    }
-    results.push(result);
+export async function replaySessions({
+  sessions, target, adapter, modes, idPattern, fetch = globalThis.fetch,
+  shiftDates = true, now = Date.now(), concurrency = 1, uiTarget = "", headed = false, cwd = process.cwd(),
+}) {
+  /** @type {Context} */
+  const context = { target: target.replace(/\/$/, ""), adapter, pattern: new RegExp(idPattern), fetch, startedAt: shiftDates ? now : undefined };
+  const ui = modes.includes("ui") ? await (await import("./ui.mjs")).openBrowser({ uiTarget, headed, cwd }) : undefined;
+  try {
+    /** @type {SessionResult[]} */
+    const results = Array(sessions.length);
+    let next = 0;
+    const worker = async () => {
+      for (let index = next++; index < sessions.length; index = next++) results[index] = await replaySession(sessions[index], modes, context, ui);
+    };
+    const workers = adapter.reset ? 1 : Math.max(1, Math.min(concurrency, sessions.length));
+    await Promise.all(Array.from({ length: workers }, worker));
+    return results;
+  } finally {
+    await ui?.close();
   }
-  return results;
 }
 
 /**
- * One pass over a session in one mode. Returns the skip reason when an ID could not be resolved.
- * @param {Mode} mode @param {Case[]} cases @param {Step[]} steps
- * @param {{ target: string, adapter: Adapter, pattern: RegExp, fetch: typeof fetch }} context
+ * @param {{ session: string, cases: Case[] }} session @param {Mode[]} modes @param {Context} context
+ * @param {Awaited<ReturnType<typeof import("./ui.mjs").openBrowser>> | undefined} ui
  */
-async function replayOnce(mode, cases, steps, { target, adapter, pattern, fetch }) {
+async function replaySession({ session, cases }, modes, context, ui) {
+  const ordered = [...cases].sort((a, b) => a.seq - b.seq);
+  const api = ordered.filter((item) => item.request.method !== UI_METHOD);
+  /** @type {SessionResult} */
+  const result = { session, steps: [] };
+  for (const mode of modes) {
+    const skipped = mode === "ui" && ui ? await ui.replay(ordered, result.steps, context) : await replayOnce(mode, api, result.steps, context);
+    if (skipped && !result.skipped) result.skipped = skipped;
+    const last = api.at(-1);
+    if (mode !== "baseline" || !last || skipped) continue;
+    for (const invariant of context.adapter.invariants ?? []) {
+      const message = await invariant.check({ target: context.target, fetch: context.fetch });
+      result.steps.push({
+        mode, caseId: last.id, method: "INVARIANT", route: invariant.name,
+        ...(message ? { result: "failed", reason: message } : { result: "passed" }),
+      });
+    }
+  }
+  return result;
+}
+
+/**
+ * One pass over a session in one API mode. Returns the skip reason when an ID could not be resolved.
+ * @param {Mode} mode @param {Case[]} cases @param {Step[]} steps @param {Context} context
+ */
+async function replayOnce(mode, cases, steps, { target, adapter, pattern, fetch, startedAt }) {
   await adapter.reset?.({ target });
   /** @type {Map<string, string>} recorded ID -> replayed ID */
   const ids = new Map();
@@ -73,28 +102,30 @@ async function replayOnce(mode, cases, steps, { target, adapter, pattern, fetch 
     if (!signedIn.has(key)) signedIn.set(key, await adapter.signIn(kind, { target, other }));
     return /** @type {Record<string, string>} */ (signedIn.get(key));
   };
-  /** @param {Case["request"]} request @param {string} caseId @param {Record<string, string>} headers */
-  const send = async (request, caseId, headers) => {
+  /** @param {Case["request"]} request @param {Case} item @param {Record<string, string>} headers */
+  const send = async (request, item, headers) => {
     const url = new URL(target + request.path);
     for (const [key, value] of Object.entries(request.query)) url.searchParams.set(key, value);
     const hasBody = request.body !== undefined && request.body !== null && !["GET", "HEAD"].includes(request.method);
+    const body = hasBody ? JSON.stringify(request.body) : undefined;
     const response = await fetch(url, {
       method: request.method,
-      headers: { ...headers, "x-intersite-replay": caseId, ...(hasBody && { "content-type": "application/json" }) },
-      body: hasBody ? JSON.stringify(request.body) : undefined,
+      headers: { ...headers, "x-intersite-replay": item.id, "x-intersite-time": item.at, ...(hasBody && { "content-type": "application/json" }) },
+      body,
     });
     const text = await response.text();
     let json;
     try { json = JSON.parse(text); } catch { json = undefined; }
-    return { status: response.status, json };
+    const exchange = { sent: clip(`${request.method} ${url.pathname}${url.search}${body ? ` ${body}` : ""}`), got: clip(`${response.status} ${text}`) };
+    return { status: response.status, json, exchange };
   };
 
   for (const [index, item] of cases.entries()) {
     const { method } = item.request;
     const kind = item.actor.kind;
-    /** @param {Case} which @param {Step["result"]} result @param {string} [reason] */
-    const record = (which, result, reason) =>
-      steps.push({ mode, caseId: which.id, method: which.request.method, route: which.request.route, result, ...(reason && { reason }) });
+    /** @param {Case} which @param {Step["result"]} result @param {string} [reason] @param {{ sent: string, got: string }} [exchange] */
+    const record = (which, result, reason, exchange) =>
+      steps.push({ mode, caseId: which.id, method: which.request.method, route: which.request.route, result, ...(reason && { reason }), ...(result === "failed" && exchange) });
 
     /** @type {string[]} */
     const found = [];
@@ -112,16 +143,20 @@ async function replayOnce(mode, cases, steps, { target, adapter, pattern, fetch 
       for (const rest of cases.slice(index)) if (counts(mode, rest, pattern)) record(rest, "skipped", error.message);
       return error.message;
     }
-    const request = mapIds(item.request, pattern, (id) => /** @type {string} */ (ids.get(id)));
+    let request = mapIds(item.request, pattern, (id) => /** @type {string} */ (ids.get(id)));
+    if (startedAt !== undefined) {
+      const shift = (/** @type {unknown} */ value) => (typeof value === "string" ? shiftDate(value, startedAt - Date.parse(item.at)) : value);
+      request = { ...request, query: mapValues(request.query, shift), body: deep(request.body, shift) };
+    }
 
     // Another account's request goes first, so a leaky DELETE is not hidden by the owner's DELETE.
     if (mode === "cross-tenant" && counts(mode, item, pattern)) {
-      const { status } = await send(request, item.id, await auth(kind, true));
+      const { status, exchange } = await send(request, item, await auth(kind, true));
       if ([401, 403, 404].includes(status)) record(item, "passed");
-      else record(item, "failed", `another account got ${status}, expected 401, 403 or 404`);
+      else record(item, "failed", `another account got ${status}, expected 401, 403 or 404`, exchange);
     }
 
-    const first = await send(request, item.id, await auth(kind, false));
+    const first = await send(request, item, await auth(kind, false));
     for (const [pointer, recordedId] of Object.entries(item.response.ids)) {
       const value = valueAt(first.json, pointer);
       if (typeof value === "string") ids.set(recordedId, value);
@@ -131,11 +166,11 @@ async function replayOnce(mode, cases, steps, { target, adapter, pattern, fetch 
       const reason = first.status !== item.response.status
         ? `status recorded ${item.response.status}, got ${first.status}`
         : shapeDiff(item.response.shape, shapeOf(first.json));
-      record(item, reason ? "failed" : "passed", reason);
+      record(item, reason ? "failed" : "passed", reason, first.exchange);
     }
     if (mode === "twice" && method !== "GET") {
-      const second = await send(request, item.id, await auth(kind, false));
-      if (second.status >= 500) record(item, "failed", `second send got ${second.status}, first got ${first.status}`);
+      const second = await send(request, item, await auth(kind, false));
+      if (second.status >= 500) record(item, "failed", `second send got ${second.status}, first got ${first.status}`, second.exchange);
       else record(item, "passed");
     }
   }
@@ -158,26 +193,59 @@ function counts(mode, item, pattern) {
   return true;
 }
 
+/** Every leaf of a JSON value passed through `swap`. @param {unknown} value @param {(leaf: unknown) => unknown} swap @returns {unknown} */
+function deep(value, swap) {
+  if (Array.isArray(value)) return value.map((item) => deep(item, swap));
+  if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, deep(v, swap)]));
+  return swap(value);
+}
+
+/** @param {Record<string, string>} record @param {(value: string) => unknown} swap @returns {Record<string, string>} */
+function mapValues(record, swap) {
+  return Object.fromEntries(Object.entries(record).map(([key, value]) => [key, /** @type {string} */ (swap(value))]));
+}
+
 /**
  * A copy of the request with every ID-looking path segment, query value and body string passed through `swap`.
  * @param {Case["request"]} request @param {RegExp} pattern @param {(id: string) => string} swap
  * @returns {Case["request"]}
  */
 function mapIds(request, pattern, swap) {
-  /** @param {unknown} value @returns {any} */
+  /** @param {unknown} value */
   const one = (value) => (typeof value === "string" && pattern.test(value) ? swap(value) : value);
-  /** @param {unknown} value @returns {unknown} */
-  const deep = (value) => {
-    if (Array.isArray(value)) return value.map(deep);
-    if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, deep(v)]));
-    return one(value);
-  };
   return {
     ...request,
-    path: request.path.split("/").map(one).join("/"),
-    query: Object.fromEntries(Object.entries(request.query).map(([key, value]) => [key, one(value)])),
-    body: deep(request.body),
+    path: request.path.split("/").map((segment) => /** @type {string} */ (one(segment))).join("/"),
+    query: mapValues(request.query, one),
+    body: deep(request.body, one),
   };
+}
+
+const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?(Z|[+-]\d{2}:?\d{2})?)?$/;
+
+/**
+ * An ISO date or timestamp moved `delta` ms later, written in the same format: a date-only value moves by whole days,
+ * and a timestamp keeps its precision and its zone (the wall time in that zone moves by `delta`). Anything else is
+ * returned unchanged.
+ * @param {string} value @param {number} delta
+ */
+function shiftDate(value, delta) {
+  const match = ISO_DATE.exec(value);
+  if (!match) return value;
+  const [, year, month, day, hour, minute, second, fraction, zone] = match;
+  const millis = Number((fraction ?? "").padEnd(3, "0").slice(0, 3));
+  const wall = Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour ?? 0), Number(minute ?? 0), Number(second ?? 0), millis);
+  if (new Date(wall).getUTCDate() !== Number(day)) return value;
+  if (hour === undefined) return new Date(wall + Math.round(delta / DAY) * DAY).toISOString().slice(0, 10);
+  // ponytail: sub-millisecond digits become zeros; keep them as text if a project ever needs microseconds.
+  const iso = new Date(wall + delta).toISOString();
+  return iso.slice(0, 16) + (second === undefined ? "" : iso.slice(16, 19))
+    + (fraction === undefined ? "" : `.${iso.slice(20, 23).padEnd(fraction.length, "0").slice(0, fraction.length)}`) + (zone ?? "");
+}
+
+/** @param {string} text */
+function clip(text) {
+  return text.length > CLIP ? `${text.slice(0, CLIP - 1)}…` : text;
 }
 
 /** The value at a pointer written by `idsOf` ("/" is the root; keys are not escaped). @param {unknown} json @param {string} pointer */
