@@ -1,30 +1,21 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
+import { isBodyCall, isRequestHolder, isRequestPart, resolveVariable, unwrap } from "../shared.mjs";
+
 // ORM and query-builder writes: Prisma, Drizzle, Supabase, Mongoose, Sequelize, Knex, TypeORM.
 const WRITE = /^(create|createMany|update|updateMany|upsert|insert|insertOne|insertMany|updateOne|replaceOne|findOneAndUpdate|findByIdAndUpdate|values|set|save)$/;
 
 // Keys whose value is the record being written.
 const PAYLOAD = /^(data|values|\$set|\$setOnInsert|create|update|doc|document|record|fields|attributes|changes)$/;
 
-/** @param {any} node */
-function unwrap(node) {
-  while (["TSAsExpression", "TSNonNullExpression", "TSSatisfiesExpression", "AwaitExpression"].includes(node?.type)) node = node.type === "AwaitExpression" ? node.argument : node.expression;
-  return node;
-}
+/** `await` and casts, but not `?.` chains: what this rule looks through. */
+const WRAPPERS = new Set(["TSAsExpression", "TSNonNullExpression", "TSSatisfiesExpression", "AwaitExpression"]);
 
 /** `req.body`, `ctx.request.body`, `await request.json()`, `await c.req.json()`. @param {any} node */
 function isBodyRead(node) {
-  node = unwrap(node);
-  if (node?.type === "MemberExpression" && !node.computed && node.property.name === "body") {
-    const o = node.object;
-    return (o.type === "Identifier" && /^(req|request)$/.test(o.name)) || (o.type === "MemberExpression" && o.property.name === "request");
-  }
-  if (node?.type === "CallExpression" && node.callee.type === "MemberExpression" && node.callee.property.name === "json" && !node.arguments.length) {
-    const o = node.callee.object;
-    return (o.type === "Identifier" && /^(req|request)$/.test(o.name)) || (o.type === "MemberExpression" && o.property.name === "req");
-  }
-  return false;
+  node = unwrap(node, WRAPPERS);
+  return isRequestPart(node, isRequestHolder, /^body$/) || isBodyCall(node, /^json$/);
 }
 
 /**
@@ -32,24 +23,20 @@ function isBodyRead(node) {
  * @param {any} node @param {any} sourceCode
  */
 function isRawBody(node, sourceCode) {
-  node = unwrap(node);
+  node = unwrap(node, WRAPPERS);
   if (isBodyRead(node)) return true;
   if (node?.type !== "Identifier") return false;
-  for (let scope = sourceCode.getScope(node); scope; scope = scope.upper) {
-    const variable = scope.set.get(node.name);
-    if (!variable) continue;
-    const def = variable.defs[0]?.node;
-    return def?.type === "VariableDeclarator" && def.id.type === "Identifier" && isBodyRead(def.init);
-  }
-  return false;
+  const def = resolveVariable(node, sourceCode)?.defs[0]?.node;
+  return def?.type === "VariableDeclarator" && def.id.type === "Identifier" && isBodyRead(def.init);
 }
 
 /**
  * A route that validates the body before the handler runs: Fastify's `{ schema: { body } }`, or Express middleware such
- * as `validate(schema)` / `celebrate(...)` listed before the handler.
+ * as `validate(schema)` / `celebrate(...)` listed before the handler. Stricter than the shared validatedRoute: the schema
+ * must cover `body`, since only the body is checked here.
  * @param {any} node
  */
-function validatedRoute(node) {
+function bodyValidatedRoute(node) {
   for (let n = node.parent; n; n = n.parent) {
     if (n.type !== "CallExpression") continue;
     for (const arg of n.arguments) {
@@ -85,7 +72,7 @@ export const rule = defineRule({
      */
     function check(value, call) {
       const found = [value, ...members(value), ...members(value).flatMap(members)];
-      for (const f of found) if (isRawBody(f, context.sourceCode) && !validatedRoute(call)) context.report({ node: f, messageId: "whole" });
+      for (const f of found) if (isRawBody(f, context.sourceCode) && !bodyValidatedRoute(call)) context.report({ node: f, messageId: "whole" });
     }
     return {
       CallExpression(node) {

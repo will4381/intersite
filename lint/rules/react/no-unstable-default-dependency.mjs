@@ -1,7 +1,8 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { isComponentOrHook, isHookCall, walk } from "./hooks.mjs";
+import { walk } from "../shared.mjs";
+import { isComponentOrHook, isHookCall } from "./hooks.mjs";
 
 const fresh = /^(?:ArrayExpression|ObjectExpression|ArrowFunctionExpression|FunctionExpression|NewExpression)$/;
 

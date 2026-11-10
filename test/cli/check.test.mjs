@@ -29,6 +29,6 @@ test("check runs every gate, names the ones that failed, and passes once the cha
 
   rmSync(join(r.cwd, "PLAN.md"));
   const clean = await check(r.cwd);
-  assert.equal(clean.lines.at(-1), "ok check: test-integrity, duplicates, new-deps, artifacts, unused, replay");
+  assert.equal(clean.lines.at(-1), "ok check: test-integrity, duplicates, similar, new-deps, artifacts, unused, naming, style-drift, replay");
   assert.equal(clean.code, 0);
 });

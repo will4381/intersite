@@ -1,7 +1,9 @@
 // @ts-check
-// The `ui` replay mode (CONTRACT.md "Replay modes"): drives the installed Chrome through the project's playwright-core.
+// The `ui` replay mode (CONTRACT.md "Replay modes"): drives Chrome (or Lightpanda) through the project's playwright-core.
 // Loaded only when that mode is asked for, so the other modes never need a browser.
+import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
+import { createServer } from "node:net";
 import { join } from "node:path";
 
 import { UI_METHOD } from "../shared/case.mjs";
@@ -17,16 +19,21 @@ const QUIET = 300;
 const FIND_CAP = 1000;
 const READS = ["GET", "HEAD", UI_METHOD];
 const WRITES = ["POST", "PUT", "PATCH", "DELETE"];
+const LIGHTPANDA_MISSING = "replay.browser lightpanda needs the lightpanda binary on PATH; install it with "
+  + "curl -fsSL https://pkg.lightpanda.io/install.sh | bash (it goes to ~/.local/bin), or set replay.browserUrl to a running one";
+/** A 1x1 transparent GIF stands in for every image, so an image-only link or button keeps a box to click. */
+const PIXEL = Buffer.from("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7", "base64");
 
 /** @param {unknown} error */
 const firstLine = (error) => String(error instanceof Error ? error.message : error).split("\n")[0];
 
 /**
- * One browser for the run. Throws a one-line setup error when playwright-core or Chrome is missing.
- * @param {{ uiTarget: string, headed: boolean, cwd: string }} options
+ * One browser for the run. Throws a one-line setup error when playwright-core or the browser is missing.
+ * @param {{ uiTarget: string, headed: boolean, cwd: string, browser?: string, browserUrl?: string }} options
  */
-export async function openBrowser({ uiTarget, headed, cwd }) {
+export async function openBrowser({ uiTarget, headed, cwd, browser: engine = "chrome", browserUrl = "" }) {
   if (!uiTarget) throw new Error("ui mode needs replay.uiTarget in intersite.yml");
+  if (engine !== "chrome" && engine !== "lightpanda") throw new Error(`replay.browser must be chrome or lightpanda, got ${engine}`);
   /** @type {typeof import("playwright-core").chromium} */
   let chromium;
   try {
@@ -34,17 +41,12 @@ export async function openBrowser({ uiTarget, headed, cwd }) {
   } catch {
     throw new Error("ui mode needs playwright-core in the project: npm install --save-dev playwright-core");
   }
-  /** @type {import("playwright-core").Browser} */
-  let browser;
-  try {
-    browser = await chromium.launch({ channel: "chrome", headless: !headed });
-  } catch (error) {
-    throw new Error(`ui mode could not start Google Chrome; install it from https://www.google.com/chrome/ (${firstLine(error)})`);
-  }
+  const { browser, stop } = browserUrl ? await connect(chromium, browserUrl)
+    : engine === "lightpanda" ? await startLightpanda(chromium) : await launchChrome(chromium, headed);
   const base = uiTarget.replace(/\/$/, "");
 
   return {
-    close: () => browser.close(),
+    close: stop,
     /**
      * Every distinct action of one session, in order. Returns the first skip reason, if any.
      * @param {Case[]} cases @param {Step[]} steps @param {Context} replayContext
@@ -123,6 +125,80 @@ export async function openBrowser({ uiTarget, headed, cwd }) {
 }
 
 /**
+ * Chrome Headless Shell when Playwright has it installed (`npx playwright install chromium-headless-shell`), else the
+ * installed Google Chrome. Headed runs always use Chrome: the shell has no window.
+ * @param {typeof import("playwright-core").chromium} chromium @param {boolean} headed
+ */
+async function launchChrome(chromium, headed) {
+  // No extra switches: Playwright already turns off background networking, updates, sync and throttling, and
+  // --disable-gpu measured no better.
+  const shell = headed ? undefined : await chromium.launch({ channel: "chromium-headless-shell" }).catch(() => undefined);
+  try {
+    const browser = shell ?? (await chromium.launch({ channel: "chrome", headless: !headed }));
+    return { browser, stop: () => browser.close() };
+  } catch (error) {
+    throw new Error(`ui mode could not start Google Chrome; install it from https://www.google.com/chrome/ (${firstLine(error)})`);
+  }
+}
+
+/**
+ * A browser already running with the Chrome DevTools Protocol at `url` (replay.browserUrl). Closing only disconnects.
+ * @param {typeof import("playwright-core").chromium} chromium @param {string} url
+ */
+async function connect(chromium, url) {
+  try {
+    const browser = await chromium.connectOverCDP(url, { timeout: 10_000 });
+    return { browser, stop: () => browser.close() };
+  } catch (error) {
+    throw new Error(`ui mode could not connect to replay.browserUrl ${url} (${firstLine(error)})`);
+  }
+}
+
+/**
+ * Starts `lightpanda serve` from PATH on a free local port, connects to it, and stops it on close.
+ * @param {typeof import("playwright-core").chromium} chromium
+ */
+async function startLightpanda(chromium) {
+  const port = await freePort();
+  const child = spawn("lightpanda", ["serve", "--host", "127.0.0.1", "--port", String(port)], {
+    stdio: ["ignore", "ignore", "pipe"],
+    env: { LIGHTPANDA_DISABLE_TELEMETRY: "true", ...process.env },
+  });
+  const exited = new Promise((done) => { child.once("close", done); child.once("error", done); });
+  /** @type {string | undefined} why the process is gone, once it is */
+  let gone;
+  let stderr = "";
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  child.once("error", (error) => {
+    gone = /** @type {NodeJS.ErrnoException} */ (error).code === "ENOENT" ? LIGHTPANDA_MISSING : `ui mode could not start lightpanda (${firstLine(error)})`;
+  });
+  child.once("exit", (code) => { gone ??= `lightpanda exited with code ${code} before it accepted a connection (${firstLine(stderr.trim())})`; });
+  const stop = async () => { child.kill(); await exited; };
+  // ponytail: polls the port until it answers; read lightpanda's "listening" log line instead if its format is ever documented.
+  for (const end = Date.now() + 10_000; ;) {
+    try {
+      const browser = await chromium.connectOverCDP(`ws://127.0.0.1:${port}`, { timeout: 2000 });
+      return { browser, stop: async () => { await browser.close().catch(() => undefined); await stop(); } };
+    } catch (error) {
+      if (gone || Date.now() > end) {
+        await stop();
+        throw new Error(gone ?? `ui mode could not connect to lightpanda on port ${port} (${firstLine(error)})`);
+      }
+      await new Promise((done) => setTimeout(done, 100));
+    }
+  }
+}
+
+/** A local TCP port that was free a moment ago. */
+async function freePort() {
+  const server = createServer();
+  await new Promise((done) => server.listen(0, "127.0.0.1", () => done(undefined)));
+  const { port } = /** @type {import("node:net").AddressInfo} */ (server.address());
+  await new Promise((done) => server.close(done));
+  return port;
+}
+
+/**
  * Routes the page's requests to the app and the API with the sign-in headers, and watches its problems and traffic.
  * @param {import("playwright-core").Page} page @param {Set<string>} origins @param {Record<string, string>} signInHeaders
  */
@@ -140,6 +216,14 @@ async function watchPage(page, origins, signInHeaders) {
     const answer = await route.fetch({ headers });
     bodies.set(route.request(), answer.text());
     return route.fulfill({ response: answer });
+  });
+  // Registered last, so it runs first: images, fonts and media cost decode time and memory and no check reads them.
+  await page.route(() => true, (route) => {
+    const type = route.request().resourceType();
+    if (type === "image") return route.fulfill({ contentType: "image/gif", body: PIXEL });
+    // An empty answer, not an abort: Chrome logs an aborted request as a console error, which would fail the step.
+    if (type === "font" || type === "media") return route.fulfill({ body: "" });
+    return route.fallback();
   });
   let inflight = 0;
   let lastActivity = Date.now();

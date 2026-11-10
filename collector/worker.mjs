@@ -83,7 +83,7 @@ async function handle(request, env) {
     if (unknown !== undefined) return fail(`outcome must be one of ${OUTCOMES.join(", ")}`, 400);
     const since = sinceOf(query);
     if (Number.isNaN(since)) return fail("since must be an ISO timestamp", 400);
-    const seed = query.has("seed") ? Number(query.get("seed")) : Math.floor(Math.random() * 2 ** 32);
+    const seed = Number(query.get("seed") ?? Math.floor(Math.random() * 2 ** 32));
     if (!Number.isSafeInteger(seed)) return fail("seed must be an integer", 400);
     const sample = Math.min(MAX_SAMPLE, Math.max(1, Number.parseInt(query.get("sample") ?? "", 10) || 20));
     const found = await store.sessions(env.DB, {

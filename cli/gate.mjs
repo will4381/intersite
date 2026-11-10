@@ -9,12 +9,15 @@ import { duplicates } from "../gates/duplicates.mjs";
 import { failsOnBase } from "../gates/fails-on-base.mjs";
 import { GateError } from "../gates/lib.mjs";
 import { mutation } from "../gates/mutation.mjs";
+import { naming } from "../gates/naming.mjs";
 import { newDeps } from "../gates/new-deps.mjs";
+import { similar } from "../gates/similar.mjs";
+import { styleDrift } from "../gates/style-drift.mjs";
 import { testIntegrity } from "../gates/test-integrity.mjs";
 import { unused } from "../gates/unused.mjs";
 
 /** @type {Record<string, (options: import("../gates/lib.mjs").GateOptions) => Promise<import("../gates/lib.mjs").GateResult>>} */
-export const gates = { "test-integrity": testIntegrity, duplicates, "new-deps": newDeps, artifacts, unused, "fails-on-base": failsOnBase, mutation };
+export const gates = { "test-integrity": testIntegrity, duplicates, "new-deps": newDeps, artifacts, unused, similar, naming, "style-drift": styleDrift, "fails-on-base": failsOnBase, mutation };
 
 const usage = `usage: intersite gate <${Object.keys(gates).join("|")}> [--base <ref>] [--json] [--cmd "<test command>"] [--paths <glob>]... [--setup "<command>"] [--max <n>] [--timeout <seconds>]`;
 

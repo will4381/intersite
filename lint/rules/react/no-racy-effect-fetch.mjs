@@ -1,7 +1,8 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { EFFECT, enclosingFunction, isHookCall, stateSetters, walk } from "./hooks.mjs";
+import { enclosingFunction, walk } from "../shared.mjs";
+import { EFFECT, isHookCall, stateSetters } from "./hooks.mjs";
 
 /** `fetch(…)`, `axios(…)` or `axios.get(…)`. A project's own client (`api.get`) is too wide to guess. @param {any} node */
 const isRequest = (node) =>

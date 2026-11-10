@@ -79,6 +79,10 @@ async function main(argv, cwd) {
     console.error(`note: --concurrency ${concurrency} ignored; sessions run one at a time because the adapter resets shared state`);
     concurrency = 1;
   }
+  if (concurrency > 1 && modes.includes("ui") && config.replay.browser === "lightpanda") {
+    console.error(`note: --concurrency ${concurrency} ignored; lightpanda holds one browser context at a time`);
+    concurrency = 1;
+  }
 
   const { seed, sessions } = await pickSessions(flags, String(config.replay.sample), collector, base);
 
@@ -94,7 +98,7 @@ async function main(argv, cwd) {
 
   const results = await replaySessions({
     sessions, target, adapter, modes, idPattern: config.capture.idPattern, shiftDates: config.replay.shiftDates,
-    concurrency, uiTarget: config.replay.uiTarget, headed: flags.headed, cwd,
+    concurrency, uiTarget: config.replay.uiTarget, headed: flags.headed, cwd, browser: config.replay.browser, browserUrl: config.replay.browserUrl,
   });
 
   if (flags.mark) await markResults(collector, /** @type {string} */ (flags.release), results);

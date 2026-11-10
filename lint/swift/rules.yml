@@ -1,0 +1,373 @@
+# Intersite's Swift rules (pack `swift`), run by SwiftLint with a config generated from this file.
+#   id         unique, kebab-case; reported as swift/<id>, and named in `// swiftlint:disable:next <id> -- <why>`
+#              (a built-in rule is disabled by its SwiftLint name instead)
+#   message    what is wrong AND what to do instead
+#   swiftlint  a SwiftLint built-in rule, with `config` for its options
+#   regex      or a custom rule: matched against the whole file (`.` also matches newlines, so use [^\n])
+#   skipKinds  drop a match touching these SourceKit token kinds (comment, string, ...)
+#   files / skipFiles  regular expressions searched in the absolute file path
+#   bad/good   Swift that must / must not be reported; `npm test` checks every one
+rules:
+  - id: no-force-try
+    regex: '(?<!#Preview[^}]{0,300})\btry!'
+    skipKinds: [comment, doccomment, string]
+    skipFiles: '(^|/)[^/]*Tests?(/|\.swift$)'
+    message: "try! crashes the app on the first error. Use do/catch and handle the failure, or mark the function throws and let the caller decide. (A crash is fine in tests and #Preview.)"
+    bad:
+      - 'let data = try! Data(contentsOf: url)'
+      - "func load() -> [Item] { try! JSONDecoder().decode([Item].self, from: data) }"
+    good:
+      - "do { let data = try Data(contentsOf: url); show(data) } catch { logger.error(\"read failed: \\(error)\") }"
+      - |-
+        #Preview {
+            let container = try! ModelContainer(for: Item.self)
+            return ContentView().modelContainer(container)
+        }
+
+  - id: no-force-unwrap
+    regex: '(?<![\w.$])(?!(?:as|try)\b|k[A-Z])[a-z_]\w*(?:\.[a-zA-Z_]\w*)*!(?![=!])'
+    skipKinds: [comment, doccomment, string]
+    skipFiles: '(^|/)[^/]*Tests?(/|\.swift$)'
+    message: "Force-unwrapping a variable crashes when it is nil, and nothing here proves it is not. Unwrap with guard let / if let and handle the nil case, or give it a default with ??."
+    bad:
+      - 'Text(item.timestamp!, formatter: formatter)'
+      - print("family name \(existingFamilyName!)")
+      - let age = Date().timeIntervalSince(lastLoadTime!)
+    good:
+      - guard let timestamp = item.timestamp else { return }
+      - let url = URL(string:"https://example.com")!
+      - "@IBOutlet weak var label: UILabel!"
+      - if !isLoading && count != 0 { refresh() }
+      - let key = HTTPField.Name("Lucra-Version")!
+      - 'let query: [String: Any] = [kSecReturnData as String: kCFBooleanTrue!]'
+
+  - id: no-empty-catch
+    regex: '\bcatch(\s+let\s+\w+)?\s*\{\s*\}'
+    skipKinds: [comment, doccomment, string]
+    message: "An empty catch throws the error away, so the failure is invisible. Handle it (show it, retry, or fall back), let it propagate with throws, or if waiting on a Task is all you need, use `await task.result`."
+    bad:
+      - "do { try save() } catch {}"
+      - "do { try await upload() } catch let error { }"
+    good:
+      - "do { try save() } catch { logger.error(\"save failed: \\(error)\"); showError(error) }"
+      - "_ = await previous?.result"
+
+  - id: no-discarded-try
+    regex: '^[ \t]*(?:_[ \t]*=[ \t]*)?try\?[ \t]+(?!(?:await[ \t]+)?(?:Task\.sleep|[\w.?]*\.(?:removeItem|createDirectory|setCategory|setActive|stop)\(|[\w.?]*\.close\(\)))'
+    skipKinds: [comment, doccomment, string]
+    message: "try? with the result thrown away hides the error completely: the call fails and nobody knows. Use do/catch and handle or log the error. (Best-effort calls such as removeItem, createDirectory, close() and AVAudioSession setup are allowed.)"
+    bad:
+      - try? services.authService.saveSession(refreshed)
+      - _ = try? await api.markRead(id)
+      - try? Auth.auth().signOut()
+    good:
+      - "do { try services.authService.saveSession(refreshed) } catch { logger.error(\"session not saved: \\(error)\") }"
+      - 'let user = try? decoder.decode(User.self, from: data)'
+      - try? await Task.sleep(for:.seconds(1))
+      - try? FileManager.default.removeItem(at:tempURL)
+      - try? handle.close()
+      - try? FileManager.default.createDirectory(at:url, withIntermediateDirectories:true)
+
+  - id: no-print-logging
+    regex: '(?<![\w.])(?:print|debugPrint|NSLog|dump)\('
+    skipKinds: [comment, doccomment, string]
+    skipFiles: '(^|/)([^/]*Tests?|Scripts?|Plugins|Tools)/|(^|/)(main|Package)\.swift$|Tests?\.swift$'
+    message: "print() in app or library code is a debugging leftover: release builds keep it, and it has no level, category or privacy. Delete it, or log through os.Logger (`Logger(subsystem:category:).error(...)`) for events worth keeping."
+    bad:
+      - 'print("[FirebaseService] Starting joinHabit for habitId: \(habitId)")'
+      - debugPrint(response)
+      - NSLog("user signed out")
+    good:
+      - 'logger.error("join failed: \(error.localizedDescription)")'
+      - let text = "print(value)"
+      - printer.print(page)
+
+  - id: no-emoji-log
+    regex: '\b(?:[lL]ogger|log|os_log)(?:\.\w+)?\(\s*"(?:\[[^\]"\n]*\][ \t]*)?\p{Extended_Pictographic}'
+    message: "This log message opens with an emoji, a tell of generated code that makes logs harder to search and filter. Start with the event in words (\"upload finished\")."
+    bad:
+      - logger.info("🚀 Upload started")
+      - Logger.error("[Auth] ❌ Sign in failed")
+    good:
+      - logger.info("upload started for \(id)")
+      - Text("🚀 Ready")
+
+  - id: no-stub-fatal-error
+    regex: 'fatalError\(\s*"(?!init\(coder:\))[^"\n]*(?i:not (?:yet )?implemented|unimplemented|todo|implement me|unresolved error)'
+    message: "This fatalError is a placeholder (a \"not implemented\" stub, or Xcode's Core Data template \"Unresolved error\" that Apple says not to ship), so the app crashes where it should recover. Implement it, or handle the error: show it to the user, or log it and fall back."
+    bad:
+      - "func refund() { fatalError(\"Not implemented\") }"
+      - fatalError("Unresolved error \(nsError), \(nsError.userInfo)")
+      - 'fatalError("TODO: handle offline mode")'
+    good:
+      - required init?(coder:NSCoder) { fatalError("init(coder:) has not been implemented") }
+      - fatalError("Metal is not supported on this device")
+
+  - id: no-fixed-delay
+    regex: 'DispatchQueue\.main\.asyncAfter\(\s*deadline:\s*\.now\(\)\s*\+\s*(?:[0-9.]+|\.(?:milliseconds|seconds)\(\s*[0-9.]+\s*\))\s*\)\s*\{'
+    skipKinds: [comment, doccomment, string]
+    message: "A fixed delay on the main queue is a timing guess: it still fires after the view is gone and breaks on a slower device. For staged animation use .animation(.spring.delay(0.3), value:) or withAnimation's completion; to wait for state, react to it (.onChange, .task(id:)); for a real wait, Task.sleep inside .task, which is cancelled with the view."
+    bad:
+      - |-
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            withAnimation { buttonsVisible = true }
+        }
+      - "DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(50)) { focus = true }"
+    good:
+      - withAnimation(.spring.delay(0.3)) { buttonsVisible = true }
+      - DispatchQueue.main.asyncAfter(deadline:.now() + 20, execute:timeoutWorkItem)
+
+  - id: no-any-view
+    regex: '\breturn\s+AnyView\(|\)\s*->\s*AnyView\??\s*\{|AnyView\(\s*EmptyView\(\)\s*\)|\?\s*AnyView\('
+    skipKinds: [comment, doccomment, string]
+    message: "AnyView here only makes branches return the same type. It erases identity, so SwiftUI cannot animate or diff between them. Mark the property or function @ViewBuilder and return `some View`, using if/else or a switch for the branches."
+    bad:
+      - |-
+        func header(for tab: Tab) -> AnyView {
+            tab == .home ? AnyView(HomeHeader()) : AnyView(EmptyView())
+        }
+      - |-
+        var card: some View {
+            guard let session else { return AnyView(EmptyView()) }
+            return AnyView(SessionCard(session: session))
+        }
+    good:
+      - |-
+        @ViewBuilder func header(for tab: Tab) -> some View {
+            if tab == .home { HomeHeader() }
+        }
+      - let accessory = AnyView(InfoButton())
+      - var titleView:(() -> AnyView)? = nil
+
+  - id: no-observed-object-init
+    regex: '@ObservedObject\s+(?:private\s+)?var\s+\w+(?:\s*:\s*[\w.<>]+)?\s*=\s*[\w.]+\('
+    message: "@ObservedObject does not own the object it creates here, so SwiftUI makes a new one and loses its state every time the parent redraws. Use @StateObject for an object the view creates (or @State with an @Observable class), and @ObservedObject only for one passed in."
+    bad:
+      - "@ObservedObject private var timer = VisualizationTimer()"
+      - "@ObservedObject var model: ProfileModel = ProfileModel()"
+    good:
+      - "@StateObject private var timer = VisualizationTimer()"
+      - "@ObservedObject var model: ProfileModel"
+
+  - id: no-task-in-on-appear
+    regex: '\.onAppear\s*\{\s*Task\s*\{'
+    message: "A Task started in onAppear keeps running after the view disappears, and onAppear can fire again and start another. Use .task { ... } instead: SwiftUI cancels it when the view goes away."
+    bad:
+      - |-
+        .onAppear {
+            Task { await model.load() }
+        }
+    good:
+      - ".task { await model.load() }"
+      - ".onAppear { model.trackScreen() }"
+
+  - id: no-presentation-flags
+    regex: '(?:@State\s+(?:private\s+)?var\s+(?:show|showing|isShowing|present|isPresenting)\w*\s*(?::\s*Bool\s*)?=\s*false\b[^\n]*\n\s*){3}'
+    message: "Three or more show/present booleans for one screen can be true at once and must be reset by hand. Use one optional enum, `@State private var sheet: Sheet?`, with .sheet(item: $sheet) (or .alert(item:)/.confirmationDialog(presenting:))."
+    bad:
+      - |-
+        struct SettingsView: View {
+            @State private var showingPrivacyPolicy = false
+            @State private var showingTerms: Bool = false
+            @State private var showingSignOutAlert = false
+            var body: some View { List {} }
+        }
+    good:
+      - |-
+        struct SettingsView: View {
+            @State private var sheet: Sheet?
+            @State private var showingSignOutAlert = false
+            var body: some View { List {} }
+        }
+
+  - id: prefer-foreground-style
+    regex: '\.foregroundColor\('
+    skipKinds: [comment, doccomment, string]
+    message: "foregroundColor(_:) is deprecated. Use .foregroundStyle(_:), which also takes gradients and hierarchical styles (.secondary)."
+    bad:
+      - Text("Hi").foregroundColor(.red)
+    good:
+      - Text("Hi").foregroundStyle(.red)
+
+  - id: prefer-navigation-stack
+    regex: '\bNavigationView\s*\{'
+    skipKinds: [comment, doccomment, string]
+    message: "NavigationView is deprecated and behaves differently on each platform. Use NavigationStack (or NavigationSplitView for sidebars) with .navigationDestination(for:)."
+    bad:
+      - "NavigationView { List(items) { Text($0.name) } }"
+    good:
+      - "NavigationStack { List(items) { Text($0.name) } }"
+
+  - id: prefer-clip-shape
+    regex: '\.cornerRadius\('
+    skipKinds: [comment, doccomment, string]
+    message: "cornerRadius(_:) is deprecated. Use .clipShape(.rect(cornerRadius: 12)) (or RoundedRectangle(cornerRadius:) before iOS 17)."
+    bad:
+      - Image("cover").cornerRadius(12)
+    good:
+      - Image("cover").clipShape(.rect(cornerRadius:12))
+      - view.layer.cornerRadius = 12
+
+  - id: prefer-ignores-safe-area
+    regex: '\.edgesIgnoringSafeArea\('
+    skipKinds: [comment, doccomment, string]
+    message: "edgesIgnoringSafeArea(_:) is deprecated. Use .ignoresSafeArea(), which also lets you choose the regions (.keyboard, .container)."
+    bad:
+      - Color.black.edgesIgnoringSafeArea(.all)
+    good:
+      - Color.black.ignoresSafeArea()
+
+  - id: prefer-two-value-on-change
+    regex: '\.onChange\(of:[^)\n]*\)\s*\{\s*(?:\w+|_)\s+in'
+    message: "The one-value onChange(of:perform:) is deprecated. Use the two-value form, `.onChange(of: value) { oldValue, newValue in }`, or the no-value form `{ }` when you do not need them."
+    bad:
+      - ".onChange(of: query) { newValue in search(newValue) }"
+    good:
+      - ".onChange(of: query) { _, newValue in search(newValue) }"
+      - ".onChange(of: query) { search(query) }"
+
+  - id: no-animation-without-value
+    regex: '(?<!\.transition\([^\n]{0,200})(?<!\.(?:combined|asymmetric)\([^\n]{0,200}\n[ \t]{0,40})(?<!\w)\.animation\(\s*(?:nil|\.[a-zA-Z]+(?:\([^()\n]*\))?(?:\.\w+(?:\([^()\n]*\))?)*)\s*\)'
+    skipKinds: [comment, doccomment, string]
+    message: "animation(_:) without a value is deprecated and animates every change to the view, including ones you did not mean to. Pass the value that drives it: .animation(.spring, value: isExpanded)."
+    bad:
+      - Circle().scaleEffect(scale).animation(.spring(response:0.5, dampingFraction:0.8))
+      - Text(title).animation(.easeInOut)
+    good:
+      - Circle().scaleEffect(scale).animation(.spring, value:scale)
+      - withAnimation(.easeInOut) { expanded.toggle() }
+      - Text(title).transition(.opacity.animation(.easeInOut(duration:0.3)))
+      - Text(title).transition(.opacity.combined(with:.scale).animation(.spring().delay(0.1)))
+      - |-
+        static let slide = AnyTransition.opacity
+            .combined(with: .move(edge: .trailing))
+            .animation(.spring(response: 0.5))
+
+  - id: prefer-sleep-for
+    regex: 'Task\.sleep\(\s*nanoseconds:'
+    message: "Task.sleep(nanoseconds:) makes readers count zeros. Use Task.sleep(for: .seconds(1)) or .milliseconds(250)."
+    bad:
+      - try await Task.sleep(nanoseconds:500_000_000)
+    good:
+      - try await Task.sleep(for:.milliseconds(500))
+
+  - id: no-fixed-font-size
+    regex: '\.font\(\s*\.system\(\s*size:\s*[0-9.]+\s*[,)]'
+    skipFiles: '[^/]*(Color|Colour|Palette|Theme|Token|DesignSystem|Font|Typography)[^/]*(/[^/]*)?\.swift$|(^|/)[^/]*Tests?(/|\.swift$)'
+    message: "A fixed point size ignores the user's Dynamic Type setting, so this text never grows for people who need it larger. Use a text style (.font(.headline)), your design system's font token, or .system(.title, design: .rounded)."
+    bad:
+      - Text(name).font(.system(size:16, weight:.bold))
+      - Image(systemName:"star").font(.system(size:20))
+    good:
+      - Text(name).font(.headline.weight(.bold))
+      - Text(emoji).font(.system(size:size * 0.5))
+
+  - id: no-raw-color
+    regex: '\b(?:Color|UIColor|NSColor)\(\s*(?:red|hex|white|hue|displayP3Red):'
+    skipKinds: [comment, doccomment, string]
+    skipFiles: '[^/]*(Color|Colour|Palette|Theme|Token|DesignSystem|Font|Typography)[^/]*(/[^/]*)?\.swift$|(^|/)[^/]*Tests?(/|\.swift$)'
+    message: "A raw colour value in a view drifts from the palette and ignores dark mode. Name it once in your colour tokens (an asset catalog colour or a Color extension in the design system file) and use the name here."
+    bad:
+      - Text("Gold").foregroundStyle(Color(red:0.85, green:0.65, blue:0.13))
+      - let tint = UIColor(hex:0x0E1217)
+    good:
+      - Text("Gold").foregroundStyle(Palette.gold)
+      - let tint = Color("AccentColor")
+
+  - id: no-commented-out-code
+    regex: '(?:^[ \t]*//[ \t]*(?:let |var |if |guard |func |return\b|\}|\.\w+\(|\w+(?:\.\w+)*\([^\n]*\)[ \t]*$|\w+(?:\.\w+)+[ \t]*$|[^\n]*\{[ \t]*$|\w+ = )[^\n]*\n){3,}'
+    message: "This is commented-out code. Delete it: version control keeps the old version, and a dead copy here drifts out of date and misleads readers."
+    bad:
+      - |-
+        // HStack(spacing: 4) {
+        //     Icons.trending.image
+        // }
+      - |-
+        func total() -> Int {
+            // let tax = subtotal * rate
+            // if tax > 0 {
+            //     return subtotal + tax
+            return subtotal
+        }
+    good:
+      - |-
+        // Totals include tax because the API returns pre-tax prices.
+        // The rate comes from the user's region.
+        // See RegionStore for how it is picked.
+        let total = subtotal * (1 + rate)
+      - |-
+        /// Example:
+        ///     let total = cart.total()
+        ///     print(total)
+        func total() -> Int { 0 }
+
+  - id: no-secret-in-user-defaults
+    regex: '(?:UserDefaults[\w.]*\.set\([^\n]*forKey:\s*|@AppStorage\(\s*)"[^"\n]*(?i:token|password|secret|api_?key)'
+    message: "UserDefaults is an unencrypted plist that backups and anyone with the device can read. Store tokens, passwords and keys in the Keychain (SecItemAdd, or a small Keychain wrapper)."
+    bad:
+      - UserDefaults.standard.set(token, forKey:"authToken")
+      - "@AppStorage(\"apiKey\") private var apiKey = \"\""
+    good:
+      - UserDefaults.standard.set(true, forKey:"hasSeenOnboarding")
+      - try keychain.save(token, account:"authToken")
+
+  - id: no-hardcoded-secret
+    regex: '"[^"\n]*\b(?:(?:sk|rk)_live_[0-9A-Za-z]{16,}|gh[pousr]_[0-9A-Za-z]{36}|github_pat_[0-9A-Za-z_]{40,}|(?:AKIA|ASIA)[0-9A-Z]{16}|xox[bp]-[0-9A-Za-z-]{20,}|sk-ant-[0-9A-Za-z_-]{20,}|sk-proj-[0-9A-Za-z_-]{20,}|AIza[0-9A-Za-z_-]{35}|glpat-[0-9A-Za-z_-]{20,})'
+    message: "This looks like a live credential compiled into the app, where `strings` on the binary reveals it. Move the call behind your own backend so the key never ships, and rotate this one: anyone with the repository or the app has it."
+    bad:
+      - let stripe = "sk_live_51HxQ2bLk8dPq3RtY7uVw9ZaB"
+      - let token = "ghp_aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5"
+    good:
+      - let stripe = "sk_test_51HxQ2bLk8dPq3RtY7uVw9ZaB"
+      - let key = Bundle.main.object(forInfoDictionaryKey:"API_BASE_URL") as? String
+
+  - id: private-state
+    swiftlint: private_swiftui_state
+    message: "@State is owned by this view, so it should be private. A parent that passes a value in only sets the initial value and later changes are ignored. Make it `@State private var`, and take outside values as a plain `let` or a @Binding."
+    bad:
+      - |-
+        struct ImageDetailView: View {
+            @State var currentIndex: Int
+            var body: some View { Text("\(currentIndex)") }
+        }
+    good:
+      - |-
+        struct ImageDetailView: View {
+            @State private var currentIndex = 0
+            var body: some View { Text("\(currentIndex)") }
+        }
+
+  - id: type-name
+    swiftlint: type_name
+    config: { min_length: 1, max_length: 60 }
+    message: "Swift type names are UpperCamelCase letters and digits, with no underscores: `FiveMinApp`, not `__MinApp` or `Interior_AIApp`."
+    bad:
+      - struct user_profile {}
+      - struct Interior_AIApp {}
+    good:
+      - struct UserProfile {}
+      - struct ID {}
+
+  - id: identifier-name
+    swiftlint: identifier_name
+    config: { min_length: 1, max_length: 60, excluded: [_body] }
+    message: "Swift properties, functions and cases are lowerCamelCase with no underscores. For a JSON key such as `verified_at`, name the property `verifiedAt` and map it with CodingKeys or `.convertFromSnakeCase`."
+    bad:
+      - let verified_at = Date()
+      - let X = point.x
+    good:
+      - let verifiedAt = Date()
+      - let x = point.x
+
+  - id: no-type-suffix-name
+    regex: '\b(?:let|var)\s+[a-z]\w*(?<!json)(?:Bool|Object|Array|Dict|Dictionary)\s*[:=]'
+    skipKinds: [comment, doccomment, string]
+    message: "The type is already in the declaration, so a type suffix (`colorsArray`, `verseObject`, `isLoadingBool`) is noise. Name what the value means: `colors`, `verse`, `isLoading`."
+    bad:
+      - let colorsArray = Array(vectors.prefix(5))
+      - var isLoadingBool = false
+      - let userDataObject = User(name:name)
+    good:
+      - let colors = Array(vectors.prefix(5))
+      - let jsonObject = try JSONSerialization.jsonObject(with:data)
+      - let selectedObjectID = object.id

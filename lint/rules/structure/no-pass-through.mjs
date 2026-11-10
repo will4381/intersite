@@ -1,7 +1,7 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { isTestFile } from "./paths.mjs";
+import { isTestFile } from "../shared.mjs";
 
 /** The call or `new` a function body only returns, under `await`. @param {any} body */
 function onlyCall(body) {

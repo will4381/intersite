@@ -22,6 +22,9 @@ export function repo(files, gates = {}) {
     }
   };
   git("init", "-q", "-b", "main");
+  // No background housekeeping: a detached `git gc` can still be writing when a test deletes the repository.
+  git("config", "gc.auto", "0");
+  git("config", "maintenance.auto", "false");
   write({ "intersite.json": JSON.stringify({ project: "t", gates: { base: "base", ...gates } }), ...files });
   git("add", ".");
   git("commit", "-qm", "base");

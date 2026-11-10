@@ -1,7 +1,7 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { isTestFile } from "./paths.mjs";
+import { isTestFile } from "../shared.mjs";
 
 /** Words that carry no meaning of their own in a comment. */
 const STOP = new Set("a an the to of for and or in on with this that it its is are be been being we our you your each every all from by as at into if then else when so via up out just also only now here there do does will can should may might must any some which what them they their these those my me i us one our".split(" "));

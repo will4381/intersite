@@ -1,0 +1,15 @@
+# Naming rules that hold in every codebase (pack `naming`). Same format as core.yml; code rules live in
+# lint/rules/naming/. Conventions that differ between projects (file casing, suffixes, export names) are inferred from
+# the project by the `naming` gate instead.
+rules:
+  # 0 of 2,236 interfaces in the tuning corpus carry an `I` prefix.
+  - id: no-i-prefixed-interface
+    pack: naming
+    selector: "TSInterfaceDeclaration > Identifier.id[name=/^I[A-Z][a-z]/]"
+    message: "The `I` prefix is a C# habit TypeScript does not use: types and interfaces are interchangeable, and the prefix leaks into every use. Drop it (IUser -> User)."
+    bad:
+      - "export interface IUser { id: string }"
+      - "export interface IPaymentProvider { charge(): void }"
+    good:
+      - "export interface User { id: string }"
+      - "export interface IOSConfig { bundleId: string }"

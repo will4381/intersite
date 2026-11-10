@@ -1,7 +1,7 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { FUNCTIONS, isTestFile } from "./paths.mjs";
+import { FUNCTIONS, isTestFile } from "../shared.mjs";
 
 const LIMIT = 80;
 /** Statements, not lines: a long data table, object literal or JSX tree is one statement and costs nothing. */

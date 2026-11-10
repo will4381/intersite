@@ -36,10 +36,13 @@ beforeEach(() => {
   collector.requests.length = 0;
 });
 
-/** Runs the real CLI. @param {string[]} args @param {string} [dir] @returns {Promise<{ code: number, stdout: string, stderr: string }>} */
-function cli(args, dir = cwd) {
+/**
+ * Runs the real CLI. @param {string[]} args @param {string} [dir] @param {Record<string, string>} [env]
+ * @returns {Promise<{ code: number, stdout: string, stderr: string }>}
+ */
+function cli(args, dir = cwd, env = {}) {
   return new Promise((done) => {
-    execFile(process.execPath, [bin, "replay", ...args], { cwd: dir, env: { ...process.env, INTERSITE_READ_TOKEN: READ_TOKEN } }, (error, stdout, stderr) =>
+    execFile(process.execPath, [bin, "replay", ...args], { cwd: dir, env: { ...process.env, INTERSITE_READ_TOKEN: READ_TOKEN, ...env } }, (error, stdout, stderr) =>
       done({ code: error ? Number(error.code) : 0, stdout, stderr }));
   });
 }
@@ -257,4 +260,20 @@ test("--mode ui without replay.uiTarget exits 2 with one line", async () => {
   assert.equal(run.code, 2);
   assert.equal(run.stdout, "");
   assert.equal(run.stderr, "intersite replay: ui mode needs replay.uiTarget in intersite.yml\n");
+});
+
+test("--mode ui with replay.browser lightpanda and no lightpanda on PATH exits 2 with one line saying how to install it", async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "intersite-replay-lightpanda-")));
+  mkdirSync(join(dir, "node_modules"));
+  symlinkSync(fileURLToPath(new URL("../../node_modules/playwright-core", import.meta.url)), join(dir, "node_modules/playwright-core"));
+  writeFileSync(join(dir, "intersite.json"), JSON.stringify({
+    project: "demo",
+    collector: { url: collector.url },
+    replay: { target: target.url, adapter: relative(dir, adapterFile), uiTarget: "http://127.0.0.1:9", browser: "lightpanda" },
+  }));
+  const run = await cli(["--mode", "ui", "--seed", "1"], dir, { PATH: dir });
+  assert.equal(run.code, 2);
+  assert.equal(run.stdout, "");
+  assert.equal(run.stderr, "intersite replay: replay.browser lightpanda needs the lightpanda binary on PATH; install it with "
+    + "curl -fsSL https://pkg.lightpanda.io/install.sh | bash (it goes to ~/.local/bin), or set replay.browserUrl to a running one\n");
 });

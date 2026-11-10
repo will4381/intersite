@@ -1,8 +1,8 @@
 // @ts-check
 // The `ui` mode against a tiny web app in front of the toy target. Needs the installed Google Chrome.
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, realpathSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,16 +15,20 @@ import * as adapter from "./adapter.mjs";
 import { recorded, startTarget } from "./helpers.mjs";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
-const hasChrome = existsSync("/Applications/Google Chrome.app")
-  || ["chrome", "google-chrome"].some((name) => spawnSync("which", [name]).status === 0);
+const macChrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+const chromePath = existsSync(macChrome) ? macChrome
+  : ["google-chrome", "chrome"].map((name) => spawnSync("which", [name], { encoding: "utf8" }).stdout.trim()).find(Boolean) ?? "";
+const hasChrome = chromePath !== "";
 
 /** @type {Awaited<ReturnType<typeof startTarget>>} */
 let target;
-/** How the web app misbehaves: "healthy", "renamed", "throws", "console", "500", and on the form page "wrong-shape", "sends-nothing" or "no-color". "cookie" signs in by the `session` cookie instead of `x-tenant`, and its pages load an image from a third party. */
+/** How the web app misbehaves: "healthy", "renamed", "throws", "console", "500", and on the form page "wrong-shape", "sends-nothing" or "no-color". "cookie" signs in by the `session` cookie instead of `x-tenant`, and its pages load a script from a third party. "assets" pages load a stylesheet, a web font, an image and a video. */
 let mode = "healthy";
 let appUrl = "";
 /** @type {import("node:http").Server} */
 let app;
+/** The path of every request the app got. @type {string[]} */
+const appPaths = [];
 /** Requests the app turned away in "cookie" mode for lacking the session cookie. */
 const rejected = [];
 /** The `x-sign-in` header of each request the app got in "cookie" mode. */
@@ -34,7 +38,8 @@ let third;
 let thirdUrl = "";
 /** @type {import("node:http").IncomingHttpHeaders[]} */
 const thirdSeen = [];
-const thirdParty = () => (mode === "cookie" ? `<img src="${thirdUrl}/pixel.gif">` : "");
+const thirdParty = () => (mode === "cookie" ? `<script src="${thirdUrl}/tag.js"></script>` : "")
+  + (mode === "assets" ? '<link rel="stylesheet" href="/s.css"><img src="/i.png"><video src="/v.mp4" autoplay></video>' : "");
 
 /** The new-note page: a form whose controls are named after the API's body keys; saving opens the new note. */
 const form = () => `<!doctype html><link rel="icon" href="data:,"><title>new note</title>${thirdParty()}
@@ -68,6 +73,8 @@ before(async () => {
   target = await startTarget();
   app = createServer(async (req, res) => {
     const path = req.url ?? "/";
+    appPaths.push(path);
+    if (path === "/s.css") return res.writeHead(200, { "content-type": "text/css" }).end("@font-face { font-family: f; src: url(/f.woff2) } body { font-family: f }");
     const signedIn = mode === "cookie" && /(?:^|; )session=abc(?:;|$)/.test(req.headers.cookie ?? "");
     if (mode === "cookie") appSignIn.push(req.headers["x-sign-in"]);
     if (mode === "cookie" && !signedIn) {
@@ -88,14 +95,14 @@ before(async () => {
   appUrl = `http://127.0.0.1:${/** @type {import("node:net").AddressInfo} */ (app.address()).port}`;
   third = createServer((req, res) => {
     thirdSeen.push(req.headers);
-    res.writeHead(200, { "content-type": "image/gif" }).end();
+    res.writeHead(200, { "content-type": "text/javascript" }).end();
   });
   await new Promise((done) => third.listen(0, "127.0.0.1", () => done(undefined)));
   // Another host as well as another port: a browser scopes cookies by host, so 127.0.0.1:<any port> shares them.
   thirdUrl = `http://localhost:${/** @type {import("node:net").AddressInfo} */ (third.address()).port}`;
 });
 after(() => Promise.all([target.close(), new Promise((done) => app.close(done)), new Promise((done) => third.close(done))]));
-beforeEach(() => { mode = "healthy"; target.log.length = 0; rejected.length = 0; thirdSeen.length = 0; appSignIn.length = 0; });
+beforeEach(() => { mode = "healthy"; target.log.length = 0; rejected.length = 0; thirdSeen.length = 0; appSignIn.length = 0; appPaths.length = 0; });
 
 const page = "/notes/note_prod99";
 const session = [
@@ -105,11 +112,14 @@ const session = [
   { ...recorded({ id: "u-4", session: "u", seq: 4, method: "GET", route: "/x/:slug", path: "/x/hello-world", status: 200, json: {} }), action: { name: "x.open", page: "/x/_" } },
 ];
 
-/** @param {string} [cwd] @param {import("../../shared/case.mjs").Case[]} [cases] */
-async function replayUi(cwd = root, cases = session, signIn = adapter.signIn) {
+/**
+ * @param {string} [cwd] @param {import("../../shared/case.mjs").Case[]} [cases]
+ * @param {{ browser?: string, browserUrl?: string }} [engine]
+ */
+async function replayUi(cwd = root, cases = session, signIn = adapter.signIn, engine = {}) {
   assert.ok(hasChrome, "the ui replay tests need Google Chrome installed (https://www.google.com/chrome/)");
   const [result] = await replaySessions({
-    sessions: [{ session: "u", cases }], target: target.url, uiTarget: appUrl, adapter: { ...adapter, signIn }, modes: ["ui"], idPattern: DEFAULT_ID_PATTERN, cwd,
+    sessions: [{ session: "u", cases }], target: target.url, uiTarget: appUrl, adapter: { ...adapter, signIn }, modes: ["ui"], idPattern: DEFAULT_ID_PATTERN, cwd, ...engine,
   });
   return result.steps.map((step) => `${step.caseId} ${step.method} ${step.route} ${step.result}${step.reason ? `: ${step.reason}` : ""}${step.checked ? ` (${step.checked})` : ""}`);
 }
@@ -201,9 +211,86 @@ test("the sign-in cookie and headers reach the app and the API, never a third pa
   assert.deepEqual(await replayUi(root, writeSession, signIn), ["w-1 note.add /new passed", "w-2 note.open /notes/note_prodW1 passed"]);
   assert.deepEqual(rejected, [], "every request to the app carried the session cookie");
   assert.ok(appSignIn.length > 0 && appSignIn.every((value) => value === "secret-header"), "every request to the app carried the sign-in header");
-  assert.ok(thirdSeen.length > 0, "the page loaded the third-party image");
+  assert.ok(thirdSeen.length > 0, "the page loaded the third-party script");
   for (const headers of thirdSeen) {
     assert.equal(headers.cookie, undefined, "no cookie went to the third party");
     assert.equal(headers["x-sign-in"], undefined, "no sign-in header went to the third party");
+  }
+});
+
+test("images, fonts and media are answered in the browser, never fetched; stylesheets still load", async () => {
+  mode = "assets";
+  assert.deepEqual(await replayUi(root, session.slice(0, 3)), [
+    "u-1 note.open /notes/note_prod99 passed",
+    "u-2 note.create /notes/note_prod99 passed (presence)",
+    "u-3 UI /notes/note_prod99 passed",
+  ]);
+  assert.ok(appPaths.includes("/s.css"), "the stylesheet loaded, so visibility checks see the page's real layout");
+  assert.deepEqual(appPaths.filter((path) => ["/i.png", "/f.woff2", "/v.mp4"].includes(path)), []);
+});
+
+const healthy = [
+  "u-1 note.open /notes/note_prod99 passed",
+  "u-2 note.create /notes/note_prod99 passed (presence)",
+  "u-3 UI /notes/note_prod99 passed",
+];
+
+/**
+ * Runs `fn` with PATH starting at a fresh folder holding `files` (name -> shell script), then restores PATH.
+ * @param {Record<string, string>} files @param {(dir: string) => Promise<void>} fn
+ */
+async function withPath(files, fn) {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "intersite-path-")));
+  for (const [name, script] of Object.entries(files)) {
+    writeFileSync(join(dir, name), script);
+    chmodSync(join(dir, name), 0o755);
+  }
+  const saved = process.env.PATH;
+  process.env.PATH = `${dir}:${saved}`;
+  try { await fn(dir); } finally { process.env.PATH = saved; }
+}
+
+test("replay.browser lightpanda with no lightpanda on PATH says how to install it", async () => {
+  const saved = process.env.PATH;
+  process.env.PATH = realpathSync(mkdtempSync(join(tmpdir(), "intersite-empty-")));
+  try {
+    await assert.rejects(replayUi(root, session.slice(0, 1), adapter.signIn, { browser: "lightpanda" }), {
+      message: "replay.browser lightpanda needs the lightpanda binary on PATH; install it with curl -fsSL https://pkg.lightpanda.io/install.sh | bash"
+        + " (it goes to ~/.local/bin), or set replay.browserUrl to a running one",
+    });
+  } finally { process.env.PATH = saved; }
+});
+
+test("replay.browser lightpanda starts lightpanda serve on a local port, connects over CDP, and stops it afterwards (a stand-in, not the real engine)", async () => {
+  const fake = fileURLToPath(new URL("./fake-lightpanda.mjs", import.meta.url));
+  await withPath({ lightpanda: `#!/bin/sh\nexec "${process.execPath}" "${fake}" "$@"\n` }, async (dir) => {
+    process.env.FAKE_LIGHTPANDA_LOG = join(dir, "args.log");
+    process.env.FAKE_LIGHTPANDA_CHROME = chromePath;
+    assert.deepEqual(await replayUi(root, session.slice(0, 3), adapter.signIn, { browser: "lightpanda" }), healthy);
+    const args = readFileSync(join(dir, "args.log"), "utf8").trim();
+    assert.match(args, /^serve --host 127\.0\.0\.1 --port \d+$/);
+    const port = args.split(" ").at(-1);
+    await assert.rejects(fetch(`http://127.0.0.1:${port}/json/version`), "lightpanda was stopped when the run ended");
+  });
+});
+
+test("replay.browserUrl connects to a browser that is already running and leaves it running", async () => {
+  assert.ok(hasChrome, "this test needs Google Chrome installed");
+  const chrome = spawn(chromePath, ["--headless", "--remote-debugging-port=0", `--user-data-dir=${mkdtempSync(join(tmpdir(), "intersite-cdp-"))}`, "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
+  const closed = new Promise((done) => chrome.once("close", done));
+  try {
+    const url = await new Promise((done) => {
+      let log = "";
+      chrome.stderr.on("data", (chunk) => {
+        log += chunk;
+        const found = /DevTools listening on ws:\/\/([^/]+)\//.exec(log);
+        if (found) done(`http://${found[1]}`);
+      });
+    });
+    assert.deepEqual(await replayUi(root, session.slice(0, 3), adapter.signIn, { browserUrl: url }), healthy);
+    assert.equal(chrome.exitCode, null, "the browser is still running");
+  } finally {
+    chrome.kill();
+    await closed;
   }
 });

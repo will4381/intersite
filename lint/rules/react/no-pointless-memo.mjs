@@ -1,7 +1,8 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { enclosingFunction, isHookCall, walk } from "./hooks.mjs";
+import { enclosingFunction, walk } from "../shared.mjs";
+import { isHookCall } from "./hooks.mjs";
 
 /**
  * A value as cheap to compute as to look up, with no identity to keep: a primitive literal, a name, a property

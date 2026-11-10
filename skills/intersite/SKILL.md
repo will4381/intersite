@@ -20,6 +20,9 @@ collector is available. Success is one line starting `ok check:`. Each finding i
 | `path:line:col intersite/<rule>` | A lint rule matched new code | Fix the code as the message says |
 | `test-integrity` | A test was deleted, weakened or skipped | Restore it; fix the code instead |
 | `duplicates` | You pasted a block that already exists | Import or extract the original, named in the line |
+| `similar` | You wrote something that already exists under another name | Reuse the one named in the line; if they differ only in a few values, make one with a variant |
+| `naming` | A new file or folder does not follow its neighbours' naming | Rename it to the form the line gives |
+| `style-drift` | A new colour or size is almost an existing one | Use the token or value the line names |
 | `new-deps` | A dependency was added | Remove it if a few lines of code or the standard library do the job |
 | `artifacts` | You left a backup copy, scratch file, log or planning document | Delete it; put anything worth keeping where it belongs |
 | `unused` | You added a file or export nothing uses, or orphaned a file | Wire it in or delete it |
@@ -39,7 +42,8 @@ sees it:
 
 - For a gate: add `{ gate: <name>, target: <file or dependency>, why: "<reason>" }` to `gates.acknowledged` in
   `intersite.yml`. The failing line prints the exact entry.
-- For a lint rule: `// oxlint-disable-next-line intersite/<rule> -- <why>` on the line above.
+- For a lint rule: `// oxlint-disable-next-line intersite/<rule> -- <why>` on the line above (in Swift:
+  `// swiftlint:disable:next <id> -- <why>`).
 - After fixing existing findings, lower the baseline with `npx intersite lint --write`.
 
 ## Faster loops while working

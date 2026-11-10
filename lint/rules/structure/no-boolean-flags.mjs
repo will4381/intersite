@@ -1,7 +1,7 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { isTestFile } from "./paths.mjs";
+import { isTestFile } from "../shared.mjs";
 
 /** @param {any} node */
 const isBooleanLiteral = (node) => node?.type === "Literal" && typeof node.value === "boolean";

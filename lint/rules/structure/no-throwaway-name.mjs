@@ -1,7 +1,7 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { FUNCTIONS, isTestFile } from "./paths.mjs";
+import { FUNCTIONS, isTestFile } from "../shared.mjs";
 
 /** An edit-history suffix: `handleSubmitNew`, `parseOld`, `fetchUserV2`, `utilsFixed`. (`Copy` is left out: `heroCopy` is UI text.) */
 const edited = /^(.*?[a-z0-9])_?(New|Old|Fixed|Refactored|Improved|Enhanced|Backup|V\d+)$/;

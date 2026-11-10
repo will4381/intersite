@@ -62,6 +62,6 @@ test("with no intersite.yml every default applies and the project is named after
   writeFileSync(join(cwd, "package.json"), JSON.stringify({ name: "slabs" }));
   const config = loadConfig(cwd);
   assert.equal(config.project, "slabs");
-  assert.deepEqual(config.gates.run, ["test-integrity", "duplicates", "new-deps", "artifacts", "unused"]);
+  assert.deepEqual(config.gates.run, ["test-integrity", "duplicates", "similar", "new-deps", "artifacts", "unused", "naming", "style-drift"]);
   assert.equal(config.collector.url, "http://127.0.0.1:8790");
 });

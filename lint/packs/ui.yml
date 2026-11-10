@@ -1,3 +1,18 @@
-# Rules for the ui area. Same format as core.yml; `builtin` switches on rules oxlint already ships.
-rules: []
-builtin: []
+# Design-system discipline (pack `ui`) and global state (pack `globals`). Same format as core.yml; `builtin` switches
+# on rules oxlint already ships. Code rules live in lint/rules/ui/.
+rules:
+  - id: no-hand-rolled-singleton
+    pack: globals
+    selector: MethodDefinition[static=true][key.name=/^(getInstance|instance|getShared|shared)$/]
+    message: "A static `getInstance()` hand-rolls a singleton, a global in disguise: hidden shared state that tests cannot swap out. An ES module is already evaluated once, so export the instance (`export const client = new Client()`) or functions, and pass it in where a test needs a different one."
+    bad:
+      - "export class Api { private static inst?: Api; static getInstance() { return (Api.inst ??= new Api()); } }"
+      - "export class Store { static instance = new Store(); static shared() { return Store.instance; } }"
+      - "export default class Logger { static getInstance(): Logger { return new Logger(); } }"
+    good:
+      - "class Api { get(path: string) { return fetch(path); } }\nexport const api = new Api();"
+      - "export class Pool { getInstance() { return this; } }"
+      - "export class Color { static fromHex(hex: string) { return new Color(); } }"
+builtin:
+  - { rule: jsx-a11y/alt-text, pack: ui }
+  - { rule: jsx-a11y/no-static-element-interactions, pack: ui }

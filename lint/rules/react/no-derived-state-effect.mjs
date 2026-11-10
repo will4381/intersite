@@ -1,7 +1,8 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { EFFECT, enclosingFunction, isHookCall, stateSetters, walk } from "./hooks.mjs";
+import { enclosingFunction, walk } from "../shared.mjs";
+import { EFFECT, isHookCall, stateSetters } from "./hooks.mjs";
 
 /** Globals a value computed during render may use. Anything else not in the dependency list (a ref, `window`, `Date`) means the effect reads the outside world. */
 const pure = new Set(["Math", "String", "Number", "Boolean", "Object", "Array", "JSON", "undefined", "NaN", "Infinity"]);
@@ -48,7 +49,7 @@ export const rule = defineRule({
 
         // Every name the effect reads is a dependency, a pure global, or local to a callback inside it (`items.filter((i) => …)`).
         const locals = new Set();
-        walk(callback.body, (n) => n.type.endsWith("FunctionExpression") && walk({ type: "Params", params: n.params }, (p) => p.type === "Identifier" && locals.add(p.name)));
+        walk(callback.body, (n) => void (n.type.endsWith("FunctionExpression") && walk({ type: "Params", params: n.params }, (p) => void (p.type === "Identifier" && locals.add(p.name)))));
         let readsDep = false;
         let outside = false;
         walk(callback.body, (n, parent) => {

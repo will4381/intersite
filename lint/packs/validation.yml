@@ -1,0 +1,21 @@
+# Type escapes (pack `types`) and missing validation at trust boundaries (pack `validation`). Same format as
+# core.yml; `builtin` switches on rules oxlint already ships. Code rules live in lint/rules/validation/.
+rules:
+  - id: no-cast-filter-result
+    pack: types
+    selector: TSAsExpression[expression.type='CallExpression'][expression.callee.property.name='filter']:not([typeAnnotation.type='TSTupleType']), TSTypeAssertion[expression.type='CallExpression'][expression.callee.property.name='filter']
+    message: 'Casting a filter result claims the filter removed what the type says, and nothing checks the claim when the callback changes. Return a type guard from the callback instead: .filter((x): x is Item => x != null), or on TypeScript 5.5+ .filter((x) => x != null), which infers it.'
+    bad:
+      - const items = list.filter(Boolean) as Item[];
+      - const users = rows.map((r) => r.user).filter((u) => u !== undefined) as User[];
+      - const ids = (values.filter((v) => v !== null) as string[]).join(',');
+      - const active = <Plan[]>plans.filter((p) => p.active);
+    good:
+      - 'const items = list.filter((x): x is Item => x != null);'
+      - const items = list.filter((x) => x !== undefined);
+      - const users = rows.map((r) => r.user).filter(isUser);
+      - const names = list.filter(isActive).map((x) => x.name) as string[];
+      - const kind = z.enum(KINDS.filter((k) => k !== 'draft') as [Kind, ...Kind[]]);
+builtin:
+  - { rule: typescript/no-unsafe-function-type, pack: types }
+  - { rule: typescript/no-wrapper-object-types, pack: types }

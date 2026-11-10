@@ -1,7 +1,7 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { FUNCTIONS, isTestFile } from "./paths.mjs";
+import { FUNCTIONS, isTestFile } from "../shared.mjs";
 
 const LIMIT = 4;
 

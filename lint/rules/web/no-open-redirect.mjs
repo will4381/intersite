@@ -1,6 +1,8 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
+import { isRequestName, isRequestPart, resolveVariable } from "../shared.mjs";
+
 /** @param {any} node */
 function unwrap(node) {
   for (;;) {
@@ -23,7 +25,7 @@ function isParam(node) {
   if (node?.type === "MemberExpression") {
     const o = node.object;
     if (o.type === "Identifier" && o.name === "searchParams") return true;
-    return o.type === "MemberExpression" && !o.computed && /^(query|params|body)$/.test(o.property.name) && o.object.type === "Identifier" && /^(req|request)$/.test(o.object.name);
+    return isRequestPart(o, isRequestName);
   }
   if (node?.type !== "CallExpression" || node.callee.type !== "MemberExpression") return false;
   const { object, property } = node.callee;
@@ -51,14 +53,10 @@ export const rule = defineRule({
       node = unwrap(node);
       if (isParam(node)) return true;
       if (node?.type !== "Identifier") return false;
-      for (let scope = context.sourceCode.getScope(node); scope; scope = scope.upper) {
-        const variable = scope.set.get(node.name);
-        if (!variable) continue;
-        const def = variable.defs[0]?.node;
-        if (def?.type !== "VariableDeclarator" || def.id.type !== "Identifier" || !isParam(unwrap(def.init))) return false;
-        return variable.references.every((/** @type {any} */ r) => r.init || isRedirectArgument(r.identifier));
-      }
-      return false;
+      const variable = resolveVariable(node, context.sourceCode);
+      const def = variable?.defs[0]?.node;
+      if (def?.type !== "VariableDeclarator" || def.id.type !== "Identifier" || !isParam(unwrap(def.init))) return false;
+      return variable.references.every((/** @type {any} */ r) => r.init || isRedirectArgument(r.identifier));
     }
     /** @param {any} node */
     function isRedirectArgument(node) {

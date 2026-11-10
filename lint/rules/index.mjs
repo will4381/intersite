@@ -12,9 +12,12 @@ import * as noSelfComparisonAssertion from "./no-self-comparison-assertion.mjs";
 import * as noSilentFallback from "./no-silent-fallback.mjs";
 import * as requireAssertion from "./require-assertion.mjs";
 import asyncRules from "./async/index.mjs";
+import frameworkRules from "./frameworks/index.mjs";
+import namingRules from "./naming/index.mjs";
 import reactRules from "./react/index.mjs";
 import structureRules from "./structure/index.mjs";
 import uiRules from "./ui/index.mjs";
+import validationRules from "./validation/index.mjs";
 import webRules from "./web/index.mjs";
 
 export default [
@@ -30,8 +33,11 @@ export default [
   noSilentFallback,
   requireAssertion,
   ...asyncRules,
+  ...frameworkRules,
+  ...namingRules,
   ...reactRules,
   ...structureRules,
   ...uiRules,
+  ...validationRules,
   ...webRules,
 ];

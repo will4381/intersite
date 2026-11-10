@@ -51,6 +51,7 @@ const packFiles = {
   // Split so this file does not hold a live-shaped key itself.
   "src/secret.ts": "export const key = 'sk_" + "live_51HxQ2bLk8dPq3RtY7uVw9ZaB';\n",
   "src/state.ts": "export let count = 0;\n",
+  "src/counter.ts": "let calls = 0;\nexport const next = () => ++calls;\n",
   "src/page.tsx": "export const Save = () => <button>Save</button>;\n",
   "test/state.test.ts": "export let server;\n",
 };
@@ -58,12 +59,12 @@ const packFiles = {
 /** @param {string} out */
 const rulesHit = (out) => [...new Set(parse(out).findings.map((f) => `${f.file} ${f.rule}`))].sort();
 
-test("security is on by default; runtime and actions only when listed in lint.packs", async () => {
+test("security and globals are on by default; runtime and actions only when listed in lint.packs", async () => {
   let cwd = fixture({ "intersite.json": { project: "packs" }, ...packFiles });
-  assert.deepEqual(rulesHit((await runLint(cwd, ["--json"])).out), ["src/secret.ts intersite/no-hardcoded-secret"]);
+  assert.deepEqual(rulesHit((await runLint(cwd, ["--json"])).out), ["src/secret.ts intersite/no-hardcoded-secret", "src/state.ts intersite/no-exported-mutable-state"]);
 
   cwd = fixture({ "intersite.json": { project: "packs", lint: { packs: ["runtime", "actions"] } }, ...packFiles });
-  assert.deepEqual(rulesHit((await runLint(cwd, ["--json"])).out), ["src/page.tsx intersite/require-action-name", "src/state.ts intersite/no-module-scope-let"]);
+  assert.deepEqual(rulesHit((await runLint(cwd, ["--json"])).out), ["src/counter.ts intersite/no-module-scope-let", "src/page.tsx intersite/require-action-name"]);
 });
 
 test("--rules lists every rule with its pack and whether this project's config turns it on", async () => {

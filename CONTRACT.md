@@ -129,6 +129,9 @@ Each gate looks at the change between `gates.base` and the working tree (uncommi
 | --- | --- |
 | `test-integrity` | A test file was deleted, or has fewer tests or fewer assertions than on base, or gained a skip |
 | `duplicates` | An added block of `gates.duplicateLines` or more lines already exists elsewhere in the repository |
+| `similar` | An added function, component, hook, class or type already exists under another name: the same structure once local names and literals are set aside. Exact pasted blocks are left to `duplicates`. Target is `file:Name` |
+| `naming` | The change adds a file or folder whose casing, shared suffix (`*.service.ts`) or test pattern differs from what a clear majority of its siblings keep, or whose main export is named unlike the file where its siblings match theirs. Conventions are inferred per folder and file kind, never configured |
+| `style-drift` | The change adds a styling value that is nearly one the project already has (a colour within the just-noticeable difference, a size a pixel off its scale), a literal equal to a token's value, a value off a closed font-size, weight or radius scale, or a token that nearly duplicates another in its family |
 | `new-deps` | A `package.json` gained a dependency |
 | `artifacts` | The change adds a leftover file: a backup or versioned copy (`*.bak`, `*_old.*`, `*-v2.*`), a scratch or debug script, a log or dump, or a stray planning document (`PLAN.md`, `SUMMARY.md`, `NOTES.md` and the like) |
 | `unused` | The change adds a source file nothing references, adds an export nothing uses, or removes the last reference to a file and leaves the file behind |
@@ -164,7 +167,11 @@ UI cases are skipped by every mode except `ui`.
 - `cross-tenant`: send each request that names an ID as `signIn(kind, { other: true })`; the answer must be 401, 403
   or 404. A request with no ID (a create in the caller's own account) is not checked, and `anonymous` cases are skipped.
   Each checked request is then sent as its owner so the session's state keeps moving.
-- `ui`: needs `replay.uiTarget` and `playwright-core`, and drives the installed Chrome. For each distinct
+- `ui`: needs `replay.uiTarget` and `playwright-core`. It drives Chrome Headless Shell when Playwright has it installed,
+  else the installed Chrome; with `replay.browser: lightpanda` it starts `lightpanda serve` from PATH on a local port
+  (exit 2 with an install line when it is missing) and runs one session at a time; with `replay.browserUrl` it connects
+  over CDP to that running browser and leaves it running. Images are answered with a 1x1 GIF and fonts and media with
+  an empty body, never fetched; stylesheets load, because the visibility checks need layout. For each distinct
   `action` in the session, in order: open `uiTarget + action.page` (IDs remapped as below) signed in with the
   adapter's headers (a `cookie` becomes browser cookies for the `uiTarget` and `target` origins only; other headers
   go only to those two origins); fail on a page error, a console error, or a 5xx from the API during load; fail when no element

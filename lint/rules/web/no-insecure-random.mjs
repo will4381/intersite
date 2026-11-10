@@ -1,7 +1,7 @@
 // @ts-check
-import { relative } from "node:path";
-
 import { defineRule } from "@oxlint/plugins";
+
+import { isTestOrFixture } from "../shared.mjs";
 
 // What a guessable value must never be: `token`, `resetToken`, `otp`, `inviteCode`, `API_SECRET`, `generateApiKey`.
 const SECRET = /^(token|secret|otp|nonce|password|passcode|salt|pin|code|apiKey|sessionId|licenseKey|inviteCode|resetCode|verificationCode|authCode|referralCode)$|(Token|Secret|Otp|OTP|Nonce|Password|Passcode|Salt|Pin|PIN|ApiKey|SessionId|LicenseKey|InviteCode|ResetCode|VerificationCode|AuthCode|ReferralCode)$|^[A-Z0-9_]*(TOKEN|SECRET|OTP|NONCE|PASSWORD|SALT|API_KEY)$|_(token|secret|otp|nonce|password|salt|pin|code)$/;
@@ -56,7 +56,7 @@ export const rule = defineRule({
     return {
       // Test data (a seeded gift-card code, a fake token) does not need to be unguessable.
       before() {
-        if (/(^|\/)(__tests__|tests?|e2e|fixtures?)\/|\.(test|spec)\.[cm]?[jt]sx?$|[./-]fixtures?\.[cm]?[jt]sx?$/.test(relative(context.cwd, context.filename))) return false;
+        if (isTestOrFixture(context)) return false;
         strings = new Map();
         picks = [];
       },

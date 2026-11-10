@@ -1,6 +1,6 @@
 {
   "name": "intersite",
-  "version": "1.0.0-beta.2",
+  "version": "1.0.0-beta.3",
   "private": true,
   "type": "module",
   "description": "One testing library for every project: slop lint, traffic capture, replay, and gates.",
@@ -18,7 +18,7 @@
     "./intersite.schema.json": "./intersite.schema.json"
   },
   "scripts": {
-    "test": "node --test",
+    "test": "node --test \"test/**/*.test.mjs\"",
     "lint": "node bin/intersite.mjs lint"
   },
   "peerDependencies": {

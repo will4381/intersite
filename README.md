@@ -6,7 +6,7 @@ user sessions into tests nobody has to write.
 ## Quickstart
 
 ```bash
-npm i -D github:will4381/intersite#v1.0.0-beta.2 oxlint @oxlint/plugins
+npm i -D github:will4381/intersite#v1.0.0-beta.3 oxlint @oxlint/plugins
 ```
 
 ```bash
@@ -30,6 +30,9 @@ through the wiring.
 | `test-integrity` | A test deleted, weakened or skipped to get green | git |
 | `duplicates` | A pasted block that already exists in the repository | git |
 | `new-deps` | A dependency added without saying why | git |
+| `similar` | A new function, component, hook or type that already exists under another name; when two differ only in a few literals it says to make one with a variant | git |
+| `naming` | A file or folder named against the casing, suffix or test pattern its siblings keep, or unlike its main export | git |
+| `style-drift` | A colour, size or token that is almost one the project already has, or off a scale it keeps closed | git |
 | `artifacts` | Leftovers: backup and `_v2` copies, scratch scripts, logs, stray `PLAN.md` and `SUMMARY.md` files | git |
 | `unused` | A file or export this change added that nothing uses, or a file it orphaned | git |
 | `replay` | An API that now answers real recorded sessions differently | capture and an adapter |
@@ -123,11 +126,30 @@ that says what to do instead, and examples.
 | `security` | on | Live credentials, default secrets, secrets behind public env prefixes or in logs, SQL and shell commands built from strings, request bodies written straight to the database, `Math.random` tokens, disabled TLS checks, open redirects, unverified Stripe webhooks |
 | `next` | on | Server-only env read in a client file, server actions that write with no auth check |
 | `state` | on | Implicit state machines: three or more boolean flags doing one state's job |
+| `types` | on | Casts on outside data (`JSON.parse(x) as T`, `res.json() as T`, `req.body as T`, `process.env.X as string`), `!` on env, URL, header and storage values and on `find()`, type guards that check nothing, `{...} as T` where `satisfies` would check it, `as never` |
+| `validation` | on | Request input reaching a write, query or mail call unchecked, a parsed result thrown away while the raw value is used, `Number()`/`parseInt` on input with no NaN check, page sizes with no maximum, unguarded `JSON.parse(localStorage…)`, raw env reads beside a validated env module |
+| `naming` | on | Hook names that lie, lowercase components and types, type words in names (`isLoadingBoolean`), one word cased two ways (`userId` with `userID`), snake_case pasted into camelCase files, abbreviation soup, names over 56 characters, reassigned `UPPER_SNAKE` constants |
+| `globals` | on | State on `window`/`globalThis`, exported `let` and exported empty Map/Set/array stores, hand-rolled `getInstance()` singletons |
+| `ui` | on | Where the project has tokens or a Tailwind theme: hardcoded colours, type values (size, weight, line height, family), spacing, radius and z-index; raw palette classes; static inline styles; raw controls hand-styled beside the project's own `Button`/`Input`; images without `alt`, clickable `div`s |
+| `orm` | on | Drizzle and Prisma: queries on the outer client inside a transaction, update or delete with no `where`, find-then-create races, one lookup per loop item |
+| `query` | on | TanStack Query: a `queryKey` missing values the `queryFn` reads, a `queryFn` asserting `id!` with no `enabled` |
+| `workers` | on | Cloudflare Workers: promises neither awaited nor passed to `waitUntil`, destructured `ctx.waitUntil` |
+| `supabase` | on | Supabase results whose `error` is never read, `auth.getSession()` trusted on the server |
+| `server` | on | Express and Fastify: sending twice without `return`, Express 4 async handlers with no error forwarding |
+| `start` | on | TanStack Start server functions whose validator only types the input |
+| `payments` | on | Stripe amounts built with floats or taken from the client; refunds, transfers and payouts with no idempotency key |
+| `auth` | on | A `userId` taken from the request in a handler that has the session |
+| `swift` | on | Swift through SwiftLint (`brew install swiftlint`): force `try` and force unwraps, empty `catch` and discarded `try?`, `print` logging, stub `fatalError`s, fixed `asyncAfter` delays, `Task` in `onAppear`, `AnyView`, flag clusters, deprecated SwiftUI APIs, fixed font sizes and raw colours outside design-system files, secrets in source or `UserDefaults`, type and identifier casing |
 | `runtime` | opt-in | Module-level mutable state, which leaks between requests on serverless |
 | `actions` | opt-in | Clickable elements with no `data-intersite` name |
 
 A pack can also switch on rules oxlint already ships (`builtin:` in a pack file), and `lint.rules` turns any single
-rule off by name.
+rule off by name. A framework pack stays silent in a project that does not use the framework.
+
+Swift rules live in [lint/swift/rules.yml](lint/swift/rules.yml), in the same form: a message, `bad` and `good`
+examples, and either a SwiftLint rule or a regular expression. Intersite runs SwiftLint with only these rules, so a
+project's own `.swiftlint.yml` keeps applying to its own SwiftLint runs and every Intersite finding is attributable.
+A deliberate exception in Swift is `// swiftlint:disable:next <id> -- <why>`.
 
 ## Capture, actions and replay
 
@@ -161,6 +183,10 @@ Fastify, Next.js and browser-only (`wrapFetch`) forms are shown at the top of
 - **Replay modes:** `baseline` (same status and response shape as production), `twice` (a repeated write must not
   error), `cross-tenant` (another account must be refused), `ui` (each named action's page loads cleanly in Chrome;
   reads are clicked, and writes fill the form from the recorded body, submit it and must get the recorded status).
+- **Cheaper `ui` runs:** `npx playwright install chromium-headless-shell` makes `ui` use Chrome Headless Shell instead
+  of full Chrome (about half the memory and a third of the browser CPU in our benchmark). Lightpanda
+  (`replay.browser: lightpanda`) is lighter still but has no real layout, so clicks and visibility checks may not
+  work; it is unverified with Intersite.
 - **The adapter** (`intersite.adapter.mjs`) tells replay how to sign in a seeded test user and which seeded record
   stands in for an ID from production.
 - Replay refuses a target that is not local unless `--allow-remote` is passed.

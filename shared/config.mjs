@@ -26,10 +26,10 @@ const defaults = {
     name: "intersite-collector",
     dailyCap: { ok: 5000, other: 5000 },
   },
-  lint: { packs: ["tests", "slop", "security", "state", "async", "react", "next", "design"], rules: {}, custom: [], baseline: "intersite-baseline.json", extends: ".oxlintrc.json" },
+  lint: { packs: ["tests","slop","security","state","async","react","next","design","types","validation","naming","globals","ui","orm","query","workers","supabase","server","start","payments","auth","swift"], rules: {}, custom: [], baseline: "intersite-baseline.json", extends: ".oxlintrc.json" },
   gates: {
     base: "origin/main",
-    run: ["test-integrity", "duplicates", "new-deps", "artifacts", "unused"],
+    run: ["test-integrity","duplicates","similar","new-deps","artifacts","unused","naming","style-drift"],
     testPaths: TEST_PATHS,
     testCmd: "",
     setup: "",
@@ -56,6 +56,8 @@ const defaults = {
   replay: {
     target: "http://localhost:8787",
     uiTarget: "",
+    browser: "chrome",
+    browserUrl: "",
     adapter: "./intersite.adapter.mjs",
     modes: ["baseline"],
     sample: 20,

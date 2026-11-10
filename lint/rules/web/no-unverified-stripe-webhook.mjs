@@ -1,13 +1,15 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
+import { isRequestName } from "../shared.mjs";
+
 const EVENT = /^(checkout\.session|customer\.subscription|invoice|payment_intent|charge)\.[a-z_.]+$/;
 
 /** `request.json()`, `req.text()`, `req.body`. @param {any} node */
 const readsBody = (node) =>
   node.type === "MemberExpression"
-    ? node.object.type === "Identifier" && /^(req|request)$/.test(node.object.name) && node.property.name === "body"
-    : node.callee.type === "MemberExpression" && /^(json|text)$/.test(node.callee.property.name) && /^(req|request)$/.test(node.callee.object.name ?? "");
+    ? isRequestName(node.object) && node.property.name === "body"
+    : node.callee.type === "MemberExpression" && /^(json|text)$/.test(node.callee.property.name) && isRequestName(node.callee.object);
 
 export const id = "no-unverified-stripe-webhook";
 export const pack = "security";

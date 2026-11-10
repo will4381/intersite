@@ -1,7 +1,7 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { walk } from "./hooks.mjs";
+import { walk } from "../shared.mjs";
 
 /** What only works in the browser: hooks, browser globals, context and class components. */
 const clientName = /^(?:use[A-Z0-9]\w*|use|window|document|navigator|localStorage|sessionStorage|location|history|matchMedia|requestAnimationFrame|IntersectionObserver|ResizeObserver|createContext|Component|PureComponent)$/;

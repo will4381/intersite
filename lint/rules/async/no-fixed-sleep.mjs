@@ -1,12 +1,10 @@
 // @ts-check
-import { relative } from "node:path";
-
 import { defineRule } from "@oxlint/plugins";
+
+import { isTestNamed } from "../shared.mjs";
 
 // Not `wait` or `pause`: those names mostly belong to animation and demo scripts, where a fixed beat is the point.
 const sleepName = /^(sleep|delay|setTimeout)$/;
-/** Tests, smoke scripts and fixtures, where a short wait often proves something did not happen. */
-const testFile = /(^|[/._-])(tests?|testing|spec|e2e|smoke|fixtures?|__tests__)([/._-]|$)/;
 const loops = new Set(["ForStatement", "ForInStatement", "ForOfStatement", "WhileStatement", "DoWhileStatement"]);
 
 /** @param {any} node */
@@ -41,7 +39,8 @@ export const rule = defineRule({
   createOnce(context) {
     return {
       AwaitExpression(node) {
-        if (!isFixedSleep(node.argument) || testFile.test(relative(context.cwd, context.filename))) return;
+        // In tests, smoke scripts and fixtures a short wait often proves something did not happen.
+        if (!isFixedSleep(node.argument) || isTestNamed(context)) return;
         // Only a sleep with more work after it is waiting for something. As the last statement it holds or paces.
         const statement = node.parent;
         const block = statement.parent;

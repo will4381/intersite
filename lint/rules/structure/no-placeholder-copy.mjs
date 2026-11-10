@@ -1,7 +1,7 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { isTestFile } from "./paths.mjs";
+import { isTestFile } from "../shared.mjs";
 
 const PLACEHOLDER = /\blorem ipsum\b|\b(?:john|jane) doe\b|\bexample@example\.com\b|\byour (?:content|text|title|description|company|tagline|headline) (?:goes )?here\b|\bfeature (?:description|title) (?:goes )?here\b|^\s*feature description\s*$|\badd (?:your|a) description here\b/i;
 

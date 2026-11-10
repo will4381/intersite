@@ -79,9 +79,23 @@
             "async",
             "react",
             "next",
-            "design"
+            "design",
+            "types",
+            "validation",
+            "naming",
+            "globals",
+            "ui",
+            "orm",
+            "query",
+            "workers",
+            "supabase",
+            "server",
+            "start",
+            "payments",
+            "auth",
+            "swift"
           ],
-          "description": "Rule packs to turn on. Every rule in a listed pack is an error unless `rules` says otherwise. On by default: tests, slop, security, state, async, react, next, design. Opt-in: runtime, actions."
+          "description": "Rule packs to turn on. Every rule in a listed pack is an error unless `rules` says otherwise. Everything is on by default except `runtime` and `actions`; a framework pack stays silent in a project that does not use the framework. Run `intersite lint --rules` for the list."
         },
         "rules": {
           "type": "object",
@@ -129,9 +143,12 @@
             "enum": [
               "test-integrity",
               "duplicates",
+              "similar",
               "new-deps",
               "artifacts",
               "unused",
+              "naming",
+              "style-drift",
               "fails-on-base",
               "mutation"
             ]
@@ -139,9 +156,12 @@
           "default": [
             "test-integrity",
             "duplicates",
+            "similar",
             "new-deps",
             "artifacts",
-            "unused"
+            "unused",
+            "naming",
+            "style-drift"
           ],
           "description": "Gates `intersite check` runs. `fails-on-base` and `mutation` run the tests and need `testCmd`."
         },
@@ -343,6 +363,18 @@
           "type": "boolean",
           "default": true,
           "description": "Move recorded timestamps in requests forward by the time since capture, so date validation still passes."
+        },
+        "browser": {
+          "enum": [
+            "chrome",
+            "lightpanda"
+          ],
+          "default": "chrome",
+          "description": "Browser for the `ui` mode. `chrome` uses Chrome Headless Shell when Playwright has it installed, else Google Chrome; `lightpanda` starts `lightpanda serve` from PATH."
+        },
+        "browserUrl": {
+          "type": "string",
+          "description": "Chrome DevTools Protocol URL of a browser already running, for the `ui` mode to connect to instead of starting one (http://host:port or ws://...)."
         }
       }
     }

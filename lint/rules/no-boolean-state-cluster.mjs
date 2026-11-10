@@ -1,9 +1,9 @@
 // @ts-check
-import { matchesGlob, relative } from "node:path";
+import { relative } from "node:path";
 
 import { defineRule } from "@oxlint/plugins";
 
-import { TEST_PATHS } from "../../shared/config.mjs";
+import { enclosingFunction, inTestPaths } from "./shared.mjs";
 
 /** A step or outcome of one operation: `isLoading`, `saving`, `hasLoaded`, `submitError`, `serverPreviewFailed`. */
 const phaseWords =
@@ -54,18 +54,11 @@ export const rule = defineRule({
       owners.set(owner, entry);
     }
 
-    /** The nearest enclosing function. @param {any} node */
-    function enclosingFunction(node) {
-      for (let n = node.parent; n; n = n.parent) if (n.type.endsWith("FunctionExpression") || n.type === "FunctionDeclaration") return n;
-      return undefined;
-    }
-
     return {
       // Test files build these clusters on purpose, as mocks of query results.
       before() {
         owners = new Map();
-        const file = relative(context.cwd, context.filename);
-        return !TEST_PATHS.some((glob) => matchesGlob(file, glob)) && !testHelper.test(file);
+        return !inTestPaths(context) && !testHelper.test(relative(context.cwd, context.filename));
       },
       VariableDeclarator(node) {
         if (isBooleanState(node.init) && node.id.type === "ArrayPattern" && node.id.elements[0]?.type === "Identifier") {

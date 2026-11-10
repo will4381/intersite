@@ -1,6 +1,8 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
+import { walk } from "../shared.mjs";
+
 // Changes to records that already exist. A public form may insert (a sign-up, a contact message); changing or deleting
 // a row by an id the caller sent needs to know who the caller is.
 const CHANGE = /^(update|updateMany|upsert|delete|deleteMany|destroy|remove|updateOne|deleteOne|findByIdAndUpdate|findOneAndUpdate|findByIdAndDelete|findOneAndDelete)$/;
@@ -19,19 +21,13 @@ function root(node) {
 /** @param {any} callee */
 const calleeName = (callee) => callee.type === "Identifier" ? callee.name : callee.type === "MemberExpression" && !callee.computed ? callee.property.name : "";
 
-/**
- * Every call inside `node`, callbacks included (`ids.map((id) => db.delete(...))`).
- * @param {any} node @param {any[]} out
- */
-function calls(node, out = []) {
-  if (!node || typeof node.type !== "string") return out;
-  if (node.type === "CallExpression") out.push(node);
-  for (const key of Object.keys(node)) {
-    if (key === "parent") continue;
-    const value = node[key];
-    if (Array.isArray(value)) value.forEach((v) => calls(v, out));
-    else if (value && typeof value.type === "string") calls(value, out);
-  }
+/** Every call inside `node`, callbacks included (`ids.map((id) => db.delete(...))`). @param {any} node */
+function calls(node) {
+  /** @type {any[]} */
+  const out = [];
+  walk(node, (n) => {
+    if (n.type === "CallExpression") out.push(n);
+  });
   return out;
 }
 

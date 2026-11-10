@@ -1,0 +1,21 @@
+# Framework-specific mistakes, one pack per framework so a project can turn off what it does not use: `orm` (Drizzle,
+# Prisma), `query` (TanStack Query), `workers` (Cloudflare Workers), `supabase`, `server` (Express, Fastify),
+# `payments` (Stripe), `auth` (sessions). Rules a selector cannot express live in lint/rules/frameworks/.
+# Same format as core.yml; `builtin` switches on rules oxlint already ships.
+rules:
+  - id: no-destructured-execution-context
+    pack: workers
+    selector: "VariableDeclarator:matches([init.name=/^(ctx|context|executionCtx|executionContext)$/], [init.property.name=/^(ctx|executionCtx|executionContext)$/]) > ObjectPattern.id > Property[key.name=/^(waitUntil|passThroughOnException)$/], :matches(MethodDefinition, Property)[key.name=/^(fetch|scheduled|queue|email|tail)$/] > FunctionExpression > ObjectPattern.params > Property[key.name=/^(waitUntil|passThroughOnException)$/]"
+    message: "ExecutionContext methods need `this`, so a destructured waitUntil throws \"Illegal invocation\" when called and the background work never runs. Call it on the context (ctx.waitUntil(promise)), or import the free function: import { waitUntil } from \"cloudflare:workers\"."
+    bad:
+      - "export default {\n  async fetch(request: Request, env: Env, ctx: ExecutionContext) {\n    const { waitUntil } = ctx;\n    waitUntil(log(request));\n    return new Response('ok');\n  },\n};"
+      - "export default {\n  async fetch(request: Request, env: Env, { waitUntil }: ExecutionContext) {\n    waitUntil(log(request));\n    return new Response('ok');\n  },\n};"
+      - "app.get('/', (c) => {\n  const { waitUntil } = c.executionCtx;\n  waitUntil(track(c.req.url));\n  return c.text('ok');\n});"
+      - "export class Api extends WorkerEntrypoint {\n  async queue(batch: MessageBatch, env: Env, { waitUntil, passThroughOnException }: ExecutionContext) {\n    waitUntil(flush(batch));\n  }\n}"
+    good:
+      - "export default {\n  async fetch(request: Request, env: Env, ctx: ExecutionContext) {\n    ctx.waitUntil(log(request));\n    return new Response('ok');\n  },\n};"
+      - "async function track(url: string) {\n  const { waitUntil } = await import('cloudflare:workers');\n  waitUntil(fetch(url));\n}"
+      - "import { waitUntil } from 'cloudflare:workers';\nexport default { async fetch() { waitUntil(flush()); return new Response('ok'); } };"
+      - "export function schedule({ waitUntil }: { waitUntil: (p: Promise<unknown>) => void }) {\n  waitUntil(flush());\n}"
+builtin:
+  - { rule: nextjs/no-async-client-component, pack: next }

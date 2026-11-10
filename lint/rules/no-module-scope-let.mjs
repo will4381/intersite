@@ -1,9 +1,7 @@
 // @ts-check
-import { matchesGlob, relative } from "node:path";
-
 import { defineRule } from "@oxlint/plugins";
 
-import { TEST_PATHS } from "../../shared/config.mjs";
+import { inTestPaths } from "./shared.mjs";
 
 export const id = "no-module-scope-let";
 export const pack = "runtime";
@@ -18,11 +16,8 @@ export const rule = defineRule({
   createOnce(context) {
     return {
       // Test files keep fixtures in module-level lets (`let server;` set in before()); they never serve requests.
-      before() {
-        const file = relative(context.cwd, context.filename);
-        return !TEST_PATHS.some((glob) => matchesGlob(file, glob));
-      },
-      "Program > VariableDeclaration[kind=/^(let|var)$/], Program > ExportNamedDeclaration > VariableDeclaration[kind=/^(let|var)$/]"(node) {
+      before: () => !inTestPaths(context),
+      "Program > VariableDeclaration[kind=/^(let|var)$/]"(node) {
         context.report({ node, messageId: "shared" });
       },
     };
@@ -31,7 +26,6 @@ export const rule = defineRule({
 
 export const bad = [
   "let currentUser;\nexport default { fetch(request) { currentUser = auth(request); return handle(request); } };",
-  "export let cache = new Map();",
   "var requests = 0;\nexport function handler() { requests++; }",
 ];
 

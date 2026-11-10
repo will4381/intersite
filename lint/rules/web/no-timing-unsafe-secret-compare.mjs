@@ -1,7 +1,7 @@
 // @ts-check
-import { relative } from "node:path";
-
 import { defineRule } from "@oxlint/plugins";
+
+import { isTestOrFixture } from "../shared.mjs";
 
 /** `process.env.API_KEY`, `env.CRON_SECRET`, `c.env.WEBHOOK_TOKEN`. @param {any} node */
 const isEnvSecret = (node) =>
@@ -27,9 +27,7 @@ export const rule = defineRule({
   createOnce(context) {
     return {
       // A test double of the check (a fake worker that wants the header) guards nothing real.
-      before() {
-        return !/(^|\/)(__tests__|tests?|e2e|fixtures?)\/|\.(test|spec)\.[cm]?[jt]sx?$|[./-]fixtures?\.[cm]?[jt]sx?$/.test(relative(context.cwd, context.filename));
-      },
+      before: () => !isTestOrFixture(context),
       BinaryExpression(node) {
         if (!/^[!=]==?$/.test(node.operator)) return;
         const [a, b] = [/** @type {any} */ (node.left), /** @type {any} */ (node.right)];

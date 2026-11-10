@@ -1,7 +1,7 @@
 // @ts-check
 // intersite lint [paths...] [--write | --write=init | --json | --rules]
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -10,6 +10,7 @@ import { promisify } from "node:util";
 
 import { loadConfig } from "../shared/config.mjs";
 import { builtinRules, customRules, packageRules } from "../lint/plugin.mjs";
+import { runSwiftlint, swiftFiles, swiftRules } from "../lint/swift/swiftlint.mjs";
 
 /** @typedef {Record<string, Record<string, number>>} Baseline */
 /** @typedef {{ file: string, line: number, column: number, rule: string, message: string }} Finding */
@@ -26,6 +27,29 @@ const bareSuppression = new RegExp(
 );
 
 const exec = promisify(execFile);
+
+/**
+ * Every rule this oxlint ships. Asking takes a while, so the answer is kept until the binary changes.
+ * @param {string} oxlint @param {string} cacheDir
+ * @returns {Promise<{ scope: string, value: string, category: string }[]>}
+ */
+async function shippedRules(oxlint, cacheDir) {
+  const cacheFile = join(cacheDir, "oxlint-rules.json");
+  const version = statSync(oxlint).mtimeMs;
+  if (existsSync(cacheFile)) {
+    const cached = JSON.parse(readFileSync(cacheFile, "utf8"));
+    if (cached.version === version) return cached.rules;
+  }
+  // An empty folder: oxlint reads the config of, and scans, whatever folder it is started in.
+  const empty = mkdtempSync(join(tmpdir(), "intersite-oxlint-"));
+  try {
+    const rules = JSON.parse((await exec(oxlint, ["--rules", "-f", "json"], { cwd: empty, maxBuffer: Infinity })).stdout);
+    writeFileSync(cacheFile, JSON.stringify({ version, rules }));
+    return rules;
+  } finally {
+    rmSync(empty, { recursive: true, force: true });
+  }
+}
 
 /**
  * @param {string[]} argv
@@ -48,23 +72,27 @@ export default async function lint(argv, { cwd }) {
     return 2;
   }
 
-  const { rules, bareOn } = ruleSet(config, cwd);
+  const { rules, bareOn, swift } = ruleSet(config, cwd);
   if (flag === "--rules") {
     console.log(`slop no-bare-suppression ${bareOn ? "on" : "off"}`);
     printRules(cwd, rules);
+    for (const r of swiftRules) console.log(`swift swift/${r.id} ${swift.includes(r) ? "on" : "off"}`);
     return 0;
   }
 
+  // A Swift-only project has no oxlint and needs none: its Swift is linted and the JavaScript side is empty.
   const oxlint = join(cwd, "node_modules/.bin/oxlint");
-  if (!existsSync(oxlint)) {
+  const javascript = existsSync(oxlint)
+    ? writeOxlintConfig(cwd, join(cwd, config.extends), oxlint, rules).then((configFile) => runOxlint(cwd, oxlint, configFile, paths))
+    : { report: { number_of_files: 0, diagnostics: [] }, listed: [] };
+  const [result, swiftResult] = await Promise.all([javascript, lintSwift(cwd, swift, paths)]);
+  if (!result || !swiftResult) return 2;
+  if (!existsSync(oxlint) && swiftResult.files === 0) {
     console.error(`intersite lint: ${oxlint} not found; install oxlint as a dev dependency`);
     return 2;
   }
-
-  const configFile = await writeOxlintConfig(cwd, join(cwd, config.extends), oxlint, rules);
-  const result = await runOxlint(cwd, oxlint, configFile, paths);
-  if (!result) return 2;
   const { report, listed } = result;
+  report.number_of_files += swiftResult.files;
   /** @type {Finding[]} */
   const all = report.diagnostics.map((d) => ({
     file: d.filename,
@@ -74,6 +102,7 @@ export default async function lint(argv, { cwd }) {
     message: d.message,
   }));
   if (bareOn) all.push(...(await bareSuppressions(cwd, listed)));
+  all.push(...swiftResult.findings);
 
   /** @type {Map<string, Finding[]>} "file\0rule" -> findings */
   const found = new Map();
@@ -128,7 +157,28 @@ function ruleSet(config, cwd) {
   // Not an oxlint rule (see bareSuppressions), but switched on and off like one in the slop pack.
   const bareOn = (rules[BARE_RULE] ?? (config.packs.includes("slop") ? "error" : "off")) !== "off";
   delete rules[BARE_RULE];
-  return { rules, bareOn };
+  // Swift rules run in SwiftLint (see lintSwift), and are switched on and off the same way, as `swift/<id>`.
+  const swift = swiftRules.filter((r) => (rules[`swift/${r.id}`] ?? (config.packs.includes("swift") ? "error" : "off")) !== "off");
+  for (const r of swiftRules) delete rules[`swift/${r.id}`];
+  return { rules, bareOn, swift };
+}
+
+/**
+ * Lints the Swift files under the paths with SwiftLint. SwiftLint never runs when no Swift rule is on or there are no
+ * Swift files. Prints the setup error and returns undefined when SwiftLint is missing or fails.
+ * @param {string} cwd
+ * @param {typeof swiftRules} rules the Swift rules that are on
+ * @param {string[]} paths
+ * @returns {Promise<{ files: number, findings: Finding[] } | undefined>}
+ */
+async function lintSwift(cwd, rules, paths) {
+  const files = rules.length ? swiftFiles(cwd, paths) : [];
+  if (!files.length) return { files: 0, findings: [] };
+  const findings = await runSwiftlint(cwd, files, rules, join(cwd, "node_modules/.cache/intersite")).catch((/** @type {Error} */ e) => e);
+  if (Array.isArray(findings)) return { files: files.length, findings };
+  const missing = "this project has Swift files and swiftlint is not on PATH; install it with `brew install swiftlint`";
+  console.error(`intersite lint: ${findings instanceof Error ? findings.message : missing}`);
+  return undefined;
 }
 
 /**
@@ -161,9 +211,7 @@ async function writeOxlintConfig(cwd, ownConfig, oxlint, rules) {
   // set, which nobody chose, so every such rule not named by a pack is switched off again.
   const added = [...new Set(builtinRules.filter((b) => b.rule in rules).map((b) => b.rule.split("/")[0]))].filter((name) => name !== "eslint" && !ownPlugins.includes(name));
   if (added.length) {
-    /** @type {{ scope: string, value: string, category: string }[]} */
-    const shipped = JSON.parse((await exec(oxlint, ["--rules", "-f", "json"], { cwd: tmpdir(), maxBuffer: Infinity })).stdout);
-    for (const r of shipped) {
+    for (const r of await shippedRules(oxlint, cacheDir)) {
       const name = `${r.scope.replaceAll("_", "-")}/${r.value}`;
       if (added.includes(name.split("/")[0]) && r.category === "correctness" && !(name in rules)) rules[name] = "off";
     }
@@ -190,7 +238,8 @@ async function writeOxlintConfig(cwd, ownConfig, oxlint, rules) {
  */
 async function runOxlint(cwd, oxlint, configFile, paths) {
   // The JSON report has no file list, so a second oxlint run lists the files it lints (its own ignores applied).
-  const args = ["-c", configFile, ...(paths.length ? paths : ["."])];
+  // A Swift-only project has nothing for oxlint, which is not an error.
+  const args = ["-c", configFile, "--no-error-on-unmatched-pattern", ...(paths.length ? paths : ["."])];
   /** @param {string[]} extra */
   const oxlintRun = (extra) => exec(oxlint, [...extra, ...args], { cwd, maxBuffer: Infinity }).catch((/** @type {any} */ e) => e);
   const [run, listed] = await Promise.all([oxlintRun(["-f", "json"]), oxlintRun(["--debug=files"])]);

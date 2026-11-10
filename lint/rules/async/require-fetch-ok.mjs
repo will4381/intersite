@@ -1,7 +1,7 @@
 // @ts-check
-import { relative } from "node:path";
-
 import { defineRule } from "@oxlint/plugins";
+
+import { isTestNamed } from "../shared.mjs";
 
 // Only reads of an API-shaped body. `.blob()` and `.arrayBuffer()` mostly turn a data: URL or a bundled asset into
 // bytes, where there is no HTTP status to check.
@@ -10,7 +10,6 @@ const checks = new Set(["ok", "status", "statusText"]);
 /** A body checked through its own envelope, `if (!data.success)`, is checked too. */
 const envelope = new Set(["ok", "success", "error", "errors"]);
 const wrappers = new Set(["AwaitExpression", "TSAsExpression", "TSSatisfiesExpression", "TSNonNullExpression"]);
-const testFile = /(^|[/._-])(tests?|testing|spec|e2e|smoke|fixtures?|__tests__)([/._-]|$)/;
 
 /** @param {any} node */
 const isFetch = (node) => node?.type === "CallExpression" && node.callee.type === "Identifier" && node.callee.name === "fetch";
@@ -57,7 +56,7 @@ export const rule = defineRule({
   createOnce(context) {
     return {
       // In a test, the assertion on the parsed body fails loudly anyway.
-      before: () => !testFile.test(relative(context.cwd, context.filename)),
+      before: () => !isTestNamed(context),
       // const res = await fetch(url); ... res.json()
       VariableDeclarator(node) {
         if (node.id.type !== "Identifier" || node.init?.type !== "AwaitExpression" || !isFetch(node.init.argument)) return;

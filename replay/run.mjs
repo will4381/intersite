@@ -36,16 +36,17 @@ const CLIP = 500;
  * Replay each session against `target` in every mode and compare with what was recorded.
  * `concurrency` sessions run at once, except when the adapter has `reset` (shared state), when they run one at a time.
  * @param {{ sessions: { session: string, cases: Case[] }[], target: string, adapter: Adapter, modes: Mode[], idPattern: string,
- *   fetch?: typeof fetch, shiftDates?: boolean, now?: number, concurrency?: number, uiTarget?: string, headed?: boolean, cwd?: string }} options
+ *   fetch?: typeof fetch, shiftDates?: boolean, now?: number, concurrency?: number, uiTarget?: string, headed?: boolean, cwd?: string,
+ *   browser?: string, browserUrl?: string }} options
  * @returns {Promise<SessionResult[]>}
  */
 export async function replaySessions({
   sessions, target, adapter, modes, idPattern, fetch = globalThis.fetch,
-  shiftDates = true, now = Date.now(), concurrency = 1, uiTarget = "", headed = false, cwd = process.cwd(),
+  shiftDates = true, now = Date.now(), concurrency = 1, uiTarget = "", headed = false, cwd = process.cwd(), browser, browserUrl,
 }) {
   /** @type {Context} */
   const context = { target: target.replace(/\/$/, ""), adapter, pattern: new RegExp(idPattern), fetch, startedAt: shiftDates ? now : undefined };
-  const ui = modes.includes("ui") ? await (await import("./ui.mjs")).openBrowser({ uiTarget, headed, cwd }) : undefined;
+  const ui = modes.includes("ui") ? await (await import("./ui.mjs")).openBrowser({ uiTarget, headed, cwd, browser, browserUrl }) : undefined;
   try {
     /** @type {SessionResult[]} */
     const results = Array(sessions.length);

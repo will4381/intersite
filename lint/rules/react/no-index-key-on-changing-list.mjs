@@ -1,7 +1,8 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { enclosingFunction, stateSetters, walk } from "./hooks.mjs";
+import { enclosingFunction, walk } from "../shared.mjs";
+import { stateSetters } from "./hooks.mjs";
 
 /** Methods whose result moves items to other positions as the inputs change. */
 const reorders = /^(?:filter|sort|toSorted|reverse|toReversed)$/;
@@ -37,7 +38,7 @@ export const rule = defineRule({
         if (item?.type !== "Identifier" || item.name.startsWith("_") || index?.type !== "Identifier") return;
         /** @type {Set<string>} */
         const names = new Set();
-        walk(expression, (n) => n.type === "Identifier" && names.add(n.name));
+        walk(expression, (n) => void (n.type === "Identifier" && names.add(n.name)));
         const readsIndex = names.has(index.name);
         const readsItem = names.has(item.name);
         if (!readsIndex || readsItem) return; // `${item.date}-${i}` is unique enough
@@ -51,7 +52,7 @@ export const rule = defineRule({
           const setter = [...stateSetters(component)].find(([, value]) => value === list.name)?.[0];
           walk(component.body, (n) => {
             if (n.type === "VariableDeclarator" && n.id.type === "Identifier" && n.id.name === list.name && reordered(n.init)) why = "filtered or sorted";
-            if (setter && n.type === "CallExpression" && n.callee.name === setter) walk(n.arguments[0], (a) => reordered(a) && (why = "state that items are removed from or reordered in"));
+            if (setter && n.type === "CallExpression" && n.callee.name === setter) walk(n.arguments[0], (a) => void (reordered(a) && (why = "state that items are removed from or reordered in")));
           });
         }
         if (why) context.report({ node, messageId: "index", data: { list: context.sourceCode.getText(list), why, item: item.name } });

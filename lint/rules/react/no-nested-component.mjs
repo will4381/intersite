@@ -1,7 +1,8 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { functionName, walk } from "./hooks.mjs";
+import { walk } from "../shared.mjs";
+import { functionName } from "./hooks.mjs";
 
 /** `function Row() {}` or `const Row = () => …` as a statement of `body`: name -> declaration. @param {any} body */
 function declaredComponents(body) {

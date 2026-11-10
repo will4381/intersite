@@ -1,7 +1,7 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { isTestFile } from "./paths.mjs";
+import { isTestFile } from "../shared.mjs";
 
 /** `sample` is left out: product samples and sample template variables are real domain data. */
 const mockName = /^(?:mock|dummy|fake|placeholder)(?:[A-Z0-9_]|$)|^(?:MOCK|DUMMY|FAKE|PLACEHOLDER)_/;

@@ -1,7 +1,7 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { FUNCTIONS } from "./paths.mjs";
+import { FUNCTIONS } from "../shared.mjs";
 
 const LIMIT = 4;
 const NESTING = ["IfStatement", "ForStatement", "ForInStatement", "ForOfStatement", "WhileStatement", "DoWhileStatement", "SwitchStatement", "TryStatement"];
