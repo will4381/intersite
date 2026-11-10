@@ -75,9 +75,13 @@
             "tests",
             "slop",
             "security",
-            "state"
+            "state",
+            "async",
+            "react",
+            "next",
+            "design"
           ],
-          "description": "Rule packs to turn on. Every rule in a listed pack is an error unless `rules` says otherwise. On by default: tests, slop, security, state. Opt-in: runtime, actions."
+          "description": "Rule packs to turn on. Every rule in a listed pack is an error unless `rules` says otherwise. On by default: tests, slop, security, state, async, react, next, design. Opt-in: runtime, actions."
         },
         "rules": {
           "type": "object",
@@ -88,7 +92,7 @@
               "error"
             ]
           },
-          "description": "Per-rule overrides by rule id."
+          "description": "Per-rule overrides: an Intersite rule by its id (`no-explicit-any: off`), or a rule oxlint ships by its full name (`import/no-cycle: off`)."
         },
         "custom": {
           "type": "array",

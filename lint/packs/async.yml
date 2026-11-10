@@ -1,3 +1,60 @@
-# Rules for the async area. Same format as core.yml; `builtin` switches on rules oxlint already ships.
-rules: []
-builtin: []
+# Async and error-flow mistakes: promises nobody waits for, errors that lose their cause, guesses about timing.
+# Same format as core.yml; `builtin` switches on rules oxlint already ships.
+rules:
+  - id: no-async-foreach
+    pack: async
+    selector: CallExpression[callee.property.name='forEach'] > :function[async=true], ExpressionStatement > CallExpression[callee.property.name='map'] > :function[async=true], AwaitExpression > CallExpression[callee.property.name='map'] > :function[async=true]
+    message: Nothing waits for these promises, so the code after this line runs before they finish and their errors go unhandled. Use for...of with await for one-at-a-time work, or await Promise.all(items.map(async ...)) to run them together.
+    bad:
+      - items.forEach(async (item) => { await save(item); });
+      - "ids.forEach(async function (id) { await db.delete(id); });"
+      - users.map(async (user) => { await notify(user); });
+      - const saved = await rows.map(async (row) => save(row));
+    good:
+      - for (const item of items) { await save(item); }
+      - await Promise.all(users.map(async (user) => notify(user)));
+      - const pending = rows.map(async (row) => save(row));
+      - return rows.map(async (row) => save(row));
+      - items.forEach((item) => { queue.push(item); });
+  - id: no-async-predicate
+    pack: async
+    selector: CallExpression[callee.property.name=/^(filter|some|every|find|findIndex|findLast|findLastIndex)$/] > :function[async=true].arguments
+    message: An async callback returns a promise, and a promise is always truthy, so this matches every item. Await the checks first (const keep = await Promise.all(items.map(check))) and filter on those results.
+    bad:
+      - const active = users.filter(async (user) => await isActive(user));
+      - const anyPaid = await orders.some(async (order) => (await status(order)) === 'paid');
+      - const owner = members.find(async (m) => await isOwner(m));
+      - const allValid = rows.every(async function (row) { return validate(row); });
+    good:
+      - const flags = await Promise.all(users.map(isActive)); const active = users.filter((_, i) => flags[i]);
+      - const owner = members.find((m) => m.role === 'owner');
+      - const anyPaid = orders.some((order) => order.status === 'paid');
+  - id: no-success-in-catch
+    pack: async
+    selector: CatchClause > BlockStatement > ReturnStatement > ObjectExpression.argument > Property[key.name=/^(success|ok)$/][value.value=true]
+    message: "This catch reports success for a failure, so callers carry on as if it worked. Return an error result ({ ok: false, error }) or rethrow. When one known error really means success, check for it with an if inside the catch and rethrow the rest."
+    bad:
+      - "async function save(row) { try { await db.insert(row); return { success: true }; } catch (error) { return { success: true }; } }"
+      - "async function send() { try { await mail(); } catch { log('mail failed'); return { ok: true }; } }"
+      - "const handler = async () => { try { return { ok: true, data: await load() }; } catch (error) { console.error(error); return { ok: true, data: [] }; } };"
+    good:
+      - "async function create(name) { try { await mkdir(name); } catch (e) { if (e.code === 'EEXIST') return { ok: true }; throw e; } return { ok: true }; }"
+      - "async function save(row) { try { await db.insert(row); return { success: true }; } catch (error) { return { success: false, error }; } }"
+      - "async function send() { try { await mail(); } catch (error) { return { ok: false, error: String(error) }; } }"
+      - "function sync() { try { return { ok: true }; } catch (e) { throw e; } }"
+  - id: no-throw-string
+    pack: async
+    selector: ThrowStatement > Literal.argument, ThrowStatement > TemplateLiteral.argument, ThrowStatement > BinaryExpression.argument[operator='+']
+    message: A thrown string has no stack trace, and catch blocks that read error.message get undefined. Throw an Error, as in throw new Error('...'), or a subclass carrying a code.
+    bad:
+      - throw 'User not found';
+      - "function load(id) { if (!id) throw `missing id for ${kind}`; }"
+      - "function load(id) { throw 'no user ' + id; }"
+    good:
+      - throw new Error('User not found');
+      - "function load(id) { if (!id) throw new TypeError(`missing id for ${kind}`); }"
+      - "function fail(code) { throw { code, message: 'Sign-in failed' } satisfies AuthError; }"
+      - "try { run(); } catch (error) { throw error; }"
+builtin:
+  - { rule: eslint/no-async-promise-executor, pack: async }
+  - { rule: eslint/no-useless-catch, pack: async }

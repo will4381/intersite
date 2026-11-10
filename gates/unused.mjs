@@ -107,26 +107,10 @@ function patchLines(patch) {
 }
 
 /**
- * @param {import("./lib.mjs").GateOptions} options
- * @returns {Promise<import("./lib.mjs").GateResult>}
+ * Names exported by added lines of JS files that are not loaded by convention or published.
+ * @param {Map<string, string[]>} added @param {Set<string>} exists @param {(f: string) => boolean} conventional @param {string[]} published
  */
-export async function unused({ cwd, base, testPaths, entryPaths }) {
-  const sha = resolveBase(cwd, base);
-  const top = topLevel(cwd);
-  const [status, patch] = workingDiff(cwd, [["--name-status", "-M", "-z", sha], ["-U0", "-M", sha]]);
-  const changed = parseNameStatus(status);
-  const { added, removed } = patchLines(patch);
-  const all = listFiles(top).filter((f) => statSync(join(top, f), { throwIfNoEntry: false })?.isFile());
-  const exists = new Set(all);
-  const { named, published } = packageEntries(top, all);
-  const conventional = (/** @type {string} */ f) =>
-    matches(f, testPaths) || matches(f, entryPaths) || CONVENTION_DIR.test(f) || CONVENTION_NAME.test(noExt(posix.basename(f))) || named.has(noExt(f)) || SKIP.test(f);
-  const fresh = new Set(changed.filter((c) => c.status === "A").map((c) => c.path));
-
-  // 1. Added source files.
-  const newFiles = [...fresh].filter((f) => SOURCE.test(f) && !conventional(f) && stem(f) !== ".");
-
-  // 2. Added exports in files that are not loaded by convention.
+function addedExports(added, exists, conventional, published) {
   /** @type {{ file: string, name: string }[]} */
   const exports = [];
   for (const [file, lines] of added) {
@@ -137,8 +121,15 @@ export async function unused({ cwd, base, testPaths, entryPaths }) {
       for (const name of list) if (/^[\w$]+$/.test(name) && name !== "default") exports.push({ file, name });
     }
   }
+  return exports;
+}
 
-  // 3. Files that lost a local import and existed before the change.
+/**
+ * Existing source files a removed local import pointed at, unless added by the change or loaded by convention.
+ * @param {Map<string, string[]>} removed @param {string[]} all @param {Set<string>} exists @param {Set<string>} fresh
+ * @param {(f: string) => boolean} conventional
+ */
+function lostImports(removed, all, exists, fresh, conventional) {
   /** @type {Map<string, string[]>} */
   const byName = new Map();
   for (const f of all) {
@@ -164,11 +155,14 @@ export async function unused({ cwd, base, testPaths, entryPaths }) {
       }
     }
   }
+  return orphans;
+}
 
-  // One pass over the repository records which files mention each stem and each export name.
-  const stems = new Set([...newFiles, ...orphans].map(stem));
-  const names = new Set(exports.map((e) => e.name));
-  const exporting = new Set(exports.map((e) => e.file));
+/**
+ * One pass over the repository recording which files mention each stem and each export name, and the exporting files' text.
+ * @param {string} top @param {string[]} all @param {Set<string>} stems @param {Set<string>} names @param {Set<string>} exporting
+ */
+function scanReferences(top, all, stems, names, exporting) {
   /** @type {Map<string, Set<string>>} */ const pathHits = new Map();
   /** @type {Map<string, Set<string>>} */ const wordHits = new Map();
   const hit = (/** @type {Map<string, Set<string>>} */ map, /** @type {string} */ word, /** @type {string} */ file) => {
@@ -194,6 +188,40 @@ export async function unused({ cwd, base, testPaths, entryPaths }) {
       else words(text, (w) => stems.has(w) && hit(pathHits, w, file));
     }
   }
+  return { pathHits, wordHits, texts, scanned };
+}
+
+/**
+ * @param {import("./lib.mjs").GateOptions} options
+ * @returns {Promise<import("./lib.mjs").GateResult>}
+ */
+export async function unused({ cwd, base, testPaths, entryPaths }) {
+  const sha = resolveBase(cwd, base);
+  const top = topLevel(cwd);
+  const [status, patch] = workingDiff(cwd, [["--name-status", "-M", "-z", sha], ["-U0", "-M", sha]]);
+  const changed = parseNameStatus(status);
+  const { added, removed } = patchLines(patch);
+  const all = listFiles(top).filter((f) => statSync(join(top, f), { throwIfNoEntry: false })?.isFile());
+  const exists = new Set(all);
+  const { named, published } = packageEntries(top, all);
+  const conventional = (/** @type {string} */ f) =>
+    matches(f, testPaths) || matches(f, entryPaths) || CONVENTION_DIR.test(f) || CONVENTION_NAME.test(noExt(posix.basename(f))) || named.has(noExt(f)) || SKIP.test(f);
+  const fresh = new Set(changed.filter((c) => c.status === "A").map((c) => c.path));
+
+  // 1. Added source files.
+  const newFiles = [...fresh].filter((f) => SOURCE.test(f) && !conventional(f) && stem(f) !== ".");
+
+  // 2. Added exports in files that are not loaded by convention.
+  const exports = addedExports(added, exists, conventional, published);
+
+  // 3. Files that lost a local import and existed before the change.
+  const orphans = lostImports(removed, all, exists, fresh, conventional);
+
+  // One pass over the repository records which files mention each stem and each export name.
+  const stems = new Set([...newFiles, ...orphans].map(stem));
+  const names = new Set(exports.map((e) => e.name));
+  const exporting = new Set(exports.map((e) => e.file));
+  const { pathHits, wordHits, texts, scanned } = scanReferences(top, all, stems, names, exporting);
   const referenced = (/** @type {string} */ file) => [...(pathHits.get(stem(file)) ?? [])].some((f) => f !== file);
 
   /** @type {import("./lib.mjs").Finding[]} */

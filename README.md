@@ -6,7 +6,7 @@ user sessions into tests nobody has to write.
 ## Quickstart
 
 ```bash
-npm i -D github:will4381/intersite#v1.0.0-beta.1 oxlint @oxlint/plugins
+npm i -D github:will4381/intersite#v1.0.0-beta.2 oxlint @oxlint/plugins
 ```
 
 ```bash
@@ -116,11 +116,18 @@ that says what to do instead, and examples.
 | Pack | Default | Catches |
 | --- | --- | --- |
 | `tests` | on | Tests that cannot fail: no assertion, constant or mock-only assertions, skips, module mocking |
-| `slop` | on | Swallowed errors, fake fallback values, `any` and double casts, commented-out code, elision markers such as `// ... rest of the code`, comments that narrate an edit, unexplained suppressions |
-| `security` | on | Live credentials in source, SQL built by string interpolation |
+| `slop` | on | Swallowed errors, fake fallback values, `any` and double casts, commented-out code, elision and placeholder comments, comments that restate the next line or narrate an edit, emoji and "here" debug logs, throwaway names (`data2`, `fetchUserV2` beside `fetchUser`), mock data and placeholder copy in source |
+| `design` | on | Over-engineering and tangles: import cycles, nesting past 4 levels, functions over 80 statements, more than 5 parameters, boolean-flag arguments, tangled ternaries, pass-through functions and components, one-implementation interfaces, classes that should be functions |
+| `async` | on | Async callbacks nobody awaits, `fetch` without a status check, rethrows that drop the original error, fixed sleeps, success returned from a catch |
+| `react` | on | Effects that only derive state, racy fetches in effects, pointless memoisation, components defined inside components, twelve or more states in one component, needless `"use client"`, hook dependency mistakes |
+| `security` | on | Live credentials, default secrets, secrets behind public env prefixes or in logs, SQL and shell commands built from strings, request bodies written straight to the database, `Math.random` tokens, disabled TLS checks, open redirects, unverified Stripe webhooks |
+| `next` | on | Server-only env read in a client file, server actions that write with no auth check |
 | `state` | on | Implicit state machines: three or more boolean flags doing one state's job |
 | `runtime` | opt-in | Module-level mutable state, which leaks between requests on serverless |
 | `actions` | opt-in | Clickable elements with no `data-intersite` name |
+
+A pack can also switch on rules oxlint already ships (`builtin:` in a pack file), and `lint.rules` turns any single
+rule off by name.
 
 ## Capture, actions and replay
 

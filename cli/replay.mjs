@@ -69,16 +69,7 @@ async function main(argv, cwd) {
 
   const metricsBase = flags["metrics-base"];
   if ((metricsBase || flags["metrics-out"]) && !modes.includes("baseline")) throw new Error("--metrics-out and --metrics-base need the baseline mode");
-  /** @type {{ _meta: { seed: number | null, sessions: string[] } } & import("../replay/metrics.mjs").Metrics | undefined} */
-  let base;
-  if (metricsBase) {
-    try {
-      base = JSON.parse(readFileSync(resolve(cwd, metricsBase), "utf8"));
-    } catch (error) {
-      throw new Error(`cannot read --metrics-base ${metricsBase}; write it first with --metrics-out (${error instanceof Error ? error.message : error})`);
-    }
-    if (!Array.isArray(base?._meta?.sessions)) throw new Error(`--metrics-base ${metricsBase} has no _meta; write it with --metrics-out`);
-  }
+  const base = metricsBase ? readMetricsBase(cwd, metricsBase) : undefined;
 
   const collector = { url: config.collector.url, token: collectorTokens(config).read, project: config.project };
 
@@ -89,23 +80,7 @@ async function main(argv, cwd) {
     concurrency = 1;
   }
 
-  let seed;
-  let sessions;
-  if (flags.id) {
-    sessions = [await getCase(collector, flags.id)];
-  } else {
-    seed = flags.seed ?? String(typeof base?._meta.seed === "number" ? base._meta.seed : Math.floor(Math.random() * 2 ** 31));
-    const sample = flags.sample ?? String(config.replay.sample);
-    if (!/^\d+$/.test(seed)) throw new Error("--seed must be a non-negative integer");
-    if (!/^\d+$/.test(sample) || Number(sample) < 1 || Number(sample) > 200) throw new Error("--sample must be 1 to 200");
-    /** @type {[string, string][]} */
-    const query = [["sample", sample], ["seed", seed], ...(flags.tag ?? []).map((tag) => /** @type {[string, string]} */ (["outcome", tag]))];
-    if (flags.since) query.push(["since", since(flags.since)]);
-    if (flags.route) query.push(["route", flags.route]);
-    if (flags.action) query.push(["action", flags.action]);
-    if (flags["known-good"]) query.push(["known_good", "1"]);
-    sessions = await listSessions(collector, query);
-  }
+  const { seed, sessions } = await pickSessions(flags, String(config.replay.sample), collector, base);
 
   if (base) {
     const names = sessions.map((session) => session.session);
@@ -122,12 +97,7 @@ async function main(argv, cwd) {
     concurrency, uiTarget: config.replay.uiTarget, headed: flags.headed, cwd,
   });
 
-  if (flags.mark) {
-    const marked = results
-      .filter((result) => result.steps.some((step) => step.result !== "skipped"))
-      .map((result) => ({ session: result.session, pass: !result.steps.some((step) => step.result === "failed") }));
-    if (marked.length) await postResults(collector, /** @type {string} */ (flags.release), marked);
-  }
+  if (flags.mark) await markResults(collector, /** @type {string} */ (flags.release), results);
 
   const steps = results.flatMap((result) => result.steps);
   /** @type {import("../replay/metrics.mjs").Metrics} */
@@ -171,6 +141,55 @@ async function main(argv, cwd) {
     console.log(lines.join("\n"));
   }
   return failed ? 1 : 0;
+}
+
+/**
+ * Reads a --metrics-out file to compare against, failing when it is unreadable or has no _meta.
+ * @param {string} cwd @param {string} metricsBase
+ * @returns {{ _meta: { seed: number | null, sessions: string[] } } & import("../replay/metrics.mjs").Metrics}
+ */
+function readMetricsBase(cwd, metricsBase) {
+  let base;
+  try {
+    base = JSON.parse(readFileSync(resolve(cwd, metricsBase), "utf8"));
+  } catch (error) {
+    throw new Error(`cannot read --metrics-base ${metricsBase}; write it first with --metrics-out (${error instanceof Error ? error.message : error})`);
+  }
+  if (!Array.isArray(base?._meta?.sessions)) throw new Error(`--metrics-base ${metricsBase} has no _meta; write it with --metrics-out`);
+  return base;
+}
+
+/**
+ * The sessions to replay, from --id or a seeded sample matching the filters, and the seed used (undefined for --id).
+ * @param {{ id?: string, seed?: string, sample?: string, tag?: string[], since?: string, route?: string, action?: string, "known-good"?: boolean }} flags
+ * @param {string} defaultSample @param {Parameters<typeof listSessions>[0]} collector
+ * @param {{ _meta: { seed: number | null } } | undefined} base
+ */
+async function pickSessions(flags, defaultSample, collector, base) {
+  if (flags.id) return { seed: undefined, sessions: [await getCase(collector, flags.id)] };
+  const seed = flags.seed ?? String(typeof base?._meta.seed === "number" ? base._meta.seed : Math.floor(Math.random() * 2 ** 31));
+  const sample = flags.sample ?? defaultSample;
+  if (!/^\d+$/.test(seed)) throw new Error("--seed must be a non-negative integer");
+  if (!/^\d+$/.test(sample) || Number(sample) < 1 || Number(sample) > 200) throw new Error("--sample must be 1 to 200");
+  /** @type {[string, string][]} */
+  const query = [["sample", sample], ["seed", seed], ...(flags.tag ?? []).map((tag) => /** @type {[string, string]} */ (["outcome", tag]))];
+  if (flags.since) query.push(["since", since(flags.since)]);
+  if (flags.route) query.push(["route", flags.route]);
+  if (flags.action) query.push(["action", flags.action]);
+  if (flags["known-good"]) query.push(["known_good", "1"]);
+  return { seed, sessions: await listSessions(collector, query) };
+}
+
+/**
+ * Posts pass or fail for each session that ran at least one step to the collector, under the release.
+ * @param {Parameters<typeof postResults>[0]} collector @param {string} release
+ * @param {Awaited<ReturnType<typeof replaySessions>>} results
+ */
+async function markResults(collector, release, results) {
+  const marked = results
+    .filter((result) => result.steps.some((step) => step.result !== "skipped"))
+    .map((result) => ({ session: result.session, pass: !result.steps.some((step) => step.result === "failed") }));
+  if (marked.length) await postResults(collector, release, marked);
 }
 
 /** "7d", "24h" or an ISO timestamp, as an ISO timestamp. @param {string} value */

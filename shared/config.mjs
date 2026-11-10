@@ -26,7 +26,7 @@ const defaults = {
     name: "intersite-collector",
     dailyCap: { ok: 5000, other: 5000 },
   },
-  lint: { packs: ["tests", "slop", "security", "state"], rules: {}, custom: [], baseline: "intersite-baseline.json", extends: ".oxlintrc.json" },
+  lint: { packs: ["tests", "slop", "security", "state", "async", "react", "next", "design"], rules: {}, custom: [], baseline: "intersite-baseline.json", extends: ".oxlintrc.json" },
   gates: {
     base: "origin/main",
     run: ["test-integrity", "duplicates", "new-deps", "artifacts", "unused"],

@@ -1,3 +1,22 @@
-# Rules for the structure area. Same format as core.yml; `builtin` switches on rules oxlint already ships.
-rules: []
-builtin: []
+# Over-engineering and tangle rules (pack `design`) and leftovers (pack `slop`). Same format as core.yml; `builtin`
+# switches on rules oxlint already ships, with oxlint's default options. Code rules live in lint/rules/structure/.
+rules:
+  - id: no-optional-chain-on-known-value
+    pack: slop
+    selector: MemberExpression[optional=true] > :matches(NewExpression, ArrayExpression, ObjectExpression, TemplateLiteral, Literal, ThisExpression, TSNonNullExpression).object, CallExpression[optional=true] > :matches(TSNonNullExpression, ArrowFunctionExpression, FunctionExpression).callee
+    message: "This `?.` guards a value that cannot be null or undefined (just constructed, a literal, `this`, or asserted with `!`), so it tells readers to expect a missing value that never comes. Use `.` instead."
+    bad:
+      - export const names = [first, last]?.join(' ');
+      - export const id = new URL(href)?.searchParams.get('id');
+      - export const name = user!?.name;
+      - "export const size = { a: 1, b: 2 }?.a;"
+      - "export class Box { get size() { return this?.items.length; } items = []; }"
+    good:
+      - export const name = user?.name;
+      - export const id = new URL(href).searchParams.get('id');
+      - export const name = user!.name;
+      - export const first = list?.[0]?.name;
+      - export const total = (await load())?.total;
+builtin:
+  - { rule: unicorn/no-static-only-class, pack: design }
+  - { rule: import/no-cycle, pack: design }

@@ -14,7 +14,7 @@ import codeRules from "./rules/index.mjs";
 /**
  * A rule declared in YAML: a `selector` over the syntax tree, or a `comment` regular expression (optionally with
  * `unless`, a second expression that exempts a comment).
- * @typedef {{ id: string, pack?: string, selector?: string, comment?: string, unless?: string, message: string, files?: string[], bad?: string[], good?: string[] }} JsonRule
+ * @typedef {{ id: string, pack?: string, selector?: string, comment?: string, unless?: string, message: string, files?: string[], ext?: string, bad?: string[], good?: string[] }} JsonRule
  */
 
 /** Every file in lint/packs: `rules` are declared rules, `builtin` switches on rules oxlint already ships. */

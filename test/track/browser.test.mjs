@@ -68,7 +68,9 @@ test("in Chrome, a click inside a named element stamps the request, and a thrown
   assert.match(String(api[0]["x-intersite-session"]), /^[0-9a-f]{16,}$/);
   assert.equal(api[1]["x-intersite-session"], api[0]["x-intersite-session"]);
 
+  // Start listening before the click: the report can come back before a listener added afterwards exists.
+  const reported = page.waitForResponse((response) => response.url().endsWith("/ui"));
   await page.click("#boom");
-  await page.waitForResponse((response) => response.url().endsWith("/ui"));
+  await reported;
   assert.deepEqual(ui, [{ page: "/app/users/_", outcome: "error", name: "note.delete", errorName: "TypeError" }]);
 });

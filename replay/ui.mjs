@@ -64,52 +64,9 @@ export async function openBrowser({ uiTarget, headed, cwd }) {
       let skipped;
       try {
         const page = await context.newPage();
-        /** @type {{ error: string[], server: string[], console: string[] }} */
-        const problems = { error: [], server: [], console: [] };
-        /** @type {import("playwright-core").Request[]} requests to the app or the API since the action began */
-        const sent = [];
-        /** @type {Map<import("playwright-core").Request, Promise<string>>} write answers, kept as they pass: a page that navigates afterwards takes the body with it */
-        const bodies = new Map();
-        // The sign-in headers go to the app and the API only, never to a third party the page loads from.
-        await page.route((url) => origins.has(url.origin), async (route) => {
-          const headers = { ...(await route.request().allHeaders()), ...signInHeaders };
-          if (!WRITES.includes(route.request().method())) return route.continue({ headers });
-          const answer = await route.fetch({ headers });
-          bodies.set(route.request(), answer.text());
-          return route.fulfill({ response: answer });
-        });
-        let inflight = 0;
-        let lastActivity = Date.now();
-        page.on("pageerror", (error) => problems.error.push(`page error: ${firstLine(error)}`));
-        page.on("console", (message) => { if (message.type() === "error") problems.console.push(`console error: ${message.text()}`); });
-        page.on("request", (request) => {
-          inflight++;
-          lastActivity = Date.now();
-          if (origins.has(new URL(request.url()).origin)) sent.push(request);
-        });
-        const finished = () => { inflight--; lastActivity = Date.now(); };
-        page.on("requestfinished", finished);
-        page.on("requestfailed", finished);
-        page.on("response", (response) => {
-          const url = new URL(response.url());
-          if (response.status() >= 500 && origins.has(url.origin)) problems.server.push(`${response.status()} from ${response.request().method()} ${url.pathname}`);
-        });
-        const settle = async () => {
-          const end = Date.now() + SETTLE_CAP;
-          while (Date.now() < end && (inflight > 0 || Date.now() - lastActivity < QUIET)) await new Promise((done) => setTimeout(done, 50));
-        };
-        const problem = () => [...problems.error, ...problems.server, ...problems.console][0];
-
-        /** @type {Map<string, { name: string, page: string, cases: Case[] }>} */
-        const actions = new Map();
-        for (const item of cases) {
-          if (!item.action && item.request.method !== UI_METHOD) continue;
-          const name = item.action?.name ?? UI_METHOD;
-          const path = item.action?.page ?? item.request.path;
-          const key = `${name} ${path}`;
-          if (!actions.has(key)) actions.set(key, { name, page: path, cases: [] });
-          actions.get(key)?.cases.push(item);
-        }
+        const watch = await watchPage(page, origins, signInHeaders);
+        const { problems, settle, problem } = watch;
+        const actions = actionGroups(cases);
 
         for (const { name, page: path, cases: group } of actions.values()) {
           /** @param {Step["result"]} result @param {string} [reason] @param {Partial<Step>} [extra] */
@@ -151,27 +108,8 @@ export async function openBrowser({ uiTarget, headed, cwd }) {
             const fills = prepared && (await fillsFor(element, prepared.request.body));
             if (!fills) { record("passed", undefined, { checked: "presence" }); continue; }
 
-            const write = writes[0];
-            sent.length = 0;
-            bodies.clear();
-            for (const fill of fills.steps) await fill();
-            await fills.submit();
-            await settle();
-            const route = routePattern(write.request.route);
-            const request = sent.find((item) => item.method() === write.request.method && route.test(new URL(item.url()).pathname));
-            const response = await request?.response();
-            const wanted = `${write.request.method} ${write.request.route}`;
-            if (!request) { record("failed", `no ${wanted} request was sent`); continue; }
-            if (!response) { record("failed", `${wanted} got no answer`); continue; }
-            if (response.status() !== write.response.status) { record("failed", `status ${response.status()}, recorded ${write.response.status} for ${wanted}`); continue; }
-            // Chrome logs every 4xx/5xx answer as a console error; the recorded status was expected, so its log is too.
-            const expected = `console error: Failed to load resource: the server responded with a status of ${response.status()} `;
-            problems.console = problems.console.filter((message) => !message.startsWith(expected));
-            if (problem()) { record("failed", problem()); continue; }
-            let json;
-            try { json = JSON.parse((await bodies.get(request)) ?? ""); } catch { json = undefined; } // not JSON: it created no IDs to map
-            learnIds(write, json, ids);
-            record("passed");
+            const reason = await submitWrite(watch, fills, writes[0], ids);
+            record(reason ? "failed" : "passed", reason);
           } catch (error) {
             record("failed", firstLine(error));
           }
@@ -182,6 +120,97 @@ export async function openBrowser({ uiTarget, headed, cwd }) {
       return skipped;
     },
   };
+}
+
+/**
+ * Routes the page's requests to the app and the API with the sign-in headers, and watches its problems and traffic.
+ * @param {import("playwright-core").Page} page @param {Set<string>} origins @param {Record<string, string>} signInHeaders
+ */
+async function watchPage(page, origins, signInHeaders) {
+  /** @type {{ error: string[], server: string[], console: string[] }} */
+  const problems = { error: [], server: [], console: [] };
+  /** @type {import("playwright-core").Request[]} requests to the app or the API since the action began */
+  const sent = [];
+  /** @type {Map<import("playwright-core").Request, Promise<string>>} write answers, kept as they pass: a page that navigates afterwards takes the body with it */
+  const bodies = new Map();
+  // The sign-in headers go to the app and the API only, never to a third party the page loads from.
+  await page.route((url) => origins.has(url.origin), async (route) => {
+    const headers = { ...(await route.request().allHeaders()), ...signInHeaders };
+    if (!WRITES.includes(route.request().method())) return route.continue({ headers });
+    const answer = await route.fetch({ headers });
+    bodies.set(route.request(), answer.text());
+    return route.fulfill({ response: answer });
+  });
+  let inflight = 0;
+  let lastActivity = Date.now();
+  page.on("pageerror", (error) => problems.error.push(`page error: ${firstLine(error)}`));
+  page.on("console", (message) => { if (message.type() === "error") problems.console.push(`console error: ${message.text()}`); });
+  page.on("request", (request) => {
+    inflight++;
+    lastActivity = Date.now();
+    if (origins.has(new URL(request.url()).origin)) sent.push(request);
+  });
+  const finished = () => { inflight--; lastActivity = Date.now(); };
+  page.on("requestfinished", finished);
+  page.on("requestfailed", finished);
+  page.on("response", (response) => {
+    const url = new URL(response.url());
+    if (response.status() >= 500 && origins.has(url.origin)) problems.server.push(`${response.status()} from ${response.request().method()} ${url.pathname}`);
+  });
+  const settle = async () => {
+    const end = Date.now() + SETTLE_CAP;
+    while (Date.now() < end && (inflight > 0 || Date.now() - lastActivity < QUIET)) await new Promise((done) => setTimeout(done, 50));
+  };
+  const problem = () => [...problems.error, ...problems.server, ...problems.console][0];
+  return { problems, sent, bodies, settle, problem };
+}
+
+/**
+ * The session's UI cases grouped by action name and page, in first-seen order.
+ * @param {Case[]} cases
+ */
+function actionGroups(cases) {
+  /** @type {Map<string, { name: string, page: string, cases: Case[] }>} */
+  const actions = new Map();
+  for (const item of cases) {
+    if (!item.action && item.request.method !== UI_METHOD) continue;
+    const name = item.action?.name ?? UI_METHOD;
+    const path = item.action?.page ?? item.request.path;
+    const key = `${name} ${path}`;
+    if (!actions.has(key)) actions.set(key, { name, page: path, cases: [] });
+    actions.get(key)?.cases.push(item);
+  }
+  return actions;
+}
+
+/**
+ * Fills and submits the form, then checks the recorded write was sent and answered as recorded; returns the failure reason, if any.
+ * @param {Awaited<ReturnType<typeof watchPage>>} watch
+ * @param {{ steps: (() => Promise<unknown>)[], submit: () => Promise<unknown> }} fills
+ * @param {Case} write @param {Map<string, string>} ids
+ */
+async function submitWrite(watch, fills, write, ids) {
+  const { problems, sent, bodies, settle, problem } = watch;
+  sent.length = 0;
+  bodies.clear();
+  for (const fill of fills.steps) await fill();
+  await fills.submit();
+  await settle();
+  const route = routePattern(write.request.route);
+  const request = sent.find((item) => item.method() === write.request.method && route.test(new URL(item.url()).pathname));
+  const response = await request?.response();
+  const wanted = `${write.request.method} ${write.request.route}`;
+  if (!request) return `no ${wanted} request was sent`;
+  if (!response) return `${wanted} got no answer`;
+  if (response.status() !== write.response.status) return `status ${response.status()}, recorded ${write.response.status} for ${wanted}`;
+  // Chrome logs every 4xx/5xx answer as a console error; the recorded status was expected, so its log is too.
+  const expected = `console error: Failed to load resource: the server responded with a status of ${response.status()} `;
+  problems.console = problems.console.filter((message) => !message.startsWith(expected));
+  if (problem()) return problem();
+  let json;
+  try { json = JSON.parse((await bodies.get(request)) ?? ""); } catch { json = undefined; } // not JSON: it created no IDs to map
+  learnIds(write, json, ids);
+  return undefined;
 }
 
 /**
