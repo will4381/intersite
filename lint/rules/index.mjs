@@ -14,6 +14,7 @@ import * as requireAssertion from "./require-assertion.mjs";
 import asyncRules from "./async/index.mjs";
 import reactRules from "./react/index.mjs";
 import structureRules from "./structure/index.mjs";
+import uiRules from "./ui/index.mjs";
 import webRules from "./web/index.mjs";
 
 export default [
@@ -31,5 +32,6 @@ export default [
   ...asyncRules,
   ...reactRules,
   ...structureRules,
+  ...uiRules,
   ...webRules,
 ];
