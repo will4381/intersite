@@ -6,7 +6,7 @@ import { afterEach, beforeEach, test } from "node:test";
 import { replaySessions } from "../../replay/run.mjs";
 import { DEFAULT_ID_PATTERN } from "../../shared/shape.mjs";
 import * as adapter from "./adapter.mjs";
-import { notesSession, preexistingSession, recorded, startTarget } from "./helpers.mjs";
+import { listSession, notesSession, preexistingSession, recorded, startTarget } from "./helpers.mjs";
 
 /** @type {Awaited<ReturnType<typeof startTarget>>} */
 let target;
@@ -82,6 +82,39 @@ test("cross-tenant catches a read of another tenant's record", async () => {
   target.bugs.add("leak");
   const leaky = failures(await replay(notesSession(), ["cross-tenant"]));
   assert.ok(leaky.includes("cross-tenant s-notes-2 another account got 200, expected 401, 403 or 404"), leaky.join("\n"));
+});
+
+test("cross-tenant sends each GET that names no ID as another account and fails when it lists a record this session created", async () => {
+  const scoped = await replay(listSession(), ["cross-tenant"]);
+  assert.deepEqual(scoped.steps.map((s) => `${s.caseId} ${s.route} ${s.result}`), ["s-list-3 /notes/:id passed", "s-list-4 /notes passed", "s-list-5 /plans passed"],
+    "the shared plan catalogue both accounts see is not a leak");
+
+  target.bugs.add("list-leak");
+  const leaky = await replay(listSession(), ["cross-tenant"]);
+  assert.deepEqual(failures(leaky), ["cross-tenant s-list-4 another account's response contains note_000001 (and 1 more), created by this session"]);
+  assert.equal(leaky.steps.find((s) => s.result === "failed")?.sent, "GET /notes");
+});
+
+test("cross-tenant fails an owner's answer that holds a record another account's leaky write created", async () => {
+  /** @param {number} status @param {unknown} body */
+  const answer = (status, body) => new Response(JSON.stringify(body), { status });
+  /** A server whose comment route ignores the tenant and whose note read lists every comment. @type {typeof fetch} */
+  const leaky = async (url, init) => {
+    const tenant = /** @type {Record<string, string> | undefined} */ (init?.headers)?.["x-tenant"];
+    const { pathname } = new URL(String(url));
+    if (pathname === "/notes") return answer(201, { note: { id: "note_000001", text: "hi" } });
+    if (pathname.endsWith("/comments")) return answer(201, { comment: { id: tenant === "b" ? "cmt_other01" : "cmt_mine001" } });
+    return tenant === "b" ? answer(404, {}) : answer(200, { note: { id: "note_000001", comments: ["cmt_other01", "cmt_mine001"] } });
+  };
+  const [create, , comment] = notesSession();
+  const read = recorded({ id: "s-notes-5", session: "s-notes", seq: 1005, method: "GET", route: "/notes/:id", path: "/notes/note_prodA1", status: 200, json: {} });
+  const [result] = await replaySessions({
+    sessions: [{ session: "s", cases: [create, comment, read] }], target: target.url, adapter: { signIn: adapter.signIn }, modes: ["cross-tenant"], idPattern: DEFAULT_ID_PATTERN, fetch: leaky,
+  });
+  assert.deepEqual(failures(result), [
+    "cross-tenant s-notes-3 another account got 201, expected 401, 403 or 404",
+    "cross-tenant s-notes-5 this session's response contains cmt_other01, created by another account",
+  ]);
 });
 
 test("a failing invariant is reported", async () => {

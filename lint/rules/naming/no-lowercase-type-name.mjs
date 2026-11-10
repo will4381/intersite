@@ -1,6 +1,8 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
+import { isGenerated } from "../shared.mjs";
+
 export const id = "no-lowercase-type-name";
 export const pack = "naming";
 
@@ -14,7 +16,7 @@ export const rule = defineRule({
   createOnce(context) {
     return {
       // Generated files (declaration files, OpenAPI schemas, database types, worker bindings) keep their generator's names.
-      before: () => !/\.d\.[cm]?ts$|(?:^|\/)generated\/|\.gen(?:erated)?\.[cm]?[jt]sx?$/.test(context.filename),
+      before: () => !/\.d\.[cm]?ts$/.test(context.filename) && !isGenerated(context),
       "TSTypeAliasDeclaration, TSInterfaceDeclaration, TSEnumDeclaration, ClassDeclaration"(node) {
         const name = node.id?.name;
         if (!name || !/^[a-z]|[a-z0-9]_[A-Za-z]/.test(name)) return;

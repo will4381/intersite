@@ -1,9 +1,7 @@
 // @ts-check
-import { relative } from "node:path";
-
 import { defineRule } from "@oxlint/plugins";
 
-import { isRequestName } from "../shared.mjs";
+import { isRequestName, isServerPath, takesRequest } from "../shared.mjs";
 
 // Names that hold a credential: `token`, `accessToken`, `user.password`, `STRIPE_SECRET_KEY`, `headers.authorization`.
 const SECRET = /^(token|secret|password|passwd|apiKey|api_key|jwt|cookie|authorization)$|[a-z](Token|Secret|Password|ApiKey|PrivateKey)$|^[A-Z0-9_]*(TOKEN|SECRET|PASSWORD|API_KEY|SECRET_KEY|PRIVATE_KEY|SERVICE_ROLE_KEY)$/;
@@ -11,8 +9,6 @@ const SECRET = /^(token|secret|password|passwd|apiKey|api_key|jwt|cookie|authori
 const HARMLESS = /(page|next|cursor|continuation|csrf|max|input|output|total|prompt|completion)_?tokens?$/i;
 
 const LEVEL = /^(log|info|debug|warn|warning|error|trace|fatal|verbose|silly|notice|critical)$/;
-// Server code, whose console output lands in the host's log storage.
-const SERVER_PATH = /(^|\/)(api|server|routes?|middlewares?|handlers?|controllers?|functions|workers?)\/|(^|\/)(middleware|proxy|route|server)\.[cm]?[jt]s$/;
 
 /** @param {any} node */
 function name(node) {
@@ -47,9 +43,7 @@ function parts(node) {
 function inHandler(node) {
   for (let n = node.parent; n; n = n.parent) {
     if (!(n.type.endsWith("FunctionExpression") || n.type === "FunctionDeclaration")) continue;
-    const first = n.params[0];
-    if (first?.type === "Identifier" && /^(req|request|ctx|c|event)$/.test(first.name)) return true;
-    if (first?.type === "ObjectPattern" && first.properties.some((/** @type {any} */ p) => p.key?.name === "request")) return true;
+    if (takesRequest(n)) return true;
     const name = n.id?.name ?? (n.parent.type === "VariableDeclarator" ? n.parent.id.name : undefined);
     if (/^(GET|POST|PUT|PATCH|DELETE)$/.test(name ?? "")) return true;
   }
@@ -70,7 +64,7 @@ export const rule = defineRule({
     let server = false;
     return {
       before() {
-        server = SERVER_PATH.test(relative(context.cwd, context.filename));
+        server = isServerPath(context);
       },
       CallExpression(node) {
         const callee = /** @type {any} */ (node.callee);

@@ -1,7 +1,10 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { calleeName, enclosingFunction, isBodyCall, isRequestHolder, isRequestPart, resolveVariable, unwrap } from "../shared.mjs";
+import { calleeName, enclosingFunction, isBodyCall, isRequestHolder, isRequestPart, mentions, resolveVariable, unwrap } from "../shared.mjs";
+
+/** What a file must spell for this rule to have anything to report (see `mentions`). */
+const NEEDS = /body|json|fromEntries/;
 
 // ORM and query-builder writes: Prisma, Drizzle, Supabase, Mongoose, Sequelize, Knex, TypeORM.
 const WRITE = /^(create|createMany|update|updateMany|upsert|insert|insertOne|insertMany|updateOne|replaceOne|findOneAndUpdate|findByIdAndUpdate|values|set|save)$/;
@@ -80,6 +83,7 @@ export const rule = defineRule({
       for (const f of found) if (isRawBody(f, context.sourceCode) && !bodyValidatedRoute(call)) context.report({ node: f, messageId: "whole" });
     }
     return {
+      before: () => mentions(context, NEEDS),
       // Mongoose: `const user = new User(req.body); await user.save();`
       NewExpression(node) {
         const callee = /** @type {any} */ (node.callee);

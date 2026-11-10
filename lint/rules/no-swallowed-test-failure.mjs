@@ -1,7 +1,7 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { counted, fails, isAssertion, isFail, isTestCall } from "./require-assertion.mjs";
+import { counted, fails, hasTestCalls, isAssertion, isFail, isTestCall } from "./require-assertion.mjs";
 import { FUNCTIONS, walk } from "./shared.mjs";
 
 
@@ -49,6 +49,7 @@ export const rule = defineRule({
     return {
       before() {
         tests = [];
+        return hasTestCalls(context);
       },
       CallExpression(node) {
         if (isTest(node)) tests.push(node);

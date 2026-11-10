@@ -1,6 +1,6 @@
 {
   "name": "intersite",
-  "version": "1.0.0-beta.3",
+  "version": "1.0.0-beta.4",
   "private": true,
   "type": "module",
   "description": "One testing library for every project: slop lint, traffic capture, replay, and gates.",
@@ -19,7 +19,8 @@
   },
   "scripts": {
     "test": "node --test \"test/**/*.test.mjs\"",
-    "lint": "node bin/intersite.mjs lint"
+    "lint": "node bin/intersite.mjs lint",
+    "check": "node bin/intersite.mjs check"
   },
   "peerDependencies": {
     "@oxlint/plugins": ">=1.93.0",
@@ -39,5 +40,20 @@
   },
   "dependencies": {
     "yaml": "^2.9.1"
-  }
+  },
+  "files": [
+    "bin",
+    "cli",
+    "capture",
+    "collector",
+    "gates",
+    "lint",
+    "replay",
+    "shared",
+    "skills",
+    "templates",
+    "track",
+    "intersite.schema.json",
+    "CONTRACT.md"
+  ]
 }

@@ -14,6 +14,7 @@ const undress = (/** @type {string} */ text) => text.replace(/^[\s>*=#~!.:?-]+|[
 const tag = /^\s*(?:DEBUG\b|\[debug\]|debug:)/;
 /** A message opening with an emoji, as generated code tends to write them: `🚀 Server started`, `✅ Saved`. */
 const emoji = /^\s*\p{Extended_Pictographic}/u;
+const LOGGER = /^(?:console|logger|log)$/;
 
 export const id = "no-debug-log";
 export const pack = "slop";
@@ -39,7 +40,8 @@ export const rule = defineRule({
       DebuggerStatement() {
         hasDebugger = true;
       },
-      "CallExpression[callee.object.name=/^(?:console|logger|log)$/]"(node) {
+      CallExpression(node) {
+        if (!LOGGER.test(node.callee.object?.name ?? "")) return;
         const method = node.callee.property?.name;
         const [first, ...rest] = node.arguments;
         const text = first?.type === "Literal" && typeof first.value === "string" ? first.value : first?.type === "TemplateLiteral" ? first.quasis[0].value.cooked ?? "" : undefined;

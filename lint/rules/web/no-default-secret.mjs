@@ -1,9 +1,7 @@
 // @ts-check
-import { relative } from "node:path";
-
 import { defineRule } from "@oxlint/plugins";
 
-import { calleeName, constInit, unwrap } from "../shared.mjs";
+import { calleeName, constInit, filePath, unwrap } from "../shared.mjs";
 
 // A secret's name; `TEST_SEED_PASSWORD` or `DEMO_TOKEN` says it is not a production secret.
 const SECRET = /^(?!(TEST|E2E|DEV|LOCAL|DEMO)_).*(SECRET|TOKEN|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY|ENCRYPTION_KEY|SIGNING_KEY|SECRET_KEY|ACCESS_KEY|HMAC_KEY|JWT_KEY)$/;
@@ -61,7 +59,7 @@ export const rule = defineRule({
     const written = (node) => node && isWrittenSecret(node, context.sourceCode) && context.report({ node, messageId: "written" });
     return {
       before() {
-        return !EXEMPT.test(relative(context.cwd, context.filename));
+        return !EXEMPT.test(filePath(context));
       },
       // process.env.JWT_SECRET || 'dev-secret', env.API_KEY ?? 'changeme'
       LogicalExpression(node) {

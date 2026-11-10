@@ -1,20 +1,19 @@
 // @ts-check
-import { matchesGlob, relative } from "node:path";
-
 import { defineRule } from "@oxlint/plugins";
 
 /**
  * A rule that reports every comment `matches` accepts. It gets the comment's first line, with the leading `*` and
  * spaces of a block comment removed, and the whole comment as its second argument.
- * @param {string} message @param {(firstLine: string, whole: string) => boolean} matches @param {string[]} [files]
+ * @param {string} message @param {(firstLine: string, whole: string) => boolean} matches
+ * @param {(context: any) => boolean} [applies] whether the rule runs on the file being linted; every file when omitted
  */
-export function commentRule(message, matches, files) {
+export function commentRule(message, matches, applies) {
   return defineRule({
     meta: { type: "problem", messages: { found: message } },
     createOnce(context) {
       return {
         Program() {
-          if (files && !files.some((glob) => matchesGlob(relative(context.cwd, context.filename), glob))) return;
+          if (applies && !applies(context)) return;
           for (const comment of context.sourceCode.getAllComments()) {
             const first = comment.value.replace(/^[\s*]+/, "").split("\n")[0];
             if (matches(first, comment.value)) context.report({ loc: comment.loc, messageId: "found" });

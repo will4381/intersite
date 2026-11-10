@@ -52,8 +52,14 @@ export const rule = defineRule({
         if (node.superClass?.type === "Identifier") implement(node.superClass.name, name);
       },
       // Any other reference (a parameter type, `extends` on another interface, a value use) means it is more than a layer.
-      "TSTypeReference > Identifier.typeName, TSInterfaceHeritage > Identifier.expression, TSTypeQuery > Identifier.exprName"(node) {
-        otherUses.add(node.name);
+      TSTypeReference(node) {
+        if (node.typeName.type === "Identifier") otherUses.add(node.typeName.name);
+      },
+      TSInterfaceHeritage(node) {
+        if (node.expression.type === "Identifier") otherUses.add(node.expression.name);
+      },
+      TSTypeQuery(node) {
+        if (node.exprName.type === "Identifier") otherUses.add(node.exprName.name);
       },
       "Program:exit"() {
         for (const [name, { node, kind }] of abstractions) {

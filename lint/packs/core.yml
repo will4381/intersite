@@ -4,9 +4,16 @@
 #   selector  ESLint-style syntax-tree selector; every match is reported
 #   message   what is wrong AND what to do instead
 #   files     optional path globs the rule is limited to
+#   skip      optional kinds of file the rule leaves out: `tests` (tests, fixtures, stories, mocks, seeds) and
+#             `generated` (a generated/ folder, *.gen.* or *.generated.*, or a generated-file header), as in
+#             `skip: [tests, generated]`
+#   needs     optional regular expression the file's source must match for the rule to run, checked before any
+#             tree work (escapes and JSX entities are decoded first). It must match everything the selector reports,
+#             so name what every alternative requires: `expect|assert` for a rule on expect() and assert calls
 #   bad/good  code that must / must not be reported; `npm test` checks every one
 rules:
   - id: no-focused-tests
+    needs: 'only|fit|fdescribe|ftest'
     pack: tests
     selector: CallExpression[callee.property.name='only'][callee.object.name=/^(describe|suite|context|it|test|specify)$/], CallExpression[callee.property.name='only'][callee.object.object.name=/^(describe|suite|context|it|test|specify)$/], CallExpression[callee.object.property.name='only'][callee.object.object.name=/^(describe|suite|context|it|test|specify)$/], CallExpression[callee.name=/^(fit|fdescribe|ftest)$/][arguments.0.type=/^(Literal|TemplateLiteral)$/][arguments.1.type=/Function/], CallExpression[callee.name=/^(describe|suite|it|test)$/] > ObjectExpression > Property[key.name='only'][value.value=true]
     message: A focused test (.only) silently stops every other test from running. Remove the focus before committing.
@@ -23,6 +30,7 @@ rules:
       - const only = list.only(1);
       - const cls = cn(fit(column), 'cell');
   - id: no-skipped-tests
+    needs: 'skip|fixme|xit|xdescribe|xtest|xcontext|xspecify'
     pack: tests
     selector: CallExpression[callee.property.name=/^(skip|fixme)$/][callee.object.name=/^(describe|suite|context|it|test|specify)$/]:matches([arguments.length=0], [arguments.0.type=/^(Literal|TemplateLiteral)$/]), CallExpression[callee.property.name=/^(skip|fixme)$/][callee.object.object.name=/^(describe|suite|context|it|test|specify)$/]:matches([arguments.length=0], [arguments.0.type=/^(Literal|TemplateLiteral)$/]), CallExpression[callee.object.property.name='skip'][callee.object.object.name=/^(describe|suite|context|it|test|specify)$/], CallExpression[callee.name=/^(xit|xdescribe|xtest|xcontext|xspecify)$/], CallExpression[callee.name=/^(describe|suite|it|test)$/] > ObjectExpression > Property[key.name='skip']:matches([value.type='TemplateLiteral'], [value.type='BinaryExpression'][value.operator='+'], [value.type='Literal']:not([value.value=false]))
     message: "A skipped test proves nothing and rots. Fix it so it passes, or delete it and track the work in an issue. A skip that depends on the environment, as in test.skip(browserName === 'webkit', 'why') or { skip: !process.env.STRIPE_KEY }, is fine."
@@ -42,6 +50,7 @@ rules:
       - "test('uploads', { skip: uploadSkip }, async () => {});"
       - "test('adds', { skip: false }, () => {});"
   - id: no-constant-assertion
+    needs: 'expect|assert'
     pack: tests
     selector: CallExpression[callee.name='expect'][arguments.length=1][arguments.0.type='Literal'], CallExpression[callee.name='assert'][arguments.0.type='Literal']:not([arguments.0.value=false]), CallExpression[callee.object.name='assert'][callee.property.name='ok'][arguments.0.type='Literal']:not([arguments.0.value=false]), CallExpression[callee.object.name='assert'][callee.property.name=/^(equal|strictEqual|deepEqual|deepStrictEqual)$/][arguments.0.type='Literal'][arguments.1.type='Literal']
     message: This assertion checks a constant, so it can never fail. Assert on the value the code under test produced.
@@ -59,6 +68,7 @@ rules:
       - "await expect(422, send('/v1/creators/c1', { method: 'PATCH' }));"
       - assert.ok(false, 'parse should have thrown');
   - id: no-existence-only-assertion
+    needs: 'toBe|Equal'
     pack: tests
     selector: CallExpression[callee.property.name=/^(toBeDefined|toBeTruthy)$/]:not([callee.object.callee.property.name='poll'], CallExpression[callee.name='waitFor'] *), CallExpression[callee.object.property.name='not'][callee.property.name=/^(toBeUndefined|toBeNull|toBeFalsy)$/]:not([callee.object.object.callee.property.name='poll'], CallExpression[callee.name='waitFor'] *), CallExpression[callee.object.property.name='not'][callee.property.name=/^(toBe|toEqual|toStrictEqual)$/]:matches([arguments.0.type='Identifier'][arguments.0.name='undefined'], [arguments.0.type='Literal'][arguments.0.raw='null']):not([callee.object.object.callee.property.name='poll'], CallExpression[callee.name='waitFor'] *)
     message: Checking that a value exists or is truthy passes for almost any wrong value. Assert the exact expected value with toBe/toEqual, or for a generated value such as an ID or timestamp, its form with toMatch. Waiting for a value to appear is fine through expect.poll or waitFor.
@@ -80,6 +90,7 @@ rules:
       - expect(next.id).not.toBe(previous.id);
       - expect(row.tagName).not.toBe('A');
   - id: no-module-mocking
+    needs: 'mock|Mock'
     pack: tests
     selector: CallExpression[callee.object.name=/^(vi|jest)$/][callee.property.name=/^(mock|doMock|unstable_mockModule)$/], CallExpression[callee.object.name='mock'][callee.property.name='module'], CallExpression[callee.object.property.name='mock'][callee.property.name='module']
     message: Module mocking tests the mock, not the code. Pass the dependency in as a parameter, or run against a real or in-memory implementation.
@@ -92,6 +103,7 @@ rules:
       - const db = createMemoryDb();
       - const spy = vi.fn();
   - id: no-log-and-continue
+    needs: 'console|log'
     pack: slop
     selector: CatchClause > BlockStatement[body.length=1] > ExpressionStatement > CallExpression[callee.object.name=/^(console|logger|log)$/], CallExpression[callee.property.name='catch'] > MemberExpression[object.name=/^(console|logger|log)$/], CallExpression[callee.property.name='catch'] > :function > CallExpression.body[callee.object.name=/^(console|logger|log)$/], CallExpression[callee.property.name='catch'] > :function > BlockStatement.body[body.length=1] > ExpressionStatement > CallExpression[callee.object.name=/^(console|logger|log)$/]
     message: Logging an error and carrying on hides the failure from callers. Rethrow it, return an explicit error result, or let it propagate.
@@ -107,6 +119,8 @@ rules:
       - save().catch((error) => { logger.error(error); throw error; });
   - id: no-as-any
     pack: slop
+    # A cast in a test hands a partial double to typed code (`mockUser as any`); one expression, plainly on purpose.
+    skip: [tests, generated]
     selector: ":not(TSAsExpression, TSTypeAssertion) > TSAsExpression[typeAnnotation.type='TSAnyKeyword'], :not(TSAsExpression, TSTypeAssertion) > TSTypeAssertion[typeAnnotation.type='TSAnyKeyword']"
     message: Casting to any switches off type checking. Fix the type, narrow with a check, or describe the real shape.
     bad:
@@ -118,6 +132,8 @@ rules:
       - const user = parseUser(data);
   - id: no-double-assertion
     pack: slop
+    # In tests this is how a partial fake becomes a client (`{ user: { findMany } } as unknown as PrismaClient`).
+    skip: [tests, generated]
     selector: :matches(TSAsExpression, TSTypeAssertion)[expression.type=/^(TSAsExpression|TSTypeAssertion)$/][expression.typeAnnotation.type=/^TS(Unknown|Any)Keyword$/]
     message: Casting through unknown forces an unrelated type and hides a real mismatch. Validate the value or fix the types so one cast (or none) is enough.
     bad:
@@ -130,6 +146,8 @@ rules:
       - const value = input as unknown;
   - id: no-explicit-any
     pack: slop
+    # Tests stay in: an `any` variable or parameter unchecks every later read, the values assertions compare included.
+    skip: [generated]
     selector: :not(TSAsExpression, TSTypeAssertion) > TSAnyKeyword
     message: "An any type turns off checking for everything it touches. Use the real type, a generic, or unknown plus a check; a constraint for any function is `(...args: never[]) => unknown`."
     bad:
@@ -142,6 +160,7 @@ rules:
       - "const items: string[] = [];"
       - "type Fn<T extends (...args: never[]) => unknown> = ReturnType<T>;"
   - id: no-stub-implementation
+    needs: 'ot implemented|ot yet implemented|NOT IMPLEMENTED|nimplemented|TODO|odo:|NotImplemented'
     pack: slop
     selector: ThrowStatement > :matches(NewExpression, CallExpression)[callee.name=/Error$/] > Literal.arguments[value=/[Nn]ot (yet )?implemented|NOT IMPLEMENTED|[Uu]nimplemented|\bTODO\b|^[Tt]odo:/], ThrowStatement > :matches(NewExpression, CallExpression)[callee.name=/Error$/] > TemplateLiteral.arguments > TemplateElement[value.raw=/[Nn]ot (yet )?implemented|NOT IMPLEMENTED|[Uu]nimplemented|\bTODO\b|^[Tt]odo:/], ThrowStatement > NewExpression[callee.name=/^(NotImplemented|Unimplemented)/]
     message: This is a stub, not an implementation. Implement it, or delete it and the code that calls it.

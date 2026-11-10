@@ -1,7 +1,7 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { calleeName, constInit, isTestOrFixture, notShipped, resolveVariable, unwrap } from "../shared.mjs";
+import { calleeName, constInit, isTestOrFixture, mentions, notShipped, resolveVariable, unwrap } from "../shared.mjs";
 
 const SECRET_NAME = /(SECRET|TOKEN|API_KEY|PASSWORD)$/;
 
@@ -17,6 +17,8 @@ function envSecret(node) {
 // A value the code computed or configured to compare a guess against: `expectedSignature`, `computedHmac`, `config.apiKey`.
 const EXPECTED = /^(expected|computed|calculated|valid|correct|real)\w*(Signature|Sig|Hmac|Digest|Hash|Token|Secret|Key)$/i;
 const CONFIG = /^(config|cfg|settings|secrets|options)$/;
+/** What every secret above names somewhere in the file, an alias's initializer included. */
+const SECRET_WORD = /secret|token|api_?key|password|(?:expected|computed|calculated|valid|correct|real)\w*(?:Signature|Sig|Hmac|Digest|Hash|Token|Secret|Key)/i;
 
 /**
  * A secret: an env secret, a `const` set to one (`const { CRON_SECRET } = process.env`), an expected signature, or a
@@ -58,7 +60,7 @@ export const rule = defineRule({
   createOnce(context) {
     return {
       // A test double of the check (a fake worker that wants the header), or a dev script, guards nothing real.
-      before: () => !isTestOrFixture(context) && !notShipped(context),
+      before: () => !isTestOrFixture(context) && !notShipped(context) && mentions(context, SECRET_WORD),
       BinaryExpression(node) {
         if (!/^[!=]==?$/.test(node.operator)) return;
         const [a, b] = [/** @type {any} */ (node.left), /** @type {any} */ (node.right)];

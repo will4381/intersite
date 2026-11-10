@@ -1,8 +1,11 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { isTestFile } from "../shared.mjs";
+import { isTestFile, mentions } from "../shared.mjs";
 import { bindings } from "./names.mjs";
+
+/** What a file must spell for this rule to have anything to report (see `mentions`). */
+const NEEDS = /[a-z0-9]_[a-z0-9]/;
 
 const CAMEL = /^[a-z][a-z0-9]*(?:[A-Z][a-z0-9]*)+$/;
 const SNAKE = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/;
@@ -32,7 +35,8 @@ export const rule = defineRule({
     return {
       before() {
         [snake, camel, keys] = [[], 0, new Set()];
-        return !isTestFile(context);
+        // A file with no snake_case word has nothing to report.
+        return !isTestFile(context) && mentions(context, NEEDS);
       },
       ...declared,
       "Property, TSPropertySignature"(node) {
@@ -40,11 +44,11 @@ export const rule = defineRule({
         else if (node.key?.type === "Literal") keys.add(String(node.key.value));
       },
       // `body.suite_selections = …` and `Body["suite_selections"]` name a payload field too.
-      "MemberExpression[computed=false] > Identifier.property"(node) {
-        keys.add(node.name);
+      MemberExpression(node) {
+        if (!node.computed && node.property.type === "Identifier") keys.add(node.property.name);
       },
-      "TSIndexedAccessType > TSLiteralType > Literal"(node) {
-        keys.add(String(node.value));
+      TSIndexedAccessType(node) {
+        for (const part of [node.objectType, node.indexType]) if (part.type === "TSLiteralType" && part.literal.type === "Literal") keys.add(String(part.literal.value));
       },
       "Program:exit"() {
         const own = snake.filter((id) => !keys.has(id.name));

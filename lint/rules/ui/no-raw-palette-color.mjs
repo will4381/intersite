@@ -1,7 +1,8 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { eachClass, skipFile } from "./classes.mjs";
+import { mentions } from "../shared.mjs";
+import { eachClass, report, skipFile } from "./classes.mjs";
 import { designSystem } from "./project.mjs";
 
 const PALETTE = "slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose";
@@ -42,10 +43,11 @@ export const rule = defineRule({
         // Two names (create-next-app's background and foreground) are not a palette to move to.
         if ((stylesheets && themeColors.length < 3) || skipFile(context)) return false;
         colors = themeColors;
+        return mentions(context, HINT);
       },
       ...eachClass(HINT, (utility, word, node) => {
         const prefix = RAW.exec(utility)?.[1];
-        if (prefix) context.report({ node, messageId: "found", data: { value: word, names: suggest(prefix, colors) } });
+        if (prefix) report(context, { node, messageId: "found", data: { value: word, names: suggest(prefix, colors) } });
       }),
     };
   },

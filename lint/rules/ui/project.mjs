@@ -23,8 +23,11 @@ const PALETTE_NAME = new RegExp(`^(?:${PALETTE})(?:-\\d+)?$`);
  */
 const cache = new Map();
 
-/** Stylesheets, Tailwind configs and ui/ primitives under `dir`, skipping dependencies, build output and dot folders. @param {string} dir */
-function styleFiles(dir, depth = 0, found = /** @type {string[]} */ ([])) {
+/**
+ * Files under `dir` that `wanted(name, dir)` accepts, skipping dependencies, build output and dot folders.
+ * @param {string} dir @param {(name: string, dir: string) => boolean} wanted
+ */
+function projectFiles(dir, wanted, depth = 0, found = /** @type {string[]} */ ([])) {
   if (depth > 8) return found;
   let entries;
   try {
@@ -33,11 +36,14 @@ function styleFiles(dir, depth = 0, found = /** @type {string[]} */ ([])) {
     return found;
   }
   for (const e of entries) {
-    if (e.isDirectory() && !SKIP_DIRS.test(e.name)) styleFiles(join(dir, e.name), depth + 1, found);
-    else if (e.isFile() && (STYLE_FILE.test(e.name) || (PRIMITIVE_FILE.test(e.name) && basename(dir) === "ui"))) found.push(join(dir, e.name));
+    if (e.isDirectory() && !SKIP_DIRS.test(e.name)) projectFiles(join(dir, e.name), wanted, depth + 1, found);
+    else if (e.isFile() && wanted(e.name, dir)) found.push(join(dir, e.name));
   }
   return found;
 }
+
+/** Stylesheets, Tailwind configs and ui/ primitives. @param {string} name @param {string} dir */
+const isStyleFile = (name, dir) => STYLE_FILE.test(name) || (PRIMITIVE_FILE.test(name) && basename(dir) === "ui");
 
 /** Colour names a Tailwind config's `colors: { ... }` block declares (rough: every key inside the block). @param {string} text */
 function configColors(text) {
@@ -82,7 +88,7 @@ export function designSystem(cwd) {
   let tailwind = false;
   /** @type {Record<string, string>} */
   const primitives = {};
-  const found = styleFiles(cwd);
+  const found = projectFiles(cwd, isStyleFile);
   for (const file of found) {
     const element = PRIMITIVE_FILE.exec(basename(file))?.[1].toLowerCase();
     if (element) primitives[element] ??= relative(cwd, file);
@@ -115,3 +121,43 @@ export function designSystem(cwd) {
 
 /** Up to three names for a message, as " (`--primary`, `--muted`, `--border`)", or "" when there are none. @param {string[]} names */
 export const examples = (names) => (names.length ? ` (${names.slice(0, 3).map((n) => `\`${n}\``).join(", ")})` : "");
+
+/** @type {Map<string, { exact: Set<string>, tails: Set<string> }>} */
+const rendererCache = new Map();
+const IMPORT_SPEC = /\bfrom\s+["']([^"']+)["']|\bimport\(\s*["']([^"']+)["']/g;
+
+/**
+ * Modules that a file importing a renderer (`renderer` matches its package) imports in turn: the markup a Satori,
+ * email or PDF entry point renders, kept in a file of its own. Relative imports are resolved; aliased ones
+ * (`@/components/og-card`) are kept as path tails. Read once per run.
+ * @param {string} cwd @param {RegExp} renderer
+ */
+function rendererModules(cwd, renderer) {
+  const known = rendererCache.get(cwd);
+  if (known) return known;
+  const modules = { exact: new Set(), tails: new Set() };
+  const quoted = new RegExp(`["'](?:${renderer.source.replace(/^\^/, "")})`);
+  for (const file of projectFiles(cwd, (name) => /\.[cm]?[jt]sx?$/.test(name))) {
+    const text = readFileSync(file, "utf8");
+    if (!quoted.test(text)) continue;
+    for (const m of text.matchAll(IMPORT_SPEC)) {
+      const spec = m[1] ?? m[2];
+      if (spec.startsWith(".")) modules.exact.add(relative(cwd, join(dirname(file), spec)));
+      else if (/^[@~#]\//.test(spec)) modules.tails.add(spec.slice(2));
+    }
+  }
+  rendererCache.set(cwd, modules);
+  return modules;
+}
+
+/**
+ * Whether `file` (from the project root) is markup a renderer entry point imports. @param {string} cwd
+ * @param {string} file @param {RegExp} renderer
+ */
+export function isRendererMarkup(cwd, file, renderer) {
+  const { exact, tails } = rendererModules(cwd, renderer);
+  const stem = file.replace(/\.[cm]?[jt]sx?$/, "").replace(/\/index$/, "");
+  if (exact.has(stem)) return true;
+  for (let i = stem.indexOf("/"); i >= 0; i = stem.indexOf("/", i + 1)) if (tails.has(stem.slice(i + 1))) return true;
+  return tails.has(stem);
+}

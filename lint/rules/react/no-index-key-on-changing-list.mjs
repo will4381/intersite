@@ -35,7 +35,8 @@ export const rule = defineRule({
   },
   createOnce(context) {
     return {
-      "JSXAttribute[name.name='key']"(node) {
+      JSXAttribute(node) {
+        if (node.name.name !== "key") return;
         const expression = node.value?.type === "JSXExpressionContainer" ? node.value.expression : undefined;
         if (!expression) return;
         // The nearest .map((item, index) => …) whose index the key reads.

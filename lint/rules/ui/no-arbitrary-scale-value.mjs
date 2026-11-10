@@ -1,8 +1,12 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { arbitrary, eachClass, eachStyleObject, keyName, literalValue, skipFile } from "./classes.mjs";
+import { mentions } from "../shared.mjs";
+import { arbitrary, eachClass, eachStyleObject, keyName, literalValue, report, skipFile } from "./classes.mjs";
 import { designSystem } from "./project.mjs";
+
+/** What a file must spell for this rule to have anything to report (see `mentions`). */
+const NEEDS = /-\[|zIndex/;
 
 // Padding, margin, gap and radius in absolute units, and any numeric z-index. Widths, heights and offsets are layout
 // and may take any value; em, %, calc() and var() are relative or tokenised.
@@ -23,21 +27,22 @@ export const rule = defineRule({
   },
   createOnce(context) {
     /** @param {any} node @param {string} value @param {"spacing" | "z"} messageId */
-    const report = (node, value, messageId) => context.report({ node, messageId, data: { value } });
+    const found = (node, value, messageId) => report(context, { node, messageId, data: { value } });
     return {
       before() {
         const { tailwind, stylesheets } = designSystem(context.cwd);
         if ((stylesheets && !tailwind) || skipFile(context, { primitives: true })) return false;
+        return mentions(context, NEEDS);
       },
       ...eachClass(/-\[/, (utility, word, node) => {
         const [prefix, value] = arbitrary(utility) ?? [];
-        if (prefix === "z" && /^-?\d+$/.test(value)) report(node, word, "z");
-        else if (prefix && SPACING.test(prefix) && ABSOLUTE.test(value)) report(node, word, "spacing");
+        if (prefix === "z" && /^-?\d+$/.test(value)) found(node, word, "z");
+        else if (prefix && SPACING.test(prefix) && ABSOLUTE.test(value)) found(node, word, "spacing");
       }),
-      ...eachStyleObject(context, (object) => {
+      ...eachStyleObject((object) => {
         for (const p of object.properties) {
           const value = keyName(p) === "zIndex" ? literalValue(p.value) : undefined;
-          if (value && Math.abs(Number(value)) >= 100) report(p.value, `zIndex: ${value}`, "z");
+          if (value && Math.abs(Number(value)) >= 100) found(p.value, `zIndex: ${value}`, "z");
         }
       }),
     };

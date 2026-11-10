@@ -1,8 +1,11 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { calleeName, constInit, resolveVariable, unwrap } from "../shared.mjs";
+import { calleeName, constInit, mentions, resolveVariable, unwrap } from "../shared.mjs";
 import { firstDynamic, pieces } from "./no-interpolated-sql.mjs";
+
+/** What a file must spell for this rule to have anything to report (see `mentions`). */
+const NEEDS = /exec|spawn/;
 
 // child_process functions that run their string through a shell, also as commonly promisified.
 const SHELL = /^(exec|execSync|execAsync|execPromise|execP|pExec)$/;
@@ -56,6 +59,7 @@ export const rule = defineRule({
   },
   createOnce(context) {
     return {
+      before: () => mentions(context, NEEDS),
       CallExpression(node) {
         const command = shellCommand(node, context.sourceCode);
         const parts = command && pieces(command, context.sourceCode);

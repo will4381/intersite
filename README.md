@@ -6,7 +6,7 @@ user sessions into tests nobody has to write.
 ## Quickstart
 
 ```bash
-npm i -D github:will4381/intersite#v1.0.0-beta.3 oxlint @oxlint/plugins
+npm i -D github:will4381/intersite#v1.0.0-beta.4 oxlint @oxlint/plugins
 ```
 
 ```bash
@@ -55,7 +55,7 @@ finding, exit code 0, 1 or 2.
 | `intersite lint [paths] [--write] [--rules]` | Lints; `--write` lowers the baseline; `--rules` lists what applies |
 | `intersite gate <name> [--base <ref>]` | Runs one gate against the diff |
 | `intersite collector` | Runs the local collector (SQLite file in `.intersite/`) |
-| `intersite replay [--id] [--tag] [--action] [--sample] [--mode] [--verbose] [--metrics-out] [--metrics-base]` | Replays recorded sessions against a local server |
+| `intersite replay [--id] [--tag] [--action] [--sample] [--mode] [--verbose] [--metrics-out] [--metrics-base] [--snapshot-out] [--snapshot-base] [--openapi]` | Replays recorded sessions against a local server |
 | `intersite actions` | Lists named user actions seen, with error counts |
 | `intersite audit` | Lists every value capture kept, per key, so personal data that slipped through is easy to spot |
 | `intersite pin <id>` | Keeps a recorded case from expiring |
@@ -117,6 +117,8 @@ that says what to do instead, and examples.
 - For one project: add it to `lint.custom` in `intersite.yml`.
 - For every project: add it to a file in [lint/packs/](lint/packs/) with a `pack`, `bad` and `good` examples. The
   test suite fails unless every `bad` example is reported and no `good` one is.
+- A rule can leave out kinds of file with `skip: [tests]`, `[generated]` or both, and skip files that cannot match
+  with `needs: '<regex the source must contain>'`.
 - When a selector cannot express it: `lint/rules/<id>.mjs`, listed in `lint/rules/index.mjs`.
 
 | Pack | Default | Catches |
@@ -188,7 +190,7 @@ Fastify, Next.js and browser-only (`wrapFetch`) forms are shown at the top of
   freely as long as the name stays.
 - **Replay modes:** `baseline` (same status and response shape as production; a server error production recorded
   fails while it still happens and passes once it is fixed), `twice` (a repeated write must not
-  error), `cross-tenant` (another account must be refused), `ui` (each named action's page loads cleanly in Chrome;
+  error), `cross-tenant` (another account must be refused, and its lists must not show records the session created), `ui` (each named action's page loads cleanly in Chrome;
   reads are clicked, and writes fill the form from the recorded body, submit it and must get the recorded status).
 - **Cheaper `ui` runs:** `npx playwright install chromium-headless-shell` makes `ui` use Chrome Headless Shell instead
   of full Chrome (about half the memory and a third of the browser CPU in our benchmark). Lightpanda
@@ -222,6 +224,28 @@ Have the server report counts in the standard `Server-Timing` header (`queries;d
 `intersite replay --seed 1 --metrics-out .intersite/metrics/main.json`, then on your branch, against the same local
 data, `intersite replay --metrics-base .intersite/metrics/main.json`. A request that now runs more queries fails,
 which is how an N+1 shows up before production.
+
+### Linting the API itself
+
+`intersite replay --mode contract` lints request and response bodies across the whole API for inconsistency: key
+casing, one field typed two ways, envelopes and list paging, error shapes, a status that disagrees with its body,
+values in disguise (`"true"`, float noise, dates as numbers), fields that must not leave the server, and route
+naming. Conventions are inferred from your own API (what 90% of it already does), never configured, so a finding
+reads `/created_at is snake_case; 212 of 214 response fields in this API are camelCase`. A deliberate exception goes
+in `replay.contractIgnore` with a reason.
+
+`intersite replay --mode contract --openapi openapi.json` does the same on a documented contract, with no server
+and no recorded traffic.
+
+### Checking that a data change changed only what it should
+
+Before a migration, backfill or refactor, run `intersite replay --seed 1 --snapshot-out .intersite/snapshot/before.json`
+against your local server and data. Apply the change, then run
+`intersite replay --snapshot-base .intersite/snapshot/before.json`. Every response whose status or values changed is
+one `FAIL snapshot` line with the JSON pointer and both values. IDs the session created, timestamps near now and
+request IDs are normalised, so two runs of unchanged code report nothing. Other fields that change on their own go in
+`replay.snapshotIgnore` (`[/updatedAt, /items/*/etag]`). The file holds response bodies from your local server, so
+keep it under the git-ignored `.intersite/`.
 
 ### Checking a migration before it ships
 

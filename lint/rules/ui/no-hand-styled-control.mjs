@@ -1,8 +1,8 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { walk } from "../shared.mjs";
-import { literalValue, skipFile, utilityOf } from "./classes.mjs";
+import { jsxAttribute, walk } from "../shared.mjs";
+import { literalValue, report, skipFile, utilityOf } from "./classes.mjs";
 import { designSystem } from "./project.mjs";
 
 const CONTROLS = new Set(["button", "input", "select", "textarea"]);
@@ -18,9 +18,6 @@ const LOOK = /** @type {[string, RegExp][]} */ ([
   ["type", /^(?:text-(?:xs|sm|base|lg|\d?xl)$|font-|leading-|tracking-)/],
 ]);
 const STATE = /(?:^|:)(?:hover|focus|focus-visible|active|disabled):/;
-
-/** The JSX attribute `name` on an opening element. @param {any} element @param {string} name */
-const attribute = (element, name) => element.attributes.find((/** @type {any} */ a) => a.type === "JSXAttribute" && a.name.name === name);
 
 /** How many parts of a control's look (padding, radius, surface, border, type, states) the class words set. @param {Set<string>} words */
 function lookParts(words) {
@@ -73,10 +70,10 @@ export const rule = defineRule({
       JSXOpeningElement(/** @type {any} */ node) {
         const element = node.name.type === "JSXIdentifier" ? node.name.name : "";
         const where = available[element];
-        if (!where || lookParts(classWords(attribute(node, "className"))) < 3) return;
-        if (element === "input" && NATIVE_INPUT.test(literalValue(attribute(node, "type")?.value) ?? "")) return;
+        if (!where || lookParts(classWords(jsxAttribute(node, "className"))) < 3) return;
+        if (element === "input" && NATIVE_INPUT.test(literalValue(jsxAttribute(node, "type")?.value) ?? "")) return;
         const component = element[0].toUpperCase() + element.slice(1);
-        context.report({ node, messageId: "found", data: { element, component, where } });
+        report(context, { node, messageId: "found", data: { element, component, where } });
       },
     };
   },

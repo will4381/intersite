@@ -2,6 +2,7 @@
 # (pack `next`). Same format as core.yml; `builtin` switches on rules oxlint already ships.
 rules:
   - id: no-secret-in-public-env
+    needs: 'PUBLIC_|VITE_|REACT_APP_|GATSBY_'
     pack: security
     selector: MemberExpression[computed=false][property.name=/^(NEXT_PUBLIC|VITE|EXPO_PUBLIC|REACT_APP|GATSBY|NUXT_PUBLIC|PUBLIC)_\w*(SECRET|PRIVATE_KEY|PASSWORD|PASSWD|SERVICE_ROLE|SERVICE_KEY|DATABASE_URL|ADMIN_(TOKEN|KEY)|(OPENAI|ANTHROPIC|GROQ|REPLICATE|OPENROUTER|RESEND|SENDGRID|MAILGUN|POSTMARK|ELEVENLABS|DEEPSEEK|MISTRAL|COHERE|PERPLEXITY|TWILIO|AIRTABLE|GITHUB)_\w*(KEY|TOKEN))/], MemberExpression[computed=true][property.value=/^(NEXT_PUBLIC|VITE|EXPO_PUBLIC|REACT_APP|GATSBY|NUXT_PUBLIC|PUBLIC)_\w*(SECRET|PRIVATE_KEY|PASSWORD|PASSWD|SERVICE_ROLE|SERVICE_KEY|DATABASE_URL|ADMIN_(TOKEN|KEY)|(OPENAI|ANTHROPIC|GROQ|REPLICATE|OPENROUTER|RESEND|SENDGRID|MAILGUN|POSTMARK|ELEVENLABS|DEEPSEEK|MISTRAL|COHERE|PERPLEXITY|TWILIO|AIRTABLE|GITHUB)_\w*(KEY|TOKEN))/], ObjectPattern > Property[key.name=/^(NEXT_PUBLIC|VITE|EXPO_PUBLIC|REACT_APP|GATSBY|NUXT_PUBLIC|PUBLIC)_\w*(SECRET|PRIVATE_KEY|PASSWORD|PASSWD|SERVICE_ROLE|SERVICE_KEY|DATABASE_URL|ADMIN_(TOKEN|KEY)|(OPENAI|ANTHROPIC|GROQ|REPLICATE|OPENROUTER|RESEND|SENDGRID|MAILGUN|POSTMARK|ELEVENLABS|DEEPSEEK|MISTRAL|COHERE|PERPLEXITY|TWILIO|AIRTABLE|GITHUB)_\w*(KEY|TOKEN))/]
     message: 'A variable with a public prefix (NEXT_PUBLIC_, VITE_, EXPO_PUBLIC_, PUBLIC_) is copied into the browser bundle, and this one''s name says it is a secret. Drop the prefix, read it only in server code (a route, server action or server function), and rotate it if it has shipped. Publishable, anon and public keys are fine.'
@@ -21,6 +22,7 @@ rules:
       - const verify = importSPKI(process.env.PUBLIC_KEY, 'RS256');
       - "const map = new mapboxgl.Map({ accessToken: process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN });"
   - id: no-disabled-tls-verification
+    needs: 'rejectUnauthorized|REJECT_UNAUTHORIZED|checkServerIdentity'
     pack: security
     selector: Property[key.name='rejectUnauthorized'][value.value=false], AssignmentExpression:matches([left.property.name='NODE_TLS_REJECT_UNAUTHORIZED'], [left.property.value='NODE_TLS_REJECT_UNAUTHORIZED']):matches([right.value='0'], [right.value=0]), Property:matches([key.name='NODE_TLS_REJECT_UNAUTHORIZED'], [key.value='NODE_TLS_REJECT_UNAUTHORIZED']):matches([value.value='0'], [value.value=0]), Property[key.name='checkServerIdentity'] > ArrowFunctionExpression.value[body.type='Identifier'][body.name='undefined'], Property[key.name='checkServerIdentity'] > :matches(ArrowFunctionExpression, FunctionExpression).value[body.type='BlockStatement'][body.body.length=0]
     message: "This turns off TLS certificate checks, so anyone on the network path can impersonate the server and read or change the traffic. Keep verification on; for a private or self-signed certificate pass its CA (`ssl: { ca }`, `new https.Agent({ ca })`)."

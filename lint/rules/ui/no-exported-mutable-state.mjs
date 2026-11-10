@@ -23,7 +23,8 @@ export const rule = defineRule({
       before() {
         if (isTestFile(context) || /\.(?:svelte|vue|astro)$/.test(context.filename)) return false;
       },
-      "ExportNamedDeclaration > VariableDeclaration"(/** @type {any} */ node) {
+      ExportNamedDeclaration({ declaration: node }) {
+        if (node?.type !== "VariableDeclaration") return;
         if (node.kind !== "const") context.report({ node, messageId: "found" });
         else for (const d of node.declarations) if (emptyCollection(d.init)) context.report({ node: d, messageId: "found" });
       },

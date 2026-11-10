@@ -4,6 +4,7 @@
 rules:
   # 0 of 2,236 interfaces in the tuning corpus carry an `I` prefix.
   - id: no-i-prefixed-interface
+    needs: '\bI[A-Z][a-z]'
     pack: naming
     # IPv4Address, IFrameProps, ICalEvent and IOSConfig are words, not prefixes.
     selector: ":matches(TSInterfaceDeclaration, TSTypeAliasDeclaration) > Identifier.id[name=/^I(?!Pv|Frame|Cal|Phone|Pad|Cloud|Mac|Pod)[A-Z][a-z]/]"

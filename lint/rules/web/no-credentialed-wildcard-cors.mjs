@@ -1,7 +1,10 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { calleeName, constInit, enclosingFunction, resolveVariable, unwrap } from "../shared.mjs";
+import { calleeName, constInit, enclosingFunction, mentions, resolveVariable, unwrap } from "../shared.mjs";
+
+/** What a file must spell for this rule to have anything to report (see `mentions`). */
+const NEEDS = /credentials/i;
 
 /** @param {any} property */
 const key = (property) => String(property.key?.name ?? property.key?.value ?? "").toLowerCase();
@@ -56,6 +59,7 @@ export const rule = defineRule({
   },
   createOnce(context) {
     return {
+      before: () => mentions(context, NEEDS),
       ObjectExpression(node) {
         /** @type {Map<string, any>} */
         const props = new Map();

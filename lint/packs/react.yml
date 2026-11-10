@@ -1,6 +1,7 @@
 # Rules for the react area. Same format as core.yml; `builtin` switches on rules oxlint already ships.
 rules:
   - id: no-client-created-in-render
+    needs: 'QueryClient|createContext'
     pack: react
     ext: tsx
     selector: ":matches(FunctionDeclaration[id.name=/^(?:[A-Z]|use[A-Z0-9])/], VariableDeclarator[id.name=/^(?:[A-Z]|use[A-Z0-9])/] > :function, VariableDeclarator[id.name=/^(?:[A-Z]|use[A-Z0-9])/] > CallExpression > :function, VariableDeclarator[id.name=/^(?:[A-Z]|use[A-Z0-9])/] > CallExpression > CallExpression > :function) :matches(NewExpression[callee.name='QueryClient'], CallExpression[callee.name='createContext'], CallExpression[callee.property.name='createContext']):not(CallExpression[callee.name=/^use(State|Memo|Ref)$/] *, CallExpression[callee.property.name=/^use(State|Memo|Ref)$/] *)"

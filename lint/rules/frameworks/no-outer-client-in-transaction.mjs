@@ -1,8 +1,11 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { isScriptFile, walk } from "../shared.mjs";
+import { isScriptFile, mentions, walk } from "../shared.mjs";
 import { memberBase } from "./syntax.mjs";
+
+/** What a file must spell for this rule to have anything to report (see `mentions`). */
+const NEEDS = /transaction/;
 
 export const id = "no-outer-client-in-transaction";
 export const pack = "orm";
@@ -18,7 +21,7 @@ export const rule = defineRule({
     return {
       // A test may use the outer client on purpose, to commit a racing write mid-transaction.
       before() {
-        return !isScriptFile(context);
+        return !isScriptFile(context) && mentions(context, NEEDS);
       },
       // `db.transaction(async (tx) => …)`, `prisma.$transaction(async (tx) => …)`, `knex.transaction(async (trx) => …)`
       CallExpression(node) {

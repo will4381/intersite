@@ -1,7 +1,9 @@
 // @ts-check
-import { basename, relative } from "node:path";
+import { basename } from "node:path";
 
 import { defineRule } from "@oxlint/plugins";
+
+import { filePath } from "../shared.mjs";
 
 /** A statement that only re-exports: `export * from './x'`, `export { a } from './x'`. @param {any} s */
 const isReExport = (s) => s.type === "ExportAllDeclaration" || (s.type === "ExportNamedDeclaration" && s.source && !s.declaration);
@@ -34,7 +36,7 @@ export const rule = defineRule({
   createOnce(context) {
     return {
       Program(node) {
-        if (BY_PATH.test(basename(context.filename)) || ROUTE_DIR.test(relative(context.cwd, context.filename))) return;
+        if (BY_PATH.test(basename(context.filename)) || ROUTE_DIR.test(filePath(context))) return;
         const body = node.body.filter((/** @type {any} */ s) => !(s.type === "ExpressionStatement" && s.directive));
         if (!body.length || !body.every((/** @type {any} */ s) => isReExport(s) || isImportExport(s)) || !body.some((/** @type {any} */ s) => s.type.startsWith("Export"))) return;
         const sources = new Set(body.filter((/** @type {any} */ s) => s.source).map((/** @type {any} */ s) => s.source.value));

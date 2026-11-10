@@ -25,8 +25,8 @@ export async function ensureLocalCollector(cwd) {
     return nothing;
   }
   if (!LOCAL.test(url.hostname) || !url.port) return nothing;
-  // Any answer means something is already listening there; only a refused connection means nothing is.
-  const up = await fetch(new URL("/health", url), { signal: AbortSignal.timeout(500) }).then(() => true, () => false);
+  // A slow answer still means a collector is there: only a refused connection means nothing is listening.
+  const up = await fetch(new URL("/health", url), { signal: AbortSignal.timeout(2000) }).then(() => true, (error) => error?.name === "TimeoutError");
   if (up) return nothing;
 
   const { startNodeCollector } = await import("../collector/node.mjs");

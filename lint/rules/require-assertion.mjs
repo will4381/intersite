@@ -1,9 +1,14 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
+import { mentions, perFile } from "./shared.mjs";
+
 const assertionName = /^(expect|assert|should)/i;
 
 /** Modifiers that still declare a test. Anything else on `test.` is a hook, a group or a skip (`test.beforeEach`, `test.describe`). */
+/** Whether the file names `it` or `test`, as every test call does (modifiers and `.each` included). */
+export const hasTestCalls = perFile((context) => mentions(context, /\b(?:it|test)\b/));
+
 const modifiers = new Set(["only", "concurrent", "sequential", "serial", "fails", "fail", "failing"]);
 
 /**
@@ -109,6 +114,7 @@ export const rule = defineRule({
         pending = [];
         functions = [];
         graph = new Map();
+        return hasTestCalls(context);
       },
       ":function"(node) {
         functions.push(functionName(node));

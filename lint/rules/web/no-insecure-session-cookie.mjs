@@ -1,8 +1,11 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { calleeName, unwrap } from "../shared.mjs";
+import { calleeName, mentions, unwrap } from "../shared.mjs";
 import { pieces } from "./no-interpolated-sql.mjs";
+
+/** What a file must spell for this rule to have anything to report (see `mentions`). */
+const NEEDS = /ookie/i;
 
 // A cookie that carries a session or credential, by its name; CSRF tokens are meant to be read by the page.
 const SESSION = /(^|[-_.])(session|sess|sid|token|jwt|auth|access|refresh)([-_.]|$)|(session|token|auth)$/i;
@@ -73,6 +76,7 @@ export const rule = defineRule({
   },
   createOnce(context) {
     return {
+      before: () => mentions(context, NEEDS),
       CallExpression(node) {
         const set = cookieSet(node);
         if (set) {

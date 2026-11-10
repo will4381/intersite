@@ -78,6 +78,10 @@ const defaults = {
     modes: ["baseline"],
     sample: 20,
     shiftDates: true,
+    /** @type {string[]} */
+    snapshotIgnore: [],
+    /** @type {{ route: string, pointer?: string, check?: string, why: string }[]} */
+    contractIgnore: [],
   },
 };
 

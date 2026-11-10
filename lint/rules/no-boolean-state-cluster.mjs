@@ -1,9 +1,7 @@
 // @ts-check
-import { relative } from "node:path";
-
 import { defineRule } from "@oxlint/plugins";
 
-import { enclosingFunction, inTestPaths } from "./shared.mjs";
+import { enclosingFunction, filePath, inTestPaths } from "./shared.mjs";
 
 /** A step or outcome of one operation: `isLoading`, `saving`, `hasLoaded`, `submitError`, `serverPreviewFailed`. */
 const phaseWords =
@@ -61,7 +59,7 @@ export const rule = defineRule({
       // Test files build these clusters on purpose, as mocks of query results.
       before() {
         owners = new Map();
-        return !inTestPaths(context) && !testHelper.test(relative(context.cwd, context.filename));
+        return !inTestPaths(context) && !testHelper.test(filePath(context));
       },
       VariableDeclarator(node) {
         if (isBooleanState(node.init) && node.id.type === "ArrayPattern" && node.id.elements[0]?.type === "Identifier") {

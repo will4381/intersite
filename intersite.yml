@@ -2,6 +2,7 @@
 project: intersite
 
 gates:
+  testCmd: npm test
   acknowledged:
     - { gate: new-deps, target: yaml, why: "parses intersite.yml and lint/rules.yml; Node has no YAML parser and a hand-written one would be a bug farm" }
     - { gate: new-deps, target: playwright-core, why: "optional peer that drives the installed Chrome for the ui replay mode; a dev dependency here only so that mode is tested" }

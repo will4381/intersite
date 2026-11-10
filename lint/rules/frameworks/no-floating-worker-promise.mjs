@@ -37,7 +37,7 @@ export const rule = defineRule({
     let declared;
     /** @param {string} name @param {boolean} isAsync */
     const declare = (name, isAsync) => declared.set(name, (declared.get(name) ?? true) && isAsync);
-    /** @type {{ node: any, text: string, local?: string }[]} statements that start I/O, or call `local` if it is async */
+    /** @type {{ node: any, call: any, local?: string }[]} statements that start I/O, or call `local` if it is async */
     let candidates;
     return {
       before() {
@@ -67,15 +67,18 @@ export const rule = defineRule({
         // Durable Object storage writes are held by the output gate until they land, so they need no await.
         if (methods.includes("storage") || methods.includes("waitUntil")) return;
         const root = chainRoot(call);
-        const text = context.sourceCode.getText(call).split("\n")[0].slice(0, 60);
-        if ((root?.type === "Identifier" && root.name === "fetch") || (envRoot(call) && methods.some((m) => BINDING_IO.test(m)))) return candidates.push({ node, text });
+        if ((root?.type === "Identifier" && root.name === "fetch") || (envRoot(call) && methods.some((m) => BINDING_IO.test(m)))) return candidates.push({ node, call });
         // A call to an async function or method of this file: `logEvent(env, e)`, `this.flush()`.
         const callee = call.callee;
         const local = callee.type === "Identifier" ? callee.name : callee.type === "MemberExpression" && callee.object.type === "ThisExpression" ? `this.${callee.property.name}` : undefined;
-        if (local) candidates.push({ node, text, local });
+        if (local) candidates.push({ node, call, local });
       },
       "Program:exit"() {
-        for (const c of candidates) if (!c.local || declared.get(c.local)) context.report({ node: c.node, messageId: "floating", data: { call: c.text } });
+        for (const c of candidates) {
+          if (c.local && !declared.get(c.local)) continue;
+          const call = context.sourceCode.getText(c.call).split("\n")[0].slice(0, 60);
+          context.report({ node: c.node, messageId: "floating", data: { call } });
+        }
       },
     };
   },

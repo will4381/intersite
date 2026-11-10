@@ -1,8 +1,11 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { enclosingFunction, walk } from "../shared.mjs";
+import { enclosingFunction, mentions, walk } from "../shared.mjs";
 import { isHookCall } from "./hooks.mjs";
+
+/** What a file must spell for this rule to have anything to report (see `mentions`). */
+const NEEDS = /useMemo|useCallback/;
 
 /**
  * A value as cheap to compute as to look up, with no identity to keep: a primitive literal, a name, a property
@@ -45,6 +48,7 @@ export const rule = defineRule({
   },
   createOnce(context) {
     return {
+      before: () => mentions(context, NEEDS),
       CallExpression(node) {
         const [callback, deps] = node.arguments;
         if (!callback?.type.endsWith("FunctionExpression") || deps?.type !== "ArrayExpression") return;

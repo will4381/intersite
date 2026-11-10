@@ -1,7 +1,7 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { isAssertion, isTestCall } from "./require-assertion.mjs";
+import { hasTestCalls, isAssertion, isTestCall } from "./require-assertion.mjs";
 
 /**
  * `toHaveBeenCalledWith`, `toHaveBeenCalledOnce`, `toHaveReturnedWith`, `fn.mock.calls`, node:test `fn.mock.callCount()`,
@@ -30,6 +30,7 @@ export const rule = defineRule({
       before() {
         tests = [];
         inside = [];
+        return hasTestCalls(context);
       },
       CallExpression(node) {
         if (isTestCall(node.callee) && node.arguments.some((/** @type {any} */ a) => a.type.endsWith("FunctionExpression"))) {

@@ -2,6 +2,7 @@
 # switches on rules oxlint already ships, with oxlint's default options. Code rules live in lint/rules/structure/.
 rules:
   - id: no-optional-chain-on-known-value
+    needs: '\?\.'
     pack: slop
     selector: MemberExpression[optional=true] > :matches(NewExpression, ArrayExpression, ObjectExpression, TemplateLiteral, Literal, ThisExpression, TSNonNullExpression).object, CallExpression[optional=true] > :matches(TSNonNullExpression, ArrowFunctionExpression, FunctionExpression).callee
     message: "This `?.` guards a value that cannot be null or undefined (just constructed, a literal, `this`, or asserted with `!`), so it tells readers to expect a missing value that never comes. Use `.` instead."

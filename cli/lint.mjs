@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { loadConfig } from "../shared/config.mjs";
-import { builtinRules, customRules, packageRules } from "../lint/plugin.mjs";
+import { builtinRules, declaredRule, packageRules } from "../lint/catalog.mjs";
 import { runSwiftlint, swiftFiles, swiftRules } from "../lint/swift/swiftlint.mjs";
 
 /** @typedef {Record<string, Record<string, number>>} Baseline */
@@ -72,15 +72,17 @@ export default async function lint(argv, { cwd, quiet = false }) {
   let config;
   try {
     config = loadConfig(cwd).lint;
+    // The plugin builds these again inside oxlint; a malformed one is reported here in one line instead.
+    for (const r of config.custom) declaredRule(r);
   } catch (error) {
     console.error(`intersite lint: ${/** @type {Error} */ (error).message}`);
     return 2;
   }
 
-  const { rules, bareOn, swift } = ruleSet(config, cwd);
+  const { rules, bareOn, swift } = ruleSet(config);
   if (flag === "--rules") {
     console.log(`slop no-bare-suppression ${bareOn ? "on" : "off"}`);
-    printRules(cwd, rules);
+    printRules(config.custom, rules);
     for (const r of swiftRules) console.log(`swift swift/${r.id} ${swift.includes(r) ? "on" : "off"}`);
     return 0;
   }
@@ -88,7 +90,7 @@ export default async function lint(argv, { cwd, quiet = false }) {
   // A Swift-only project has no oxlint and needs none: its Swift is linted and the JavaScript side is empty.
   const oxlint = findOxlint(cwd) ?? join(cwd, "node_modules/.bin/oxlint");
   const javascript = existsSync(oxlint)
-    ? writeOxlintConfig(cwd, join(cwd, config.extends), oxlint, rules).then((configFile) => runOxlint(cwd, oxlint, configFile, paths), (/** @type {Error} */ error) => {
+    ? writeOxlintConfig(cwd, join(cwd, config.extends), oxlint, rules).then((configs) => runOxlint(cwd, oxlint, configs, paths), (/** @type {Error} */ error) => {
       console.error(`intersite lint: ${error.message}`);
       return undefined;
     })
@@ -159,13 +161,12 @@ export default async function lint(argv, { cwd, quiet = false }) {
 /**
  * The oxlint rule levels the configured packs, custom rules and overrides switch on, and whether the bare-suppression check runs.
  * @param {ReturnType<typeof loadConfig>["lint"]} config
- * @param {string} cwd
  */
-function ruleSet(config, cwd) {
+function ruleSet(config) {
   /** @type {Record<string, string>} */
   const rules = {};
   for (const r of packageRules) if (r.pack && config.packs.includes(r.pack)) rules[`intersite/${r.id}`] = "error";
-  for (const r of customRules(cwd)) rules[`intersite/${r.id}`] = "error";
+  for (const r of config.custom) rules[`intersite/${r.id}`] = "error";
   for (const b of builtinRules) if (config.packs.includes(b.pack)) rules[b.rule] = "error";
   // An override names an intersite rule by its bare id, or a built-in rule by oxlint's full name.
   for (const [id, level] of Object.entries(config.rules)) rules[id.includes("/") ? id : `intersite/${id}`] = level;
@@ -198,11 +199,11 @@ async function lintSwift(cwd, rules, paths) {
 
 /**
  * Prints every package, custom and built-in rule as `<pack> <rule> on|off` for `--rules`.
- * @param {string} cwd
+ * @param {{ id: string }[]} custom the project's `lint.custom` rules
  * @param {Record<string, string>} rules
  */
-function printRules(cwd, rules) {
-  for (const r of [...packageRules, ...customRules(cwd).map((c) => ({ ...c, pack: "custom" }))]) {
+function printRules(custom, rules) {
+  for (const r of [...packageRules, ...custom.map((c) => ({ ...c, pack: "custom" }))]) {
     console.log(`${r.pack} ${r.id} ${(rules[`intersite/${r.id}`] ?? "off") === "off" ? "off" : "on"}`);
   }
   for (const b of builtinRules) console.log(`${b.pack} ${b.rule} ${(rules[b.rule] ?? "off") === "off" ? "off" : "on"}`);
@@ -245,7 +246,8 @@ async function ownSettings(oxlint, file) {
 }
 
 /**
- * Writes the generated oxlint config into node_modules/.cache/intersite and returns its path.
+ * Writes the generated oxlint config into node_modules/.cache/intersite and returns its path, with a second one for
+ * listing files: the same minus intersite's plugin, which only lints and would be loaded for nothing.
  * @param {string} cwd
  * @param {string} ownConfig the project's own oxlint config
  * @param {string} oxlint
@@ -254,6 +256,7 @@ async function ownSettings(oxlint, file) {
 async function writeOxlintConfig(cwd, ownConfig, oxlint, rules) {
   const cacheDir = join(cwd, "node_modules/.cache/intersite");
   const configFile = join(cacheDir, "oxlintrc.json");
+  const filesConfig = join(cacheDir, "oxlintrc-files.json");
   mkdirSync(cacheDir, { recursive: true });
   // Naming plugins replaces oxlint's default set, so start from the project's own list, or the defaults.
   /** @type {string[]} */
@@ -267,34 +270,28 @@ async function writeOxlintConfig(cwd, ownConfig, oxlint, rules) {
       if (added.includes(name.split("/")[0]) && r.category === "correctness" && !(name in rules)) rules[name] = "off";
     }
   }
-  writeFileSync(
-    configFile,
-    JSON.stringify({
-      ...(existsSync(ownConfig) && { extends: [ownConfig] }),
-      jsPlugins: [fileURLToPath(new URL("../lint/plugin.mjs", import.meta.url))],
-      // A built-in rule only runs when its plugin is on; `eslint` rules need none.
-      plugins: [...ownPlugins, ...added],
-      rules,
-    }),
-  );
-  return configFile;
+  // A built-in rule only runs when its plugin is on; `eslint` rules need none.
+  const settings = { ...(existsSync(ownConfig) && { extends: [ownConfig] }), plugins: [...ownPlugins, ...added] };
+  writeFileSync(configFile, JSON.stringify({ ...settings, jsPlugins: [fileURLToPath(new URL("../lint/plugin.mjs", import.meta.url))], rules }));
+  writeFileSync(filesConfig, JSON.stringify({ ...settings, rules: Object.fromEntries(Object.entries(rules).filter(([id]) => !id.startsWith("intersite/"))) }));
+  return { configFile, filesConfig };
 }
 
 /**
  * Runs oxlint for its JSON report and its file list; prints the error and returns undefined when the report is unusable.
  * @param {string} cwd
  * @param {string} oxlint
- * @param {string} configFile
+ * @param {{ configFile: string, filesConfig: string }} configs the config to lint with, and the one to list files with
  * @param {string[]} paths
  */
-async function runOxlint(cwd, oxlint, configFile, paths) {
+async function runOxlint(cwd, oxlint, { configFile, filesConfig }, paths) {
   // The JSON report has no file list, so a second oxlint run lists the files it lints (its own ignores applied).
   // A Swift-only project has nothing for oxlint, which is not an error.
   // oxlint lints node_modules unless a .gitignore says not to, and a fresh project may have no .gitignore.
-  const args = ["-c", configFile, "--no-error-on-unmatched-pattern", "--ignore-pattern=**/node_modules/**", ...(paths.length ? paths : ["."])];
+  const args = ["--no-error-on-unmatched-pattern", "--ignore-pattern=**/node_modules/**", ...(paths.length ? paths : ["."])];
   /** @param {string[]} extra */
   const oxlintRun = (extra) => exec(oxlint, [...extra, ...args], { cwd, maxBuffer: Infinity }).catch((/** @type {any} */ e) => e);
-  const [run, listed] = await Promise.all([oxlintRun(["-f", "json"]), oxlintRun(["--debug=files"])]);
+  const [run, listed] = await Promise.all([oxlintRun(["-c", configFile, "-f", "json"]), oxlintRun(["-c", filesConfig, "--debug=files"])]);
   /** @type {{ number_of_files: number, diagnostics: { message: string, code: string, filename: string, labels?: { span: { line: number, column: number } }[] }[] }} */
   let report;
   try {

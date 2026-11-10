@@ -1,8 +1,12 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { arbitrary, eachClass, eachStyleObject, keyName, literalValue, skipFile } from "./classes.mjs";
+import { mentions } from "../shared.mjs";
+import { arbitrary, eachClass, eachStyleObject, keyName, literalValue, report, skipFile } from "./classes.mjs";
 import { designSystem, examples } from "./project.mjs";
+
+/** What a file must spell for this rule to have anything to report (see `mentions`). */
+const NEEDS = /-\[|fontSize|lineHeight|letterSpacing|fontWeight|fontFamily/;
 
 // Absolute sizes: em and % scale with their parent, so `text-[0.62em]` inside a scaled demo is relative, not off-scale.
 const LENGTH = /^-?\d*\.?\d+(?:px|rem)?$/;
@@ -38,22 +42,23 @@ export const rule = defineRule({
   createOnce(context) {
     let tokens = "";
     /** @param {any} node @param {string} value */
-    const report = (node, value) => context.report({ node, messageId: "found", data: { value, tokens } });
+    const found = (node, value) => report(context, { node, messageId: "found", data: { value, tokens } });
     return {
       before() {
         const { tailwind, typeVars, stylesheets } = designSystem(context.cwd);
         if ((stylesheets && !tailwind && !typeVars.length) || skipFile(context, { primitives: true })) return false;
         tokens = examples(typeVars.filter((v) => v.startsWith("--")));
+        return mentions(context, NEEDS);
       },
       ...eachClass(/-\[/, (utility, word, node) => {
         const [prefix, value] = arbitrary(utility) ?? [];
-        if (prefix && CLASS_CHECKS[prefix]?.(value)) report(node, word);
+        if (prefix && CLASS_CHECKS[prefix]?.(value)) found(node, word);
       }),
-      ...eachStyleObject(context, (object) => {
+      ...eachStyleObject((object) => {
         for (const p of object.properties) {
           const key = keyName(p);
           const value = key ? literalValue(p.value) : undefined;
-          if (value !== undefined && STYLE_CHECKS[key ?? ""]?.(value)) report(p.value, `${key}: ${value}`);
+          if (value !== undefined && STYLE_CHECKS[key ?? ""]?.(value)) found(p.value, `${key}: ${value}`);
         }
       }),
     };
@@ -66,6 +71,7 @@ export const bad = [
   "export const Note = () => <p className=\"mt-2\" style={{ fontSize: '14px', fontFamily: 'Inter, sans-serif' }}>Saved</p>;",
   'export const heading = cva("text-[2.25rem] font-bold", { variants: {} });',
   "export const Label = () => <span className=\"text-[length:13px] font-['Inter']\">x</span>;",
+  'export const Lead = () => <p style={{ fontSize: "15px" }}>New</p>;',
   "export const Badge = () => <span className=\"px-2\" style={{ fontWeight: 600, lineHeight: '18px' }}>New</span>;",
 ];
 
@@ -76,5 +82,5 @@ export const good = [
   "export const Scaled = ({ size }: { size: number }) => <p className=\"m-0\" style={{ fontSize: size, lineHeight: 1.4 }}>x</p>;",
   'export const Quote = () => <p className="text-lg leading-[1.15]">x</p>;',
   'export const Fill = () => <span className="text-[length:var(--ui-font-size-sm)] leading-[var(--ui-label-line)]">x</span>;',
-  "export const OgTitle = () => <div style={{ display: 'flex', fontSize: 64, fontWeight: 700 }}>Lucra</div>;",
+  "import { ImageResponse } from \"next/og\";\nexport const OgTitle = () => <div style={{ display: 'flex', fontSize: 64, fontWeight: 700 }}>Lucra</div>;",
 ];

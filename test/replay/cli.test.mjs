@@ -1,6 +1,5 @@
 // @ts-check
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -8,9 +7,8 @@ import { join, relative } from "node:path";
 import { after, before, beforeEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { READ_TOKEN, notesSession, preexistingSession, recorded, startCollector, startTarget } from "./helpers.mjs";
+import { notesSession, preexistingSession, recorded, replayCli, startCollector, startTarget } from "./helpers.mjs";
 
-const bin = fileURLToPath(new URL("../../bin/intersite.mjs", import.meta.url));
 const adapterFile = fileURLToPath(new URL("./adapter.mjs", import.meta.url));
 
 /** @type {Awaited<ReturnType<typeof startTarget>>} */
@@ -41,10 +39,7 @@ beforeEach(() => {
  * @returns {Promise<{ code: number, stdout: string, stderr: string }>}
  */
 function cli(args, dir = cwd, env = {}) {
-  return new Promise((done) => {
-    execFile(process.execPath, [bin, "replay", ...args], { cwd: dir, env: { ...process.env, INTERSITE_READ_TOKEN: READ_TOKEN, ...env } }, (error, stdout, stderr) =>
-      done({ code: error ? Number(error.code) : 0, stdout, stderr }));
-  });
+  return replayCli(args, dir, env);
 }
 
 test("a healthy run prints one ok line with counts and the seed it picked, and marks passing sessions", async () => {

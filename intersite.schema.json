@@ -341,7 +341,8 @@
               "baseline",
               "twice",
               "cross-tenant",
-              "ui"
+              "ui",
+              "contract"
             ]
           },
           "default": [
@@ -375,6 +376,56 @@
         "browserUrl": {
           "type": "string",
           "description": "Chrome DevTools Protocol URL of a browser already running, for the `ui` mode to connect to instead of starting one (http://host:port or ws://...)."
+        },
+        "snapshotIgnore": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^/"
+          },
+          "default": [],
+          "description": "JSON pointers left out of --snapshot-base comparisons, for values that change on their own; `*` matches one segment (/updatedAt, /items/*/etag)."
+        },
+        "contractIgnore": {
+          "type": "array",
+          "default": [],
+          "description": "Deliberate exceptions to the contract replay mode; each silences the findings it matches and shows up in review.",
+          "items": {
+            "type": "object",
+            "required": [
+              "route",
+              "why"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "route": {
+                "type": "string",
+                "description": "Method and route template (GET /v1/orders/:id), or the template alone for every method."
+              },
+              "pointer": {
+                "type": "string",
+                "description": "JSON pointer of the finding (/data/created_at); omit to match every pointer."
+              },
+              "check": {
+                "enum": [
+                  "casing",
+                  "types",
+                  "envelope",
+                  "errors",
+                  "status",
+                  "values",
+                  "exposure",
+                  "size",
+                  "requests",
+                  "routes"
+                ]
+              },
+              "why": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
         }
       }
     }
@@ -436,6 +487,21 @@
         "ext": {
           "type": "string",
           "description": "File extension the `bad` and `good` examples are checked as; `ts` unless set (use `tsx` for JSX)."
+        },
+        "skip": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "tests",
+              "generated"
+            ]
+          },
+          "uniqueItems": true,
+          "description": "Kinds of file the rule leaves out: tests (tests, fixtures, stories, mocks, seeds) and generated (a generated/ folder, *.gen.* or *.generated.*, or a generated-file header)."
+        },
+        "needs": {
+          "type": "string",
+          "description": "Regular expression the file's source must match for the rule to run, checked before any tree work. It must match everything the selector can report."
         }
       },
       "anyOf": [

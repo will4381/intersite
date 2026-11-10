@@ -66,7 +66,13 @@ test("Ctrl-C while the test command runs stops it and removes the worktree", asy
   const [code] = await once(child, "exit");
   assert.equal(code, 130);
   // Gone, or a zombie waiting to be reaped: either way no longer running.
-  const state = spawnSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim();
+  const stateOf = () => spawnSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim();
+  // The signal is delivered after the CLI exits, so give the process a bounded moment to go.
+  let state = stateOf();
+  for (let tries = 0; tries < 100 && state !== "" && !state.startsWith("Z"); tries++) {
+    await new Promise((done) => setTimeout(done, 20));
+    state = stateOf();
+  }
   assert.ok(state === "" || state.startsWith("Z"), `the test command was left running (${state})`);
   assert.equal(r.worktrees(), 1);
 });

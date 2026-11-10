@@ -1,8 +1,7 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-/** The JSX attribute `name` on an opening element. @param {any} element @param {string} name */
-const attribute = (element, name) => element.attributes.find((/** @type {any} */ a) => a.type === "JSXAttribute" && a.name.name === name);
+import { jsxAttribute } from "../shared.mjs";
 
 /** `(e) => e.stopPropagation()`: a handler that only keeps the event from reaching a parent is not an action. @param {any} attr */
 function onlyStopsEvent(attr) {
@@ -28,11 +27,11 @@ export const rule = defineRule({
       JSXOpeningElement(/** @type {any} */ node) {
         const tag = node.name.type === "JSXIdentifier" ? node.name.name : "";
         // `onSubmit` on a component (`<BrandTagForm onSubmit>`) is a callback prop: its own <form> takes the name.
-        const handler = attribute(node, "onClick");
+        const handler = jsxAttribute(node, "onClick");
         if (!/^(?:button|form|Form)$/.test(tag) && (!handler || onlyStopsEvent(handler))) return;
         // A spread may pass the name through; a submit button is named by its form.
-        if (attribute(node, "data-intersite") || node.attributes.some((/** @type {any} */ a) => a.type === "JSXSpreadAttribute")) return;
-        if (attribute(node, "type")?.value?.value === "submit") return;
+        if (jsxAttribute(node, "data-intersite") || node.attributes.some((/** @type {any} */ a) => a.type === "JSXSpreadAttribute")) return;
+        if (jsxAttribute(node, "type")?.value?.value === "submit") return;
         context.report({ node, messageId: "found" });
       },
     };

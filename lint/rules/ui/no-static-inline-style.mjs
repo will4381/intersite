@@ -1,7 +1,7 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { eachStyleObject, keyName, literalValue, skipFile } from "./classes.mjs";
+import { eachStyleObject, keyName, literalValue, report, skipFile } from "./classes.mjs";
 import { designSystem } from "./project.mjs";
 
 export const id = "no-static-inline-style";
@@ -21,7 +21,7 @@ export const rule = defineRule({
         const { tailwind, colorVars, stylesheets } = designSystem(context.cwd);
         if ((stylesheets && !tailwind && !colorVars.length) || skipFile(context, { primitives: true })) return false;
       },
-      ...eachStyleObject(context, (object, attribute) => {
+      ...eachStyleObject((object, attribute) => {
         const props = object.properties;
         const fixed = props.every((/** @type {any} */ p) => {
           const key = keyName(p);
@@ -30,7 +30,7 @@ export const rule = defineRule({
         // A lone dimension (`width: 320`) is often a measured or library-required size; two or more fixed values is
         // styling. Components (`<SocialIcon style>`) may offer no other way in, so only DOM elements count.
         const element = attribute?.parent?.name;
-        if (props.length >= 2 && fixed && element?.type === "JSXIdentifier" && /^[a-z]/.test(element.name)) context.report({ node: object, messageId: "found" });
+        if (props.length >= 2 && fixed && element?.type === "JSXIdentifier" && /^[a-z]/.test(element.name)) report(context, { node: object, messageId: "found" });
       }),
     };
   },
@@ -39,6 +39,7 @@ export const rule = defineRule({
 export const bad = [
   "export const Error = () => <p className=\"error\" style={{ fontSize: '14px', marginBottom: '12px' }}>Failed</p>;",
   "export const Row = () => <div className=\"row\" style={{ display: 'flex', alignItems: 'center', gap: 8 }} />;",
+  'export const Row = () => <div style={{ display: "flex", gap: 8 }}>New</div>;',
   "export const Hint = () => <span className=\"hint\" style={{ opacity: 0.6, fontStyle: 'italic' } as React.CSSProperties}>x</span>;",
 ];
 
@@ -47,6 +48,6 @@ export const good = [
   "export const Tint = ({ hue }: { hue: string }) => <div className=\"tint\" style={{ '--tint': hue, opacity: 0.5 } as React.CSSProperties} />;",
   "export const Box = () => <div className=\"box\" style={{ width: 320 }} />;",
   "export const Icon = () => <div className=\"row\"><SocialIcon style={{ height: 48, width: 48 }} /></div>;",
-  "export const Og = () => <div style={{ display: 'flex', fontSize: 64 }}>Lucra</div>;",
+  "import { ImageResponse } from \"next/og\";\nexport const Og = () => <div style={{ display: 'flex', fontSize: 64 }}>Lucra</div>;",
   "export const Pos = ({ x, y }: { x: number; y: number }) => <div className=\"dot\" style={{ left: x, top: y }} />;",
 ];

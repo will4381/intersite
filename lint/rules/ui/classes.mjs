@@ -1,14 +1,13 @@
 // @ts-check
 // Shared reading for the ui rules: Tailwind class words in any string, `style` objects, and files that are exempt.
-import { relative } from "node:path";
-
-import { isTestFile, unwrap } from "../shared.mjs";
+import { filePath, isTestFile, perFile, unwrap } from "../shared.mjs";
+import { isRendererMarkup } from "./project.mjs";
 
 // A class word: utilities, variants and arbitrary values. Prose fails on punctuation or a leading capital-then-space.
 const CLASS_WORD = /^!?-?[a-z0-9@[][\w:[\]/.&>=%#()'",+*~^!@-]*$/;
 const VAR_CALL = /(?:var|env)\((?:[^()]|\([^()]*\))*\)/g;
 // Emails, Open Graph images and PDFs render without the app's stylesheet, so inline literals are the only option.
-const OWN_RENDERER = /^(?:next\/og|@vercel\/og|satori|@react-email\/|react-email|jsx-email|@react-pdf\/|mjml)/;
+const OWN_RENDERER = /^(?:next\/og|@vercel\/og|@cf-wasm\/og|workers-og|satori|@react-email\/|react-email|jsx-email|@react-pdf\/|mjml)/;
 const OWN_RENDERER_FILE = /(?:^|\/)(?:emails?|og)\/|(?:^|\/)(?:opengraph-image|twitter-image|apple-icon|icon)\.[jt]sx?$/;
 // Where the primitives live (shadcn's components/ui, a packages/ui kit): they define the look the tokens name.
 const PRIMITIVES = /(?:^|\/)(?:components\/ui|packages\/ui|shared\/ui|src\/ui|design-system)\//;
@@ -79,18 +78,12 @@ export const keyName = (p) => (p.type !== "Property" || p.computed && p.key.type
 
 /**
  * Visitors that call `check(object)` for every style object: a JSX `style={{ ... }}` and an object typed or checked as
- * `CSSProperties`. Only in files that also use `className`: a file styled purely inline is markup for a renderer with
- * no stylesheet (Satori, email, a PDF) imported from elsewhere, or a project with no class system to move to.
- * @param {any} context @param {(object: any, attribute?: any) => void} check `attribute` is the JSX `style` attribute, if any
+ * `CSSProperties`. Markup for a renderer with no stylesheet (Satori, email, a PDF) is left out by `skipFile`.
+ * @param {(object: any, attribute?: any) => void} check `attribute` is the JSX `style` attribute, if any
  */
-export function eachStyleObject(context, check) {
-  let classes = false;
+export function eachStyleObject(check) {
   return {
-    Program() {
-      classes = context.sourceCode.text.includes("className");
-    },
     JSXAttribute(/** @type {any} */ node) {
-      if (!classes) return;
       if (node.name?.name !== "style" || node.value?.type !== "JSXExpressionContainer") return;
       const object = unwrap(node.value.expression, CASTS);
       if (object?.type === "ObjectExpression") check(object, node);
@@ -98,22 +91,37 @@ export function eachStyleObject(context, check) {
     VariableDeclarator(/** @type {any} */ node) {
       const type = node.id.typeAnnotation?.typeAnnotation;
       const name = type?.typeName?.right?.name ?? type?.typeName?.name;
-      if (classes && name === "CSSProperties" && node.init?.type === "ObjectExpression") check(node.init);
+      if (name === "CSSProperties" && node.init?.type === "ObjectExpression") check(node.init);
     },
     TSSatisfiesExpression(/** @type {any} */ node) {
       const name = node.typeAnnotation?.typeName?.right?.name ?? node.typeAnnotation?.typeName?.name;
-      if (classes && name === "CSSProperties" && node.expression.type === "ObjectExpression") check(node.expression);
+      if (name === "CSSProperties" && node.expression.type === "ObjectExpression") check(node.expression);
     },
   };
 }
 
 /**
- * Whether the ui rules skip this file: tests and fixtures, and emails, OG images and PDFs (no stylesheet to use).
- * Optionally the primitives folder too. @param {any} context @param {{ primitives?: boolean }} [options]
+ * Whether the ui rules skip this file: tests and fixtures, and emails, OG images and PDFs (no stylesheet to use) by
+ * path or by a renderer import. Optionally the primitives folder too. A file rendered from elsewhere is left out at
+ * report time, by `report`. @param {any} context @param {{ primitives?: boolean }} [options]
  */
 export function skipFile(context, { primitives = false } = {}) {
-  if (isTestFile(context)) return true;
-  const file = relative(context.cwd, context.filename);
-  if (OWN_RENDERER_FILE.test(file) || (primitives && PRIMITIVES.test(file))) return true;
+  return (primitives && PRIMITIVES.test(filePath(context))) || noStylesheet(context);
+}
+
+/** Tests, and markup for a renderer with no stylesheet, by path or by a renderer import. */
+const noStylesheet = perFile((context) => {
+  if (isTestFile(context) || OWN_RENDERER_FILE.test(filePath(context))) return true;
   return context.sourceCode.ast.body.some((/** @type {any} */ s) => s.type === "ImportDeclaration" && OWN_RENDERER.test(s.source.value));
+});
+
+/**
+ * A file with no `className` that a renderer entry point imports: markup drawn without a stylesheet. Asked only when
+ * a finding is due, since answering reads the whole project once.
+ */
+const renderedElsewhere = perFile((context) => !context.sourceCode.text.includes("className") && isRendererMarkup(context.cwd, filePath(context), OWN_RENDERER));
+
+/** `context.report(descriptor)`, unless the file is markup a renderer draws. @param {any} context @param {any} descriptor */
+export function report(context, descriptor) {
+  if (!renderedElsewhere(context)) context.report(descriptor);
 }

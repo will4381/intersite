@@ -32,6 +32,7 @@ rules:
       - const owner = members.find((m) => m.role === 'owner');
       - const anyPaid = orders.some((order) => order.status === 'paid');
   - id: no-success-in-catch
+    needs: 'catch'
     pack: async
     selector: CatchClause > BlockStatement > ReturnStatement > ObjectExpression.argument > Property[key.name=/^(success|ok)$/][value.value=true], CatchClause > BlockStatement > :matches(ReturnStatement, ExpressionStatement) > CallExpression > ObjectExpression.arguments > Property[key.name=/^(success|ok)$/][value.value=true], CallExpression[callee.property.name='catch'] > :function > ObjectExpression.body > Property[key.name=/^(success|ok)$/][value.value=true]
     message: "This catch reports success for a failure, so callers carry on as if it worked. Return an error result ({ ok: false, error }), answer with an error status, or rethrow. When one known error really means success, check for it with an if inside the catch and rethrow the rest."
@@ -49,6 +50,7 @@ rules:
       - "function sync() { try { return { ok: true }; } catch (e) { throw e; } }"
       - "app.post('/x', async (req, res) => { try { await save(req.body); } catch (error) { res.status(500).json({ success: false }); } });"
   - id: no-throw-string
+    needs: 'throw|reject'
     pack: async
     selector: ThrowStatement > Literal.argument, ThrowStatement > TemplateLiteral.argument, ThrowStatement > BinaryExpression.argument[operator='+'], CallExpression[callee.object.name='Promise'][callee.property.name='reject'] > :matches(Literal, TemplateLiteral, BinaryExpression[operator='+']).arguments
     message: A thrown or rejected string has no stack trace, and catch blocks that read error.message get undefined. Use an Error instead, as in throw new Error('...') or Promise.reject(new Error('...')), or a subclass carrying a code.

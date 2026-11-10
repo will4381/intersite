@@ -25,11 +25,12 @@ export const rule = defineRule({
       before: () => !isTestFile(context),
       // Functions and exports only: callback parameters (`(a, b) => a - b`), loop variables, local temporaries and
       // module aliases (`const D = Prisma.Decimal`, `const s = z.string()`) are idiomatic.
-      "Program > ExportNamedDeclaration > VariableDeclaration > VariableDeclarator"(node) {
-        check(node.id, node.init?.type?.endsWith("FunctionExpression") ? "a function" : "an export");
-      },
-      "Program > VariableDeclaration > VariableDeclarator"(node) {
-        if (node.init?.type?.endsWith("FunctionExpression")) check(node.id, "a function");
+      Program(node) {
+        for (const s of node.body) {
+          const exported = s.type === "ExportNamedDeclaration" ? s.declaration : undefined;
+          if (exported?.type === "VariableDeclaration") for (const d of exported.declarations) check(d.id, d.init?.type?.endsWith("FunctionExpression") ? "a function" : "an export");
+          if (s.type === "VariableDeclaration") for (const d of s.declarations) if (d.init?.type?.endsWith("FunctionExpression")) check(d.id, "a function");
+        }
       },
       FunctionDeclaration(node) {
         check(node.id, "a function");

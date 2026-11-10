@@ -1,10 +1,11 @@
 // @ts-check
 import { UI_METHOD } from "../shared/case.mjs";
-import { shapeDiff, shapeOf } from "../shared/shape.mjs";
+import { idsOf, shapeDiff, shapeOf } from "../shared/shape.mjs";
 import { countersOf } from "./metrics.mjs";
+import { idMatcher, normalise } from "./snapshot.mjs";
 
 /** @typedef {import("../shared/case.mjs").Case} Case */
-/** @typedef {"baseline" | "twice" | "cross-tenant" | "ui"} Mode */
+/** @typedef {"baseline" | "twice" | "cross-tenant" | "ui" | "contract"} Mode */
 /**
  * The project's replay adapter (see CONTRACT.md "Replay adapter").
  * @typedef {object} Adapter
@@ -26,8 +27,18 @@ import { countersOf } from "./metrics.mjs";
  * @property {Record<string, number>} [counters] On a baseline step: the counters the server reported in `Server-Timing`.
  * @property {"presence"} [checked] On a `ui` write action that could not be filled from the recorded body: only its presence was checked.
  */
-/** @typedef {{ session: string, steps: Step[], skipped?: string }} SessionResult */
-/** @typedef {{ target: string, adapter: Adapter, pattern: RegExp, fetch: typeof fetch, startedAt: number | undefined }} Context */
+/**
+ * @typedef {{ session: string, steps: Step[], skipped?: string, snapshot?: import("./snapshot.mjs").Snapshot, live?: Record<string, import("./contract.mjs").Live> }} SessionResult
+ * `snapshot`, with the `snapshots` option: each baseline case's status and body, normalised. `live`, in the `contract`
+ * mode: what the server answered each case, for the contract lint.
+ */
+/** @typedef {{ target: string, adapter: Adapter, pattern: RegExp, fetch: typeof fetch, startedAt: number | undefined, snapshots: boolean, contract: boolean }} Context */
+/**
+ * One pass over a session in one mode. `known` holds every ID sent or answered so far; `mine` the IDs the owner's
+ * writes produced, `theirs` those another account's writes produced.
+ * @typedef {{ mode: Mode, steps: Step[], send: ReturnType<typeof sender>, auth: ReturnType<typeof signer>, pattern: RegExp,
+ *   known: Set<string>, mine: Set<string>, theirs: Set<string> }} Pass
+ */
 
 const DAY = 86_400_000;
 const CLIP = 500;
@@ -42,15 +53,17 @@ export function answers(url) {
  * `concurrency` sessions run at once, except when the adapter has `reset` (shared state), when they run one at a time.
  * @param {{ sessions: { session: string, cases: Case[] }[], target: string, adapter: Adapter, modes: Mode[], idPattern: string,
  *   fetch?: typeof fetch, shiftDates?: boolean, now?: number, concurrency?: number, uiTarget?: string, headed?: boolean, cwd?: string,
- *   browser?: string, browserUrl?: string }} options
+ *   browser?: string, browserUrl?: string, snapshots?: boolean }} options
  * @returns {Promise<SessionResult[]>}
  */
 export async function replaySessions({
   sessions, target, adapter, modes, idPattern, fetch = globalThis.fetch,
-  shiftDates = true, now = Date.now(), concurrency = 1, uiTarget = "", headed = false, cwd = process.cwd(), browser, browserUrl,
+  shiftDates = true, now = Date.now(), concurrency = 1, uiTarget = "", headed = false, cwd = process.cwd(), browser, browserUrl, snapshots = false,
 }) {
   /** @type {Context} */
-  const context = { target: target.replace(/\/$/, ""), adapter, pattern: new RegExp(idPattern), fetch, startedAt: shiftDates ? now : undefined };
+  const context = {
+    target: target.replace(/\/$/, ""), adapter, pattern: new RegExp(idPattern), fetch, startedAt: shiftDates ? now : undefined, snapshots, contract: modes.includes("contract"),
+  };
   const ui = modes.includes("ui") ? await (await import("./ui.mjs")).openBrowser({ uiTarget, headed, cwd, browser, browserUrl }) : undefined;
   try {
     /** @type {SessionResult[]} */
@@ -76,8 +89,9 @@ async function replaySession({ session, cases }, modes, context, ui) {
   const api = ordered.filter((item) => item.request.method !== UI_METHOD);
   /** @type {SessionResult} */
   const result = { session, steps: [] };
-  for (const mode of modes) {
-    const skipped = mode === "ui" && ui ? await ui.replay(ordered, result.steps, context) : await replayOnce(mode, api, result.steps, context);
+  // With baseline in the run, the contract lint reads the baseline answers instead of sending everything again.
+  for (const mode of modes.filter((item) => item !== "contract" || !modes.includes("baseline"))) {
+    const skipped = mode === "ui" && ui ? await ui.replay(ordered, result.steps, context) : await replayOnce(mode, api, result, context);
     if (skipped && !result.skipped) result.skipped = skipped;
     const last = api.at(-1);
     if (mode !== "baseline" || !last || skipped) continue;
@@ -94,24 +108,117 @@ async function replaySession({ session, cases }, modes, context, ui) {
 
 /**
  * One pass over a session in one API mode. Returns the skip reason when an ID could not be resolved.
- * @param {Mode} mode @param {Case[]} cases @param {Step[]} steps @param {Context} context
+ * @param {Mode} mode @param {Case[]} cases @param {SessionResult} result @param {Context} context
  */
-async function replayOnce(mode, cases, steps, context) {
-  const { target, adapter, pattern, fetch } = context;
+async function replayOnce(mode, cases, result, context) {
+  const { target, adapter, pattern } = context;
   await adapter.reset?.({ target });
   /** @type {Map<string, string>} recorded ID -> replayed ID */
   const ids = new Map();
+  /** @type {Pass} */
+  const pass = { mode, steps: result.steps, send: sender(context), auth: signer(context), pattern, known: new Set(), mine: new Set(), theirs: new Set() };
+  const snapshot = context.snapshots && mode === "baseline" ? { created: pass.mine, numbers: new Map(), from: Date.now() } : undefined;
+
+  for (const [index, item] of cases.entries()) {
+    const { method } = item.request;
+    const kind = item.actor.kind;
+    const prepared = await prepare(item, ids, context);
+    if (prepared.skip !== undefined) {
+      for (const rest of cases.slice(index)) if (counts(mode, rest, pattern)) record(pass, rest, "skipped", prepared.skip);
+      return prepared.skip;
+    }
+    const { request } = prepared;
+    mapIds(request, pattern, (id) => (pass.known.add(id), id));
+
+    // Another account's request goes first, so a leaky DELETE is not hidden by the owner's DELETE.
+    if (mode === "cross-tenant") await asOtherAccount(item, request, pass);
+
+    const headers = await pass.auth(kind, false);
+    const first = await pass.send(request, item, headers);
+    learnIds(item, first.json, ids);
+    if (context.contract && (mode === "baseline" || mode === "contract")) {
+      (result.live ??= {})[item.id] = { status: first.status, json: first.json, text: first.text, contentType: first.contentType, sent: Object.values(headers) };
+    }
+    const foreign = noteIds(first.json, method, pass, pass.mine).find((id) => pass.theirs.has(id));
+    if (foreign) record(pass, item, "failed", `this session's response contains ${foreign}, created by another account`, first.exchange);
+
+    if (mode === "baseline") {
+      const reason = baselineReason(item, first);
+      record(pass, item, reason ? "failed" : "passed", reason, first.exchange);
+      if (Object.keys(first.counters).length) /** @type {Step} */ (pass.steps.at(-1)).counters = first.counters;
+      if (snapshot) (result.snapshot ??= {})[item.id] = { status: first.status, body: normalise(first.json ?? null, snapshot) };
+    }
+    if (mode === "twice" && method !== "GET") {
+      const second = await pass.send(request, item, await pass.auth(kind, false));
+      if (second.status >= 500 || second.status === 0) record(pass, item, "failed", `second send got ${second.status}, first got ${first.status}`, second.exchange);
+      else record(pass, item, "passed");
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The cross-tenant checks of one case, sent as a user of another account. A request that names an ID must be refused.
+ * A GET that names none (a list, search or dashboard) must not answer with an ID this session created earlier: shared
+ * records (a catalogue, plans) appear for both accounts, so only IDs the owner's own writes produced count.
+ * @param {Case} item @param {Case["request"]} request @param {Pass} pass
+ */
+async function asOtherAccount(item, request, pass) {
+  const { method } = item.request;
+  if (counts("cross-tenant", item, pass.pattern)) {
+    const { status, json, exchange } = await pass.send(request, item, await pass.auth(item.actor.kind, true));
+    noteIds(json, method, pass, pass.theirs);
+    if ([401, 403, 404].includes(status)) record(pass, item, "passed");
+    else record(pass, item, "failed", `another account got ${status}, expected 401, 403 or 404`, exchange);
+    return;
+  }
+  if (item.actor.kind === "anonymous" || method !== "GET" || !pass.mine.size) return;
+  const { json, exchange } = await pass.send(request, item, await pass.auth(item.actor.kind, true));
+  const leaked = [...new Set(JSON.stringify(json ?? null).match(/** @type {RegExp} */ (idMatcher(pass.mine))))];
+  if (!leaked.length) return record(pass, item, "passed");
+  const more = leaked.length > 1 ? ` (and ${leaked.length - 1} more)` : "";
+  record(pass, item, "failed", `another account's response contains ${leaked[0]}${more}, created by this session`, exchange);
+}
+
+/**
+ * Adds each ID in an answer to `pass.known`; on a write, each one not known before also goes to `created` (the IDs
+ * the write produced). Returns every ID in the answer.
+ * @param {unknown} json @param {string} method @param {Pass} pass @param {Set<string>} created
+ */
+function noteIds(json, method, pass, created) {
+  const found = Object.values(idsOf(json, pass.pattern));
+  for (const id of found) {
+    if (!pass.known.has(id) && method !== "GET") created.add(id);
+    pass.known.add(id);
+  }
+  return found;
+}
+
+/** @param {Pass} pass @param {Case} which @param {Step["result"]} result @param {string} [reason] @param {{ sent: string, got: string }} [exchange] */
+function record(pass, which, result, reason, exchange) {
+  pass.steps.push({
+    mode: pass.mode, caseId: which.id, method: which.request.method, route: which.request.route, result,
+    ...(reason && { reason }), ...(result === "failed" && exchange),
+  });
+}
+
+/** Headers for each actor kind, signed in once per pass. @param {Context} context */
+function signer({ adapter, target }) {
   /** @type {Map<string, Record<string, string>>} */
   const signedIn = new Map();
   /** @param {string} kind @param {boolean} other */
-  const auth = async (kind, other) => {
+  return async (kind, other) => {
     if (kind === "anonymous") return {};
     const key = `${kind}\0${other}`;
     if (!signedIn.has(key)) signedIn.set(key, await adapter.signIn(kind, { target, other }));
     return /** @type {Record<string, string>} */ (signedIn.get(key));
   };
+}
+
+/** Sends a prepared request and reads the answer. @param {Context} context */
+function sender({ target, fetch }) {
   /** @param {Case["request"]} request @param {Case} item @param {Record<string, string>} headers */
-  const send = async (request, item, headers) => {
+  return async (request, item, headers) => {
     const url = new URL(target + request.path);
     for (const [key, value] of Object.entries(request.query)) url.searchParams.set(key, value);
     const hasBody = request.body !== undefined && request.body !== null && !["GET", "HEAD"].includes(request.method);
@@ -122,50 +229,16 @@ async function replayOnce(mode, cases, steps, context) {
     const response = await fetch(url, { method: request.method, headers: headersSent, body }).catch((/** @type {Error} */ error) => error);
     if (response instanceof Error) {
       const cause = /** @type {{ code?: string }} */ (response.cause)?.code ?? response.message;
-      return { status: 0, json: undefined, exchange: { sent, got: `no answer (${cause})` }, counters: {} };
+      return { status: 0, json: undefined, text: "", contentType: "", exchange: { sent, got: `no answer (${cause})` }, counters: {} };
     }
     const text = await response.text();
     let json;
     try { json = JSON.parse(text); } catch { json = undefined; }
-    return { status: response.status, json, exchange: { sent, got: clip(`${response.status} ${text}`) }, counters: countersOf(response.headers.get("server-timing")) };
+    return {
+      status: response.status, json, text, contentType: response.headers.get("content-type") ?? "",
+      exchange: { sent, got: clip(`${response.status} ${text}`) }, counters: countersOf(response.headers.get("server-timing")),
+    };
   };
-
-  for (const [index, item] of cases.entries()) {
-    const { method } = item.request;
-    const kind = item.actor.kind;
-    /** @param {Case} which @param {Step["result"]} result @param {string} [reason] @param {{ sent: string, got: string }} [exchange] */
-    const record = (which, result, reason, exchange) =>
-      steps.push({ mode, caseId: which.id, method: which.request.method, route: which.request.route, result, ...(reason && { reason }), ...(result === "failed" && exchange) });
-
-    const prepared = await prepare(item, ids, context);
-    if (prepared.skip !== undefined) {
-      for (const rest of cases.slice(index)) if (counts(mode, rest, pattern)) record(rest, "skipped", prepared.skip);
-      return prepared.skip;
-    }
-    const { request } = prepared;
-
-    // Another account's request goes first, so a leaky DELETE is not hidden by the owner's DELETE.
-    if (mode === "cross-tenant" && counts(mode, item, pattern)) {
-      const { status, exchange } = await send(request, item, await auth(kind, true));
-      if ([401, 403, 404].includes(status)) record(item, "passed");
-      else record(item, "failed", `another account got ${status}, expected 401, 403 or 404`, exchange);
-    }
-
-    const first = await send(request, item, await auth(kind, false));
-    learnIds(item, first.json, ids);
-
-    if (mode === "baseline") {
-      const reason = baselineReason(item, first);
-      record(item, reason ? "failed" : "passed", reason, first.exchange);
-      if (Object.keys(first.counters).length) /** @type {Step} */ (steps.at(-1)).counters = first.counters;
-    }
-    if (mode === "twice" && method !== "GET") {
-      const second = await send(request, item, await auth(kind, false));
-      if (second.status >= 500 || second.status === 0) record(item, "failed", `second send got ${second.status}, first got ${first.status}`, second.exchange);
-      else record(item, "passed");
-    }
-  }
-  return undefined;
 }
 
 /**
@@ -226,10 +299,11 @@ export function learnIds(item, json, ids) {
 
 /**
  * Whether a case is a step in this mode. Cross-tenant only checks requests that name a record: another account
- * may legitimately create in its own account.
+ * may legitimately create in its own account. The contract mode reports per route, not per step.
  * @param {Mode} mode @param {Case} item @param {RegExp} pattern
  */
 function counts(mode, item, pattern) {
+  if (mode === "contract") return false;
   if (mode === "twice") return item.request.method !== "GET";
   if (mode === "cross-tenant") {
     if (item.actor.kind === "anonymous") return false;

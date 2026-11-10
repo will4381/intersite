@@ -173,8 +173,22 @@ UI cases are skipped by every mode except `ui`.
   connection is status 0 (`got no answer (<code>)`). `--json --verbose` adds the `recorded` request. Then run the adapter's invariants.
 - `twice`: send each non-GET request a second time; the second answer must not be a 5xx.
 - `cross-tenant`: send each request that names an ID as `signIn(kind, { other: true })`; the answer must be 401, 403
-  or 404. A request with no ID (a create in the caller's own account) is not checked, and `anonymous` cases are skipped.
-  Each checked request is then sent as its owner so the session's state keeps moving.
+  or 404. A request with no ID (a create in the caller's own account) is not checked, and `anonymous` cases are
+  skipped. A GET that names no ID (a list, search or dashboard) is sent as the other account too, once the session
+  has created something, and fails when its answer holds an ID this session's writes created earlier. Only IDs first
+  seen in the answer to one of the session's writes count, so shared records both accounts see (a catalogue, plans)
+  pass; records the session did not create are not checked. Each checked request is then sent as its owner so the
+  session's state keeps moving.
+- `contract`: lint the API's wire format across every route. Evidence is each sampled case's recorded request body
+  and route and the production status and shape, plus, for each replayed case, the local server's body and headers.
+  A convention is whatever at least 5 units and 90% of all units share (fields per route and pointer, routes, error
+  answers, list routes); with less, nothing is reported. Findings are per method and route, one line each:
+  `FAIL contract <METHOD> <route>: <pointer and what is wrong>; <n of m in this API do X>: <what to do> (case <id>)`,
+  ending with the rerun command and the `replay.contractIgnore` entry that would accept it. With `--id` it replays
+  that case's session and takes the conventions from the seeded sample, so `--id` needs `--seed`. With `baseline`
+  in the same run it reads the baseline answers instead of sending again. `--openapi <file>` (JSON, with
+  `--mode contract` only) lints a documented contract with no server and no traffic. `check` in an ignore entry is
+  one of casing, types, envelope, errors, status, values, exposure, size, requests, routes.
 - `ui`: needs `replay.uiTarget` and `playwright-core`. It drives Chrome Headless Shell when Playwright has it installed,
   else the installed Chrome; with `replay.browser: lightpanda` it starts `lightpanda serve` from PATH on a local port
   (exit 2 with an install line when it is missing) and runs one session at a time; with `replay.browserUrl` it connects
@@ -207,3 +221,13 @@ Metrics: a server may report per-request counters in `Server-Timing` as entries 
 mode. `--metrics-base <file>` fails a case whose counter is higher than in that file (`FAIL metrics …`), and is a
 setup error when the run replays other sessions than the file's; without `--seed` it reuses the file's seed. Compare
 two local runs on the same data, never against production.
+
+Snapshots: `--snapshot-out <file>` writes `{ "_meta": { seed, sessions }, "<caseId>": { status, body } }` from the
+baseline mode, with each body normalised so two runs of the same code on the same data are identical: an ID first
+seen in the answer to one of the session's writes becomes `<id:n>`, an ISO timestamp within ten minutes of the run
+becomes `<now>`, and a string under a `requestId`, `traceId` or `correlationId` key becomes `<request-id>`;
+everything else is kept. `--snapshot-base <file>` fails each case whose status or values differ
+(`FAIL snapshot <caseId> <METHOD> <route>: <pointer> <before> → <after>`, at most three per line), comparing arrays
+by position, or by `id` when every row has a distinct one, so a reorder is one difference. Pointers matching a
+`replay.snapshotIgnore` glob are left out. The seed rules are those of `--metrics-base`. The file holds response
+bodies from the local server: keep it under `.intersite/`.

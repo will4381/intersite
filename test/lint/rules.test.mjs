@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { builtinRules, packageRules } from "../../lint/plugin.mjs";
+import { builtinRules, packageRules } from "../../lint/catalog.mjs";
 import { fixture, runLint } from "./fixture.mjs";
 
 test("every package rule reports its bad examples and none of its good ones", async () => {

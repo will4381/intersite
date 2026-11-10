@@ -122,8 +122,10 @@ export const rule = defineRule({
         routeHandlers(node).forEach(check);
       },
       // A Workers or Deno module: export default { async fetch(request, env) {...} }
-      "ExportDefaultDeclaration > ObjectExpression > Property"(/** @type {any} */ node) {
-        if (node.key?.name === "fetch" && node.value.type.endsWith("FunctionExpression")) check(node.value);
+      ExportDefaultDeclaration(node) {
+        const object = /** @type {any} */ (node.declaration);
+        if (object.type !== "ObjectExpression") return;
+        for (const p of object.properties) if (p.type === "Property" && p.key?.name === "fetch" && p.value.type.endsWith("FunctionExpression")) check(p.value);
       },
       // export async function POST(request) {...}, export const POST = async (request) => {...}
       ExportNamedDeclaration(node) {

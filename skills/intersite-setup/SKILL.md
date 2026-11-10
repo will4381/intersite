@@ -13,7 +13,7 @@ own agent instructions first and follow its branch and commit rules.
 Add to `devDependencies`, using the tag the user gives you or the latest one:
 
 ```json
-"intersite": "github:will4381/intersite#v1.0.0-beta.3"
+"intersite": "github:will4381/intersite#v1.0.0-beta.4"
 ```
 
 Add `oxlint` and `@oxlint/plugins` too if the project does not have them, then install and run:

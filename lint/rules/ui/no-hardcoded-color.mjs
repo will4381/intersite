@@ -1,7 +1,7 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { COLOR_FN, HEX, arbitrary, eachClass, eachStyleObject, keyName, literalValue, skipFile, withoutVars } from "./classes.mjs";
+import { COLOR_FN, HEX, arbitrary, eachClass, eachStyleObject, keyName, literalValue, report, skipFile, withoutVars } from "./classes.mjs";
 import { designSystem, examples } from "./project.mjs";
 
 const COLOR_KEY = /^(?:color|background|backgroundColor|border(?:Top|Right|Bottom|Left|Block|Inline)?Color|fill|stroke|outlineColor|caretColor|accentColor|textDecorationColor)$/;
@@ -32,7 +32,7 @@ export const rule = defineRule({
   createOnce(context) {
     let tokens = "";
     /** @param {any} node @param {string} value */
-    const report = (node, value) => context.report({ node, messageId: "found", data: { value, tokens } });
+    const found = (node, value) => report(context, { node, messageId: "found", data: { value, tokens } });
     return {
       before() {
         const { colorVars, stylesheets } = designSystem(context.cwd);
@@ -42,14 +42,14 @@ export const rule = defineRule({
       ...eachClass(/\[/, (utility, word, node) => {
         // `[--brand:#0af]` defines a custom property, as a `--brand` key in a style object does.
         const [, value] = arbitrary(utility) ?? (/^\[(?!--)[a-z-]+:(.+)\]$/.exec(utility) ?? []);
-        if (value && colorIn(value)) report(node, word);
+        if (value && colorIn(value)) found(node, word);
       }),
-      ...eachStyleObject(context, (object) => {
+      ...eachStyleObject((object) => {
         for (const p of object.properties) {
           const key = keyName(p);
           const value = key && !key.startsWith("--") ? literalValue(p.value) : undefined;
           if (value === undefined) continue;
-          if (colorIn(value) || (COLOR_KEY.test(key ?? "") && NAMED.test(value.trim()))) report(p.value, value);
+          if (colorIn(value) || (COLOR_KEY.test(key ?? "") && NAMED.test(value.trim()))) found(p.value, value);
         }
       }),
     };
@@ -62,6 +62,7 @@ export const bad = [
   'export const glow = cn("shadow-[0_0_3px_1px_rgba(255,255,255,0.3)]", "rounded-lg");',
   "export const Panel = () => <div className=\"p-4\" style={{ background: 'white', border: '1px solid #e5e5e5' }} />;",
   "const card: React.CSSProperties = { backgroundColor: 'hsl(220 14% 96%)' };\nexport const Card = () => <div className=\"p-4\" style={card} />;",
+  'export const Box = () => <div style={{ color: "#2564eb" }}>New</div>;',
 ];
 
 export const good = [
@@ -73,5 +74,5 @@ export const good = [
   "export const Clear = () => <div style={{ background: 'transparent', color: 'currentColor', '--accent': '#0af' }} />;",
   'export const Icon = () => <i className="bg-[url(/sprite.svg#add)] [--accent:#0af]" />;',
   'export const TAGS = { vip: "#22c55e" };',
-  "export const OgCard = () => <div style={{ display: 'flex', background: '#ffffff', color: '#111827' }}>Lucra</div>;",
+  "import { ImageResponse } from \"next/og\";\nexport const OgCard = () => <div style={{ display: 'flex', background: '#ffffff', color: '#111827' }}>Lucra</div>;",
 ];

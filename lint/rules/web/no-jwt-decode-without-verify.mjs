@@ -1,16 +1,12 @@
 // @ts-check
-import { relative } from "node:path";
-
 import { defineRule } from "@oxlint/plugins";
 
-import { calleeName, resolveVariable } from "../shared.mjs";
+import { calleeName, isServerPath, resolveVariable, takesRequest } from "../shared.mjs";
 
 // Decoders that never check a signature: jsonwebtoken's decode, jwt-decode, jose's decodeJwt.
 const DECODER = /^(jsonwebtoken|jwt-decode|jose)$/;
 // A file that also verifies is decoding to pick the key (`decode(token, { complete: true }).header.kid`).
 const VERIFY = /^(jwtVerify|verifyJwt|verifyToken|verifyIdToken|verifyAccessToken)$/;
-// Server code, where a decoded claim decides who the caller is. In the browser, reading `exp` from your own token is fine.
-const SERVER_PATH = /(^|\/)(api|server|routes?|middlewares?|handlers?|controllers?|functions|workers?)\/|(^|\/)(middleware|proxy|route|server)\.[cm]?[jt]s$/;
 
 /** Whether `node` was imported from (or required as) a token decoder. @param {any} node @param {any} sourceCode */
 function fromDecoder(node, sourceCode) {
@@ -23,11 +19,7 @@ function fromDecoder(node, sourceCode) {
 
 /** Inside a function taking a request: `(req, res)`, `(request)`, `(c)`, `({ request })`, `(event)`. @param {any} node */
 function inHandler(node) {
-  for (let n = node.parent; n; n = n.parent) {
-    const first = n.params?.[0];
-    if (first?.type === "Identifier" && /^(req|request|ctx|c|event)$/.test(first.name)) return true;
-    if (first?.type === "ObjectPattern" && first.properties.some((/** @type {any} */ p) => p.key?.name === "request")) return true;
-  }
+  for (let n = node.parent; n; n = n.parent) if (takesRequest(n)) return true;
   return false;
 }
 
@@ -51,7 +43,8 @@ export const rule = defineRule({
       before() {
         decodes = [];
         verified = false;
-        server = SERVER_PATH.test(relative(context.cwd, context.filename));
+        // In the browser, reading `exp` from your own token is fine.
+        server = isServerPath(context);
       },
       CallExpression(node) {
         const callee = /** @type {any} */ (node.callee);

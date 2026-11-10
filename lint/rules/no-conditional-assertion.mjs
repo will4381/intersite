@@ -1,7 +1,7 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { counted, fails, isAssertion, isFail, isTestCall } from "./require-assertion.mjs";
+import { counted, fails, hasTestCalls, isAssertion, isFail, isTestCall } from "./require-assertion.mjs";
 
 /** An assertion, a throw, or a fail call: a branch with one of these does not let the test pass silently. */
 const checks = /\b(?:expect|assert\w*|throw|should)\b|\.fail\(/;
@@ -79,6 +79,7 @@ export const rule = defineRule({
       before() {
         tests = [];
         inside = [];
+        return hasTestCalls(context);
       },
       CallExpression(node) {
         if (isTestCall(node.callee) && node.arguments.some((/** @type {any} */ a) => a.type.endsWith("FunctionExpression"))) {
