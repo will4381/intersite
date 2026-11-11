@@ -1,6 +1,6 @@
 {
   "name": "intersite",
-  "version": "1.0.0-rc.8",
+  "version": "1.0.0-rc.9",
   "private": true,
   "type": "module",
   "description": "One testing library for every project: slop lint, traffic capture, replay, and gates.",

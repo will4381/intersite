@@ -243,6 +243,83 @@
             "type": "string"
           },
           "description": "Extra globs, relative to the project folder, for leftover files `artifacts` should report, on top of the built-in list."
+        },
+        "protected": {
+          "type": "array",
+          "description": "Paths that may not change alone. A change touching `paths` fails the `protected` gate unless it also changes a file under `needs` (default: the test paths). Writing a rule turns the gate on.",
+          "items": {
+            "type": "object",
+            "required": [
+              "paths"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "paths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1,
+                "description": "Globs of the protected files, relative to the project folder."
+              },
+              "needs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Globs of what must change with them. Default: `gates.testPaths`."
+              },
+              "why": {
+                "type": "string",
+                "description": "Shown in the finding."
+              }
+            }
+          }
+        },
+        "baseline": {
+          "type": "string",
+          "default": "intersite-gates-baseline.json",
+          "description": "Where `intersite gate <name> --all --write` records whole-repository findings, so `--all` fails only on new ones."
+        }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "description": "The project's own checks (tests, generated-file checks, model checkers, budgets). `intersite check` runs them after the gates, each only when the change touches its `when` paths, and prints nothing for one that passes.",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "run"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+$",
+            "description": "Stage name, shown in the result line and accepted by `--skip`."
+          },
+          "run": {
+            "type": "string",
+            "description": "Shell command; exit 0 passes."
+          },
+          "cwd": {
+            "type": "string",
+            "default": ".",
+            "description": "Folder the command runs in, relative to the project folder."
+          },
+          "when": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Globs; the check runs only when a changed file matches one. Leave out to run on every change."
+          },
+          "slow": {
+            "type": "boolean",
+            "default": false,
+            "description": "Runs only with `intersite check --full` or `--all`."
+          }
         }
       }
     },

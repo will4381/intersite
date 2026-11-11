@@ -57,6 +57,9 @@ const defaults = {
     mutants: 20,
     /** @type {{ gate: string, target: string, why: string }[]} */
     acknowledged: [],
+    /** @type {{ paths: string[], needs?: string[], why?: string }[]} */
+    protected: [],
+    baseline: "intersite-gates-baseline.json",
   },
   capture: {
     sample: 0.05,
@@ -126,7 +129,33 @@ export function loadConfig(cwd) {
     capture: { ...defaults.capture, ...file.capture, ttlDays: { ...defaults.capture.ttlDays, ...file.capture?.ttlDays } },
     // `replay: false` is a project that only lints and gates: no replay stage, adapter or replay skill.
     replay: { ...defaults.replay, ...file.replay, enabled: file.replay !== false },
+    checks: projectChecks(file.checks, path ? basename(path) : CONFIG_FILE),
   };
+}
+
+/** Stage names `intersite check` already uses, which a project check may not take. */
+const BUILT_IN = new Set(["lint", "replay", ...defaults.gates.run, "fails-on-base", "mutation", "protected"]);
+
+/**
+ * The project's own checks: commands `intersite check` runs after the gates, each only when the change touches its
+ * `when` paths. `slow` ones wait for `--full`.
+ * @param {unknown} list @param {string} name the config file, for the error
+ * @returns {{ name: string, run: string, cwd: string, when: string[], slow: boolean }[]}
+ */
+function projectChecks(list, name) {
+  if (list === undefined || list === null) return [];
+  if (!Array.isArray(list)) throw new Error(`${name}: "checks" must be a list of { name, run } entries`);
+  const seen = new Set();
+  return list.map((entry) => {
+    const { name: id, run, cwd = ".", when = [], slow = false } = entry ?? {};
+    if (typeof id !== "string" || !/^[a-z0-9-]+$/.test(id) || typeof run !== "string" || !run.trim()) {
+      throw new Error(`${name}: each entry of "checks" needs a lowercase \`name\` (letters, digits, dashes) and a \`run\` command`);
+    }
+    if (BUILT_IN.has(id) || seen.has(id)) throw new Error(`${name}: check name "${id}" is already taken; pick another`);
+    seen.add(id);
+    if (typeof cwd !== "string" || !Array.isArray(when)) throw new Error(`${name}: check "${id}": \`cwd\` is a folder and \`when\` a list of globs`);
+    return { name: id, run, cwd, when, slow: slow === true };
+  });
 }
 
 /**

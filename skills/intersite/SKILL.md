@@ -9,7 +9,8 @@ description: Check a change with Intersite before calling it done. Use whenever 
 npx intersite check
 ```
 
-This is the definition of done. It runs lint, the gates on your diff, and a replay of real recorded sessions when the
+This is the definition of done; when it prints `skip …: slow, run with \`intersite check --full\``, run that before
+saying a change is finished. It runs lint, the gates on your diff, the project's own checks, and a replay of real recorded sessions when the
 project's server is running. Success is one line starting `ok check:`, after any `skip …:` lines that say what did
 not run and why. Each finding is one line: a gate's carries `| to accept: add { "gate": "<name>", … }`, which names
 the gate; a replay failure ends with `| rerun: <command>`, which reruns only that case.
@@ -30,6 +31,9 @@ the gate; a replay failure ends with `| rerun: <command>`, which reruns only tha
 | contains `"gate": "unused"` | You added a file or export nothing uses, or orphaned a file | Wire it in or delete it |
 | contains `"gate": "fails-on-base"` | Your new test passes without your fix | Make the test exercise the bug |
 | contains `"gate": "mutation"` | A break on a changed line went unnoticed | Add an assertion that would notice it |
+| contains `"gate": "protected"` | You changed protected code (money, access) without changing a test | Add or extend the test that proves the change; do not acknowledge it to get past |
+| `<name>: failed with exit N \| rerun: <command>` | One of the project's own checks failed; its output is printed above the line | Run the rerun command, fix what it reports |
+| `skip <names>: slow, run with …` | Slow checks this change touches did not run | Run `npx intersite check --full` before calling the change done |
 | `skip gates:` / `skip replay:` | That stage could not run here (no git, no adapter, no server answering) | Nothing to fix; say so if the change needed it |
 | `FAIL baseline` | The API answered differently from production, or a server error production recorded still happens | Run the rerun command with `--verbose`, then fix the code |
 | `FAIL twice` | Repeating a write caused a server error | Make the write safe to repeat |

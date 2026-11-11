@@ -5,7 +5,7 @@
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-import { WORK_TREE, addedLines, git, matches, resolveBase, workingDiff } from "./lib.mjs";
+import { EMPTY_TREE, WORK_TREE, addedLines, git, matches, resolveBase, workingDiff } from "./lib.mjs";
 
 const CODE = /\.(?:[cm]?[jt]sx?|py|rb|go|rs|java|kts?|swift|c|h|cc|cpp|hpp|cs|php|vue|svelte|scala|sh|sql|css|scss)$/;
 const SKIP = /(?:^|\/)(?:node_modules|dist|build|out|vendor|coverage|generated|__generated__)\/|\.min\.|\.d\.ts$|\.generated\./;
@@ -77,6 +77,9 @@ export async function duplicates({ cwd, base, testPaths, duplicateLines: n }) {
   const added = addedLines(patch);
   const tracked = git(cwd, ["ls-files", "-z", "--", ...WORK_TREE]).split("\0").filter((f) => CODE.test(f) && !SKIP.test(f));
 
+  // Asked for the whole repository (`--all`), every line is new: the first place a block appears is its original,
+  // and each later copy is reported.
+  const whole = base === EMPTY_TREE;
   // One index of every window of pre-existing lines. Windows touching added lines are left out, so the added block
   // never matches itself, and code moved within the change (gone from its old place) has no original to match.
   /** @type {Map<number, number>} */
@@ -86,7 +89,7 @@ export async function duplicates({ cwd, base, testPaths, duplicateLines: n }) {
     if (!f) continue;
     const fresh = added.get(file);
     for (let i = 0; i + n <= f.line.length; i++) {
-      if (fresh && f.line.slice(i, i + n).some((l) => fresh.has(l))) continue;
+      if (!whole && fresh && f.line.slice(i, i + n).some((l) => fresh.has(l))) continue;
       const key = windowKey(f, i, n);
       if (key !== undefined && !index.has(key)) index.set(key, fi * LINE_BITS + f.line[i]);
     }
@@ -100,6 +103,7 @@ export async function duplicates({ cwd, base, testPaths, duplicateLines: n }) {
     const f = read(join(cwd, file));
     if (!f) continue;
     checked++;
+    const fi = whole ? tracked.indexOf(file) : -1;
     /** @type {{ first: number, last: number, at: number } | undefined} */
     let run;
     const flush = () => {
@@ -110,7 +114,8 @@ export async function duplicates({ cwd, base, testPaths, duplicateLines: n }) {
     };
     for (let i = 0; i + n <= f.line.length; i++) {
       const at = f.line.slice(i, i + n).every((l) => fresh.has(l)) ? index.get(windowKey(f, i, n) ?? -1) : undefined;
-      if (at === undefined) flush();
+      // A block inside its own original is not a copy; one that only overlaps it (a repeating pattern) is not either.
+      if (at === undefined || (Math.floor(at / LINE_BITS) === fi && Math.abs((at % LINE_BITS) - f.line[i]) < n)) flush();
       else if (run) run.last = i;
       else run = { first: i, last: i, at };
     }

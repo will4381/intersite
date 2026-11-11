@@ -33,4 +33,5 @@ try {
 } finally {
   await stopCollector?.();
 }
-process.exit(code);
+// A pipe is written asynchronously on macOS: exiting before it drains cuts long output (a big `--json`) short.
+process.stdout.write("", () => process.exit(code));

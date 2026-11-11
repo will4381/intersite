@@ -64,3 +64,31 @@ test("replay: false leaves replay out of check without a skip line", async () =>
   assert.deepEqual(lines, ["skip gates: not a git repository (run `git init` to check changes)", "ok check: no stages ran"]);
   assert.equal(code, 0);
 });
+
+test("the project's own checks run when the change touches their paths; slow ones wait for --full, and --all runs every one", async () => {
+  const r = repo({ "src/a.mjs": "export const a = 1;\n", "src/use.mjs": "import { a } from './a.mjs';\nconsole.log(a);\n", "docs/a.md": "# A\n" });
+  const checks = [
+    { name: "src-ok", run: "node -e \"process.exit(0)\"", when: ["src/**"] },
+    { name: "docs", run: "node -e \"process.exit(0)\"", when: ["docs/**"] },
+    { name: "suite", run: "node -e \"console.log('1 failing');process.exit(3)\"", cwd: "src", when: ["src/**"], slow: true },
+  ];
+  r.write({ "intersite.json": JSON.stringify({ project: "t", gates: { base: "base", run: [] }, replay: false, checks }) });
+  r.commit("checks");
+  r.git("tag", "-f", "base");
+  r.write({ "src/a.mjs": "export const a = 2;\n" });
+  const run = (/** @type {string[]} */ ...flags) =>
+    new Promise((done) => execFile(process.execPath, [bin, "check", "--skip", "lint", ...flags], { cwd: r.cwd }, (error, stdout) => done({ code: error ? Number(error.code) : 0, lines: stdout.trim().split("\n") })));
+
+  assert.deepEqual(await run(), { code: 0, lines: ["skip suite: slow, run with `intersite check --full`", "ok check: src-ok"] });
+  assert.deepEqual(await run("--full"), { code: 1, lines: ["1 failing", "suite: failed with exit 3 | rerun: cd src && node -e \"console.log('1 failing');process.exit(3)\"", "FAIL check: suite"] });
+  assert.deepEqual(await run("--full", "--skip", "suite"), { code: 0, lines: ["ok check: src-ok"] });
+  assert.deepEqual((await run("--all", "--skip", "suite")).lines, ["ok check: src-ok, docs"]);
+});
+
+test("a check named like a built-in stage is refused with one line", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "intersite-check-name-"));
+  writeFileSync(join(cwd, "intersite.yml"), "project: t\nchecks:\n  - { name: lint, run: 'true' }\n");
+  const { code, stderr } = await check(cwd);
+  assert.equal(code, 2);
+  assert.equal(stderr.trim(), 'check: intersite.yml: check name "lint" is already taken; pick another');
+});

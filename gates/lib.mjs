@@ -13,7 +13,8 @@ export class GateError extends Error {}
 
 /**
  * @typedef {{ cwd: string, base: string, testPaths: string[], testCmd: string, setup: string,
- *   duplicateLines: number, mutants: number, timeout: number, entryPaths: string[], artifacts: string[] }} GateOptions
+ *   duplicateLines: number, mutants: number, timeout: number, entryPaths: string[], artifacts: string[],
+ *   protected: { paths: string[], needs?: string[], why?: string }[] }} GateOptions
  * @typedef {{ target: string, message: string }} Finding
  * @typedef {{ findings: Finding[], summary: string }} GateResult
  * @typedef {{ status: string, path: string, from: string }} Change
@@ -47,7 +48,8 @@ export function baseName(cwd, base) {
   if (!inGit(cwd)) throw new GateError("not a git repository: the gates compare a change with git history; run `git init`, or `intersite check` skips them");
   /** @param {string} ref */
   const exists = (ref) => spawnSync("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd }).status === 0;
-  if (!exists("HEAD")) return EMPTY_TREE;
+  // The empty tree as the base makes every file new: the gates then judge the whole repository (`--all`).
+  if (base === EMPTY_TREE || !exists("HEAD")) return EMPTY_TREE;
   const found = [base, ...(base === DEFAULT_BASE ? MAIN_LINES : [])].find(exists);
   if (!found) throw new GateError(`base ref "${base}" not found: pass --base <ref> or set "gates.base" in intersite.yml, for example "main"`);
   return found;

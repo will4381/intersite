@@ -6,7 +6,7 @@ user sessions into tests nobody has to write.
 ## Quickstart
 
 ```bash
-npm i -D github:will4381/intersite#v1.0.0-rc.6 oxlint @oxlint/plugins
+npm i -D github:will4381/intersite#v1.0.0-rc.9 oxlint @oxlint/plugins
 ```
 
 ```bash
@@ -41,6 +41,8 @@ In a monorepo, install `intersite`, `oxlint` and `@oxlint/plugins` once at the r
 | `style-drift` | A colour, size or token that is almost one the project already has, or off a scale it keeps closed | git |
 | `artifacts` | Leftovers: backup and `_v2` copies, scratch scripts, logs, stray `PLAN.md` and `SUMMARY.md` files | git |
 | `unused` | A file or export this change added that nothing uses, or a file it orphaned | git |
+| `protected` | A change to paths you marked as protected (money, access) with no test changed alongside | git and a `gates.protected` rule |
+| your `checks` | Whatever the project already runs: its tests, generated-file checks, a model checker, a bundle budget | a `checks` entry |
 | `replay` | An API that now answers real recorded sessions differently | capture and an adapter |
 
 `gates.base` defaults to `origin/main` and falls back to `main` or `master`; a repository with no commits compares
@@ -53,6 +55,49 @@ have their own.
 Two more gates run the tests and are opt-in through `gates.run`: `fails-on-base` (a bug fix's new test must fail
 without the fix) and `mutation` (a deliberate break on a changed line must make a test fail).
 
+### Your own checks in the same run
+
+List the commands the project already has under `checks`, and `intersite check` becomes the one command that runs
+everything, in order of cost, with one result line:
+
+```yaml
+checks:
+  - { name: generated, run: npm run generate:check, when: ["src/api/**"] }
+  - { name: specs, run: node scripts/specs.mjs, when: ["specs/**", "src/billing/**"] }
+  - { name: api, run: npm run test:api, cwd: backend, when: ["backend/**"], slow: true }
+```
+
+A check runs only when the change touches its `when` paths (always, with no `when`). A passing check prints nothing;
+a failing one prints the end of its output and the command that reruns it. `slow` checks wait for `--full`:
+
+| Command | Runs |
+| --- | --- |
+| `intersite check` | Lint, the gates, and the fast checks this change touches: for a pre-push hook |
+| `intersite check --full` | The same plus the slow checks this change touches: before calling a change done, and in CI |
+| `intersite check --all` | Every check, and the gates over the whole repository instead of the change |
+
+### Protected paths
+
+```yaml
+gates:
+  protected:
+    - { paths: ["src/billing/**", "src/auth/**"], why: "money and access change with a test" }
+    - { paths: ["src/api/**"], needs: ["openapi.json"] }
+```
+
+A change that touches `paths` fails unless it also changes a file under `needs` (by default a test).
+
+### The whole repository, not only the change
+
+`duplicates`, `similar`, `unused`, `naming`, `style-drift` and `artifacts` judge a change. `--all` points them at
+every file; record what is there today and only new findings fail, as with lint:
+
+```bash
+npx intersite gate duplicates --all --write
+```
+
+That writes `intersite-gates-baseline.json`. Fix a recorded finding and run it again to lower the count.
+
 Output is written for agents: one line on success, one line per finding with the command that reruns only that
 finding, exit code 0, 1 or 2.
 
@@ -61,9 +106,9 @@ finding, exit code 0, 1 or 2.
 | Command | Does |
 | --- | --- |
 | `intersite init` | Sets a project up; safe to run again after upgrading. `--no-replay` sets up lint and gates only |
-| `intersite check [--base <ref>] [--skip <stage>]` | Runs every stage that applies; one line on success |
+| `intersite check [--base <ref>] [--skip <stage>] [--full] [--all]` | Runs every stage that applies; one line on success. `--full` adds slow checks, `--all` covers the whole repository |
 | `intersite lint [paths] [--write] [--rules]` | Lints; `--write` lowers the baseline; `--rules` lists what applies |
-| `intersite gate <name> [--base <ref>]` | Runs one gate against the diff |
+| `intersite gate <name> [--base <ref>] [--all [--write]]` | Runs one gate against the diff, or with `--all` the whole repository; `--write` records today's findings |
 | `intersite collector` | Runs the local collector (SQLite file in `.intersite/`) |
 | `intersite replay [--id] [--tag] [--action] [--sample] [--mode] [--verbose] [--metrics-out] [--metrics-base] [--snapshot-out] [--snapshot-base] [--openapi]` | Replays recorded sessions against a local server |
 | `intersite actions` | Lists named user actions seen, with error counts |
