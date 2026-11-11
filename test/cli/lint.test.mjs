@@ -40,6 +40,13 @@ test("the project's own .oxlintrc.json may have comments and trailing commas, as
   assert.match(broken.out, /^intersite lint: \.oxlintrc\.json is not a valid oxlint config: [^\n]+$/);
 });
 
+test("lint.ownRules: false leaves the project's own rules to the project's own lint command", async () => {
+  const files = { ".oxlintrc.json": { rules: { "no-debugger": "error" } }, "src/a.ts": "debugger;\ntry { run(); } catch {}\n" };
+  const rulesOf = async (/** @type {string} */ cwd) => JSON.parse((await runLint(cwd, ["--json"])).out).findings.map((/** @type {{ rule: string }} */ f) => f.rule).sort();
+  assert.deepEqual(await rulesOf(fixture({ ...files, "intersite.json": { project: "both" } })), ["eslint/no-debugger", "intersite/no-empty-catch"]);
+  assert.deepEqual(await rulesOf(fixture({ ...files, "intersite.json": { project: "added", lint: { ownRules: false } } })), ["intersite/no-empty-catch"]);
+});
+
 test("oxlint installed once at a workspace root is found from a package below it", async () => {
   const root = fixture({ "apps/web/intersite.json": { project: "web" }, "apps/web/src/a.ts": "try { run(); } catch {}\n" });
   const r = await runLint(join(root, "apps/web"), ["--json"]);

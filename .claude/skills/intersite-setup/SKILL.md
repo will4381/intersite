@@ -13,7 +13,7 @@ own agent instructions first and follow its branch and commit rules.
 Add to `devDependencies`, using the tag the user gives you or the latest one:
 
 ```json
-"intersite": "github:will4381/intersite#v1.0.0-rc.3"
+"intersite": "github:will4381/intersite#v1.0.0-rc.4"
 ```
 
 Add `oxlint` and `@oxlint/plugins` too if the project does not have them; if it has them older than 1.93, raise both in
@@ -27,6 +27,10 @@ npx intersite init
 
 This writes `intersite.yml` (which acknowledges `intersite` itself for the `new-deps` gate), `intersite.adapter.mjs`,
 the agent rules and skills, and records today's lint findings in `intersite-baseline.json` so only new ones fail.
+
+If the project already gates its own oxlint rules (a lint script with its own baseline), set `lint: { ownRules: false }` in
+`intersite.yml` before `init`: Intersite then reports and baselines only the rules it adds, so the two baselines never
+track the same finding.
 Add a script: `"check": "intersite check"`.
 
 ```bash

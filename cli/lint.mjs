@@ -110,7 +110,8 @@ export default async function lint(argv, { cwd, quiet = false }) {
     column: d.labels?.[0]?.span.column ?? 0,
     rule: d.code.replace(/^(.*)\((.*)\)$/, "$1/$2"),
     message: d.message,
-  }));
+    // `ownRules: false`: the project's own lint command gates its own config's rules, so only the rules this run added count.
+  })).filter((f) => config.ownRules || (rules[f.rule] ?? "off") !== "off");
   if (bareOn) all.push(...(await bareSuppressions(cwd, listed)));
   all.push(...swiftResult.findings);
 

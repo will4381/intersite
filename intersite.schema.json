@@ -124,6 +124,11 @@
           "type": "string",
           "default": ".oxlintrc.json",
           "description": "The project's own oxlint config, used when the file exists."
+        },
+        "ownRules": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether findings from the project's own oxlint config are reported and baselined too. Set false when the project already runs oxlint with its own baseline or gate: Intersite then reports only the rules its packs and lint.rules turn on, and a change to the project's own rules never touches intersite-baseline.json."
         }
       }
     },

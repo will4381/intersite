@@ -6,7 +6,7 @@ user sessions into tests nobody has to write.
 ## Quickstart
 
 ```bash
-npm i -D github:will4381/intersite#v1.0.0-rc.3 oxlint @oxlint/plugins
+npm i -D github:will4381/intersite#v1.0.0-rc.4 oxlint @oxlint/plugins
 ```
 
 ```bash
@@ -26,7 +26,7 @@ through the wiring.
 
 | Stage | Catches | Needs |
 | --- | --- | --- |
-| `lint` | Slop and tests that cannot fail, on top of your own oxlint config | nothing |
+| `lint` | Slop and tests that cannot fail, on top of your own oxlint config (`lint.ownRules: false` reports only the rules Intersite adds, for a project that already gates its own) | nothing |
 | `test-integrity` | A test deleted, weakened or skipped to get green | git |
 | `duplicates` | A pasted block that already exists in the repository | git |
 | `new-deps` | A dependency added without saying why | git |
