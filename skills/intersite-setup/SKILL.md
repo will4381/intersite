@@ -13,11 +13,13 @@ own agent instructions first and follow its branch and commit rules.
 Add to `devDependencies`, using the tag the user gives you or the latest one:
 
 ```json
-"intersite": "github:will4381/intersite#v1.0.0-rc.1"
+"intersite": "github:will4381/intersite#v1.0.0-rc.2"
 ```
 
 Add `oxlint` and `@oxlint/plugins` too if the project does not have them; if it has them older than 1.93, raise both in
-the same install (`oxlint@^1.93 @oxlint/plugins@^1.93`), or npm refuses Intersite's peer range. Then install and run:
+the same install (`oxlint@^1.93 @oxlint/plugins@^1.93`), or npm refuses Intersite's peer range. In a monorepo whose
+packages install on their own, the package that imports `intersite/capture` or `intersite/track` lists `intersite` in
+its own dependencies; it does not need oxlint there. Then install and run:
 
 ```bash
 npx intersite init

@@ -21,7 +21,8 @@ What every part of this package agrees on. Change it here first, then in code.
   straight from GitHub (`"intersite": "github:<owner>/intersite#<tag>"`), and Node refuses to strip types under
   `node_modules`.
 - One runtime dependency, `yaml`, used only where config and rule files are read (never in `capture/` or `track/`).
-  `oxlint` and `@oxlint/plugins` are peers; `playwright-core` is an optional peer used only
+  `oxlint` and `@oxlint/plugins` are optional peers that `lint` needs (a package that only imports
+  `intersite/capture` or `intersite/track` installs neither); `playwright-core` is an optional peer used only
   by the `ui` replay mode; `wrangler` is a dev dependency.
 - `capture/`, `track/`, `shared/case.mjs` and `shared/shape.mjs` use only web-standard APIs.
 - Tests are `node --test` files under `test/<part>/`. Test behavior through the part's public entry, not its internals.
