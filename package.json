@@ -1,6 +1,6 @@
 {
   "name": "intersite",
-  "version": "1.0.0-rc.7",
+  "version": "1.0.0-rc.8",
   "private": true,
   "type": "module",
   "description": "One testing library for every project: slop lint, traffic capture, replay, and gates.",
@@ -25,6 +25,7 @@
   "peerDependencies": {
     "@oxlint/plugins": ">=1.93.0",
     "oxlint": ">=1.93.0",
+    "oxlint-tsgolint": ">=7.0.0",
     "playwright-core": ">=1.40.0"
   },
   "peerDependenciesMeta": {
@@ -34,6 +35,9 @@
     "oxlint": {
       "optional": true
     },
+    "oxlint-tsgolint": {
+      "optional": true
+    },
     "playwright-core": {
       "optional": true
     }
@@ -41,6 +45,7 @@
   "devDependencies": {
     "@oxlint/plugins": "1.93.0",
     "oxlint": "1.93.0",
+    "oxlint-tsgolint": "^7.0.2006",
     "playwright-core": "^1.65.0",
     "wrangler": "^4.0.0"
   },

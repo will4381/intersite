@@ -1,7 +1,9 @@
 // @ts-check
 import assert from "node:assert/strict";
+import { symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { fixture, runLint, write } from "../lint/fixture.mjs";
 
@@ -83,4 +85,27 @@ test("a lint.custom rule's ignore globs exempt files inside its files globs", as
   });
   const r = await runLint(cwd, ["--json"]);
   assert.deepEqual(JSON.parse(r.out).findings.map((/** @type {{ file: string, rule: string }} */ f) => `${f.file} ${f.rule}`), ["src/a.ts intersite/no-raw-fetch"]);
+});
+
+test("lint.typeAware reports a promise nobody awaits, which no syntax rule can see", async () => {
+  const cwd = fixture({
+    "intersite.json": { project: "typed", lint: { packs: [], typeAware: true } },
+    "tsconfig.json": { compilerOptions: { strict: true, target: "es2022", module: "esnext", moduleResolution: "bundler", noEmit: true }, include: ["src"] },
+    "src/a.ts": "async function save(): Promise<void> {}\nexport function run() {\n  save();\n}\n",
+  });
+  assert.deepEqual(await runLint(cwd), { code: 2, out: "intersite lint: lint.typeAware needs oxlint-tsgolint; install it as a dev dependency" });
+  symlinkSync(fileURLToPath(new URL("../../node_modules/.bin/tsgolint", import.meta.url)), join(cwd, "node_modules/.bin/tsgolint"));
+  const r = await runLint(cwd, ["--json"]);
+  assert.deepEqual(JSON.parse(r.out).findings.map((/** @type {{ file: string, rule: string }} */ f) => `${f.file} ${f.rule}`), ["src/a.ts typescript/no-floating-promises"]);
+});
+
+test("an override in the project's own config can leave folders out with excludeFiles", async () => {
+  const cwd = fixture({
+    "intersite.json": { project: "own", lint: { packs: [] } },
+    ".oxlintrc.json": { overrides: [{ files: ["**"], excludeFiles: ["tests/**"], rules: { "no-debugger": "error" } }, { files: ["tests/**"], rules: { "no-debugger": "off" } }] },
+    "src/a.ts": "debugger;\n",
+    "tests/a.ts": "debugger;\n",
+  });
+  const r = await runLint(cwd, ["--json"]);
+  assert.deepEqual(JSON.parse(r.out).findings.map((/** @type {{ file: string, rule: string }} */ f) => `${f.file} ${f.rule}`), ["src/a.ts eslint/no-debugger"]);
 });

@@ -42,7 +42,7 @@ const defaults = {
     name: "intersite-collector",
     dailyCap: { ok: 5000, other: 5000 },
   },
-  lint: { packs: ["tests","slop","security","state","async","perf","react","next","design","types","validation","naming","globals","ui","orm","query","workers","supabase","server","start","payments","auth","swift"], rules: {}, custom: [], baseline: "intersite-baseline.json", extends: ".oxlintrc.json", ownRules: true },
+  lint: { packs: ["tests","slop","security","state","async","perf","react","next","design","types","validation","naming","globals","ui","orm","query","workers","supabase","server","start","payments","auth","swift"], rules: {}, custom: [], baseline: "intersite-baseline.json", extends: ".oxlintrc.json", ownRules: true, typeAware: false },
   gates: {
     base: DEFAULT_BASE,
     run: ["test-integrity","duplicates","similar","new-deps","artifacts","unused","naming","style-drift"],

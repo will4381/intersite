@@ -114,8 +114,13 @@ export default async function lint(argv, { cwd, quiet = false }) {
 
   // A Swift-only project has no oxlint and needs none: its Swift is linted and the JavaScript side is empty.
   const oxlint = findOxlint(cwd) ?? join(cwd, "node_modules/.bin/oxlint");
+  const tsgolint = config.typeAware ? findOxlint(cwd, "tsgolint") : undefined;
+  if (config.typeAware && existsSync(oxlint) && !tsgolint) {
+    console.error("intersite lint: lint.typeAware needs oxlint-tsgolint; install it as a dev dependency");
+    return 2;
+  }
   const javascript = existsSync(oxlint)
-    ? writeOxlintConfig(cwd, join(cwd, config.extends), oxlint, rules).then((configs) => runOxlint(cwd, oxlint, configs, paths), (/** @type {Error} */ error) => {
+    ? writeOxlintConfig(cwd, join(cwd, config.extends), oxlint, rules).then((configs) => runOxlint(cwd, oxlint, configs, paths, tsgolint), (/** @type {Error} */ error) => {
       console.error(`intersite lint: ${error.message}`);
       return undefined;
     })
@@ -184,6 +189,9 @@ export default async function lint(argv, { cwd, quiet = false }) {
   return failed.length ? 1 : 0;
 }
 
+/** What `lint.typeAware` turns on: promise mistakes only the type checker can see. */
+const TYPE_AWARE = ["typescript/no-floating-promises", "typescript/no-misused-promises", "typescript/await-thenable"];
+
 /**
  * The oxlint rule levels the configured packs, custom rules and overrides switch on, and whether the bare-suppression check runs.
  * @param {ReturnType<typeof loadConfig>["lint"]} config
@@ -194,6 +202,7 @@ function ruleSet(config) {
   for (const r of packageRules) if (r.pack && config.packs.includes(r.pack)) rules[`intersite/${r.id}`] = "error";
   for (const r of config.custom) rules[`intersite/${r.id}`] = "error";
   for (const b of builtinRules) if (config.packs.includes(b.pack)) rules[b.rule] = "error";
+  if (config.typeAware) for (const rule of TYPE_AWARE) rules[rule] = "error";
   // An override names an intersite rule by its bare id, or a built-in rule by oxlint's full name.
   for (const [id, level] of Object.entries(config.rules)) rules[id.includes("/") ? id : `intersite/${id}`] = level;
   // Not an oxlint rule (see bareSuppressions), but switched on and off like one in the slop pack.
@@ -238,11 +247,11 @@ function printRules(custom, rules) {
 /**
  * The oxlint binary in the nearest node_modules at or above `cwd`: a workspace package's dependencies are often
  * installed once at the repository root.
- * @param {string} cwd
+ * @param {string} cwd @param {string} [name] another binary to look for the same way
  */
-export function findOxlint(cwd) {
+export function findOxlint(cwd, name = "oxlint") {
   for (let dir = resolve(cwd); ; dir = dirname(dir)) {
-    const bin = join(dir, "node_modules/.bin/oxlint");
+    const bin = join(dir, "node_modules/.bin", name);
     if (existsSync(bin)) return bin;
     if (dirname(dir) === dir) return undefined;
   }
@@ -321,15 +330,16 @@ async function writeOxlintConfig(cwd, ownConfig, oxlint, rules) {
  * @param {{ configFile: string, filesConfig: string, ignores: string[] }} configs the config to lint with, the one to list
  * files with, and the project's own ignore patterns
  * @param {string[]} paths
+ * @param {string} [tsgolint] the type-aware backend, when `lint.typeAware` is on
  */
-async function runOxlint(cwd, oxlint, { configFile, filesConfig, ignores }, paths) {
+async function runOxlint(cwd, oxlint, { configFile, filesConfig, ignores }, paths, tsgolint) {
   // The JSON report has no file list, so a second oxlint run lists the files it lints (its own ignores applied).
   // A Swift-only project has nothing for oxlint, which is not an error.
   // oxlint lints node_modules unless a .gitignore says not to, and a fresh project may have no .gitignore.
   const args = ["--no-error-on-unmatched-pattern", "--ignore-pattern=**/node_modules/**", ...ignores.map((p) => `--ignore-pattern=${p}`), ...(paths.length ? paths : ["."])];
   /** @param {string[]} extra */
-  const oxlintRun = (extra) => exec(oxlint, [...extra, ...args], { cwd, maxBuffer: Infinity }).catch((/** @type {any} */ e) => e);
-  const [run, listed] = await Promise.all([oxlintRun(["-c", configFile, "-f", "json"]), oxlintRun(["-c", filesConfig, "--debug=files"])]);
+  const oxlintRun = (extra) => exec(oxlint, [...extra, ...args], { cwd, maxBuffer: Infinity, env: { ...process.env, PATH: `${dirname(tsgolint ?? oxlint)}:${process.env.PATH}` } }).catch((/** @type {any} */ e) => e);
+  const [run, listed] = await Promise.all([oxlintRun(["-c", configFile, "-f", "json", ...(tsgolint ? ["--type-aware"] : [])]), oxlintRun(["-c", filesConfig, "--debug=files"])]);
   /** @type {{ number_of_files: number, diagnostics: { message: string, code: string, filename: string, labels?: { span: { line: number, column: number } }[] }[] }} */
   let report;
   try {

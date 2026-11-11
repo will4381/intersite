@@ -126,6 +126,17 @@ A deliberate exception is always written down where a reviewer sees it: `gates.a
 A rule is one YAML entry: a syntax-tree `selector` (or a `comment` pattern, for rules about comments), a message
 that says what to do instead, and examples.
 
+**Type-aware rules.** `lint.typeAware: true` also runs oxlint's type-aware rules for promises nobody awaits
+(`typescript/no-floating-promises`, `no-misused-promises`, `await-thenable`), which replace ESLint's. It needs the
+`oxlint-tsgolint` package and a `tsconfig.json`, and it is slower than plain lint, so it is off by default.
+
+**Different rules per folder.** Keep one `.oxlintrc.json` and scope rules with `overrides`. An override takes
+`excludeFiles`, so app rules can leave tests and scripts out without those folders switching each rule off:
+
+```json
+{ "overrides": [{ "files": ["**"], "excludeFiles": ["tests/**", "e2e/**", "scripts/**"], "rules": { "no-console": "error" } }] }
+```
+
 - For one project: add it to `lint.custom` in `intersite.yml`. `files` limits it to path globs and `ignore` exempts some.
 - For every project: add it to a file in [lint/packs/](lint/packs/) with a `pack`, `bad` and `good` examples. The
   test suite fails unless every `bad` example is reported and no `good` one is.

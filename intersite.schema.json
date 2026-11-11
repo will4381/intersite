@@ -130,6 +130,11 @@
           "type": "boolean",
           "default": true,
           "description": "Whether findings from the project's own oxlint config are reported and baselined too. Set false when the project already runs oxlint with its own baseline or gate: Intersite then reports only the rules its packs and lint.rules turn on, and a change to the project's own rules never touches intersite-baseline.json."
+        },
+        "typeAware": {
+          "type": "boolean",
+          "default": false,
+          "description": "Runs oxlint's type-aware rules for promises nobody awaits (typescript/no-floating-promises, no-misused-promises, await-thenable). Needs the oxlint-tsgolint package and a tsconfig.json; slower than plain lint."
         }
       }
     },
