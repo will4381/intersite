@@ -1,14 +1,11 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { enclosingFunction, isTestOrFixture } from "../shared.mjs";
+import { enclosingFunction, isMethodCall, isTestOrFixture } from "../shared.mjs";
 
 // What a guessable value must never be: `token`, `resetToken`, `otp`, `inviteCode`, `API_SECRET`, `generateApiKey`.
 const SECRET = /^(token|secret|otp|nonce|password|passcode|salt|pin|code|apiKey|sessionId|licenseKey|inviteCode|resetCode|verificationCode|authCode|referralCode)$|(Token|Secret|Otp|OTP|Nonce|Password|Passcode|Salt|Pin|PIN|ApiKey|SessionId|LicenseKey|InviteCode|ResetCode|VerificationCode|AuthCode|ReferralCode)$|^[A-Z0-9_]*(TOKEN|SECRET|OTP|NONCE|PASSWORD|SALT|API_KEY)$|_(token|secret|otp|nonce|password|salt|pin|code)$/;
 const FUNCTION = /^(generate|create|make|new|random|gen)\w*(Token|Secret|Otp|OTP|Nonce|Password|Passcode|Salt|Pin|PIN|Code|ApiKey|SessionId)$/;
-
-/** @param {any} node */
-const isMathRandom = (node) => node.type === "CallExpression" && node.callee.type === "MemberExpression" && node.callee.object.name === "Math" && node.callee.property.name === "random";
 
 /** @param {any} node */
 function keyName(node) {
@@ -74,7 +71,7 @@ export const rule = defineRule({
         if (node.id.type === "Identifier" && init?.type === "Literal" && typeof init.value === "string") strings.set(node.id.name, init.value.length);
       },
       CallExpression(node) {
-        if (!isMathRandom(node)) return;
+        if (!isMethodCall(node, "Math", "random")) return;
         const stored = target(node);
         const name = stored && (SECRET.test(stored) || FUNCTION.test(stored)) ? stored : generator(node);
         if (name) return context.report({ node, messageId: "named", data: { name } });

@@ -227,7 +227,7 @@ export function findOxlint(cwd) {
  * The project's own oxlint config. Plain JSON is read directly; oxlint also accepts comments and trailing commas, so
  * anything else is read back through oxlint itself, which reports a broken file in its own words.
  * @param {string} oxlint @param {string} file
- * @returns {Promise<{ plugins?: string[] }>}
+ * @returns {Promise<{ plugins?: string[], ignorePatterns?: string[] }>}
  */
 async function ownSettings(oxlint, file) {
   const text = readFileSync(file, "utf8");
@@ -248,7 +248,8 @@ async function ownSettings(oxlint, file) {
 
 /**
  * Writes the generated oxlint config into node_modules/.cache/intersite and returns its path, with a second one for
- * listing files: the same minus intersite's plugin, which only lints and would be loaded for nothing.
+ * listing files: the same minus intersite's plugin, which only lints and would be loaded for nothing, and the project's
+ * own ignore patterns.
  * @param {string} cwd
  * @param {string} ownConfig the project's own oxlint config
  * @param {string} oxlint
@@ -260,8 +261,10 @@ async function writeOxlintConfig(cwd, ownConfig, oxlint, rules) {
   const filesConfig = join(cacheDir, "oxlintrc-files.json");
   mkdirSync(cacheDir, { recursive: true });
   // Naming plugins replaces oxlint's default set, so start from the project's own list, or the defaults.
+  /** @type {{ plugins?: string[], ignorePatterns?: string[] }} */
+  const own = existsSync(ownConfig) ? await ownSettings(oxlint, ownConfig) : {};
   /** @type {string[]} */
-  const ownPlugins = (existsSync(ownConfig) ? (await ownSettings(oxlint, ownConfig)).plugins : undefined) ?? ["unicorn", "typescript", "oxc"];
+  const ownPlugins = own.plugins ?? ["unicorn", "typescript", "oxc"];
   // Plugins this run adds for a pack's built-in rules. Turning a plugin on also turns on its whole "correctness"
   // set, which nobody chose, so every such rule not named by a pack is switched off again.
   const added = [...new Set(builtinRules.filter((b) => b.rule in rules).map((b) => b.rule.split("/")[0]))].filter((name) => name !== "eslint" && !ownPlugins.includes(name));
@@ -275,21 +278,24 @@ async function writeOxlintConfig(cwd, ownConfig, oxlint, rules) {
   const settings = { ...(existsSync(ownConfig) && { extends: [ownConfig] }), plugins: [...ownPlugins, ...added] };
   writeFileSync(configFile, JSON.stringify({ ...settings, jsPlugins: [fileURLToPath(new URL("../lint/plugin.mjs", import.meta.url))], rules }));
   writeFileSync(filesConfig, JSON.stringify({ ...settings, rules: Object.fromEntries(Object.entries(rules).filter(([id]) => !id.startsWith("intersite/"))) }));
-  return { configFile, filesConfig };
+  // oxlint drops `ignorePatterns` from an extended config, so the project's own ignores are passed on the command line.
+  // ponytail: read relative to the working directory, which is where the own config sits unless lint.extends moves it.
+  return { configFile, filesConfig, ignores: own.ignorePatterns ?? [] };
 }
 
 /**
  * Runs oxlint for its JSON report and its file list; prints the error and returns undefined when the report is unusable.
  * @param {string} cwd
  * @param {string} oxlint
- * @param {{ configFile: string, filesConfig: string }} configs the config to lint with, and the one to list files with
+ * @param {{ configFile: string, filesConfig: string, ignores: string[] }} configs the config to lint with, the one to list
+ * files with, and the project's own ignore patterns
  * @param {string[]} paths
  */
-async function runOxlint(cwd, oxlint, { configFile, filesConfig }, paths) {
+async function runOxlint(cwd, oxlint, { configFile, filesConfig, ignores }, paths) {
   // The JSON report has no file list, so a second oxlint run lists the files it lints (its own ignores applied).
   // A Swift-only project has nothing for oxlint, which is not an error.
   // oxlint lints node_modules unless a .gitignore says not to, and a fresh project may have no .gitignore.
-  const args = ["--no-error-on-unmatched-pattern", "--ignore-pattern=**/node_modules/**", ...(paths.length ? paths : ["."])];
+  const args = ["--no-error-on-unmatched-pattern", "--ignore-pattern=**/node_modules/**", ...ignores.map((p) => `--ignore-pattern=${p}`), ...(paths.length ? paths : ["."])];
   /** @param {string[]} extra */
   const oxlintRun = (extra) => exec(oxlint, [...extra, ...args], { cwd, maxBuffer: Infinity }).catch((/** @type {any} */ e) => e);
   const [run, listed] = await Promise.all([oxlintRun(["-c", configFile, "-f", "json"]), oxlintRun(["-c", filesConfig, "--debug=files"])]);

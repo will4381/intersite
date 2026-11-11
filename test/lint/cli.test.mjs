@@ -52,6 +52,24 @@ test("success is one line, and --json prints findings and the baselined count", 
   });
 });
 
+test("files the project's own oxlint config ignores are not linted", async () => {
+  // oxlint drops ignorePatterns from an extended config; intersite passes them on.
+  const cwd = fixture({
+    "intersite.json": { project: "ignores" },
+    ".oxlintrc.json": { ignorePatterns: ["gen/**"] },
+    "src/a.ts": "export const a = 1;\n",
+    "gen/client.ts": "try { run(); } catch {}\n",
+  });
+  assert.deepEqual(await runLint(cwd), { code: 0, out: "ok lint: 1 files, 0 new findings" });
+});
+
+test("the comments pack is off by default and on when lint.rules names one of its rules", async () => {
+  const files = { "src/total.ts": "// the provider rounds down\nexport const total = (cents: number) => cents;\n" };
+  assert.deepEqual(await runLint(fixture({ "intersite.json": { project: "comments" }, ...files })), { code: 0, out: "ok lint: 1 files, 0 new findings" });
+  const cwd = fixture({ "intersite.json": { project: "comments", lint: { rules: { "require-comment-tag": "error" } } }, ...files });
+  assert.deepEqual(rulesHit((await runLint(cwd, ["--json"])).out), ["src/total.ts intersite/require-comment-tag"]);
+});
+
 const packFiles = {
   // Split so this file does not hold a live-shaped key itself.
   "src/secret.ts": "export const key = 'sk_" + "live_51HxQ2bLk8dPq3RtY7uVw9ZaB';\n",

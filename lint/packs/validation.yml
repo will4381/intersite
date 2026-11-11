@@ -19,3 +19,4 @@ rules:
 builtin:
   - { rule: typescript/no-unsafe-function-type, pack: types }
   - { rule: typescript/no-wrapper-object-types, pack: types }
+  - { rule: typescript/no-unnecessary-type-constraint, pack: types }

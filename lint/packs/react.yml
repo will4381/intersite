@@ -45,3 +45,12 @@ builtin:
   - { rule: react/hooks, pack: react }
   # setState called during render.
   - { rule: react/set-state-in-render, pack: react }
+  # The React Compiler's checks for render that is not pure: Math.random() or Date.now() in render, refs read or
+  # written during render, props, state or hook results mutated, globals reassigned, try/catch around JSX, and a
+  # useMemo that returns nothing. Each breaks under concurrent rendering whether or not the compiler is used.
+  - { rule: react/purity, pack: react }
+  - { rule: react/refs, pack: react }
+  - { rule: react/immutability, pack: react }
+  - { rule: react/globals, pack: react }
+  - { rule: react/error-boundaries, pack: react }
+  - { rule: react/use-memo, pack: react }

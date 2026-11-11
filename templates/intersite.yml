@@ -3,7 +3,7 @@
 project: PROJECT
 
 # lint:
-#   packs: [tests, slop, security, state]   # replaces the default list (every pack but runtime and actions)
+#   packs: [tests, slop, security, state]   # replaces the default list (every pack but runtime, actions and comments)
 #   rules: { no-explicit-any: off }
 #   custom:
 #     - id: no-raw-fetch

@@ -162,6 +162,10 @@ export function mentions(context, pattern) {
 
 // Where outside data enters: the request, URL and form values, storage and the environment.
 
+/** `object.method(...)` on a global: `JSON.parse(x)`, `Math.random()`. @param {any} node @param {string} object @param {string} method */
+export const isMethodCall = (node, object, method) =>
+  node?.type === "CallExpression" && node.callee.type === "MemberExpression" && node.callee.object.name === object && node.callee.property.name === method;
+
 /** The method name of `x.name(...)`, or the function name of `name(...)`. @param {any} call */
 export const calleeName = (call) => call?.type !== "CallExpression" ? "" : call.callee.type === "MemberExpression" ? call.callee.property?.name ?? "" : call.callee.name ?? "";
 

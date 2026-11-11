@@ -77,6 +77,7 @@
             "security",
             "state",
             "async",
+            "perf",
             "react",
             "next",
             "design",
@@ -95,7 +96,7 @@
             "auth",
             "swift"
           ],
-          "description": "Rule packs to turn on. Every rule in a listed pack is an error unless `rules` says otherwise. Everything is on by default except `runtime` and `actions`; a framework pack stays silent in a project that does not use the framework. Run `intersite lint --rules` for the list."
+          "description": "Rule packs to turn on. Every rule in a listed pack is an error unless `rules` says otherwise. Everything is on by default except `runtime`, `actions` and `comments`; a framework pack stays silent in a project that does not use the framework. Run `intersite lint --rules` for the list."
         },
         "rules": {
           "type": "object",

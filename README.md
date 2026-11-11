@@ -6,7 +6,7 @@ user sessions into tests nobody has to write.
 ## Quickstart
 
 ```bash
-npm i -D github:will4381/intersite#v1.0.0-rc.4 oxlint @oxlint/plugins
+npm i -D github:will4381/intersite#v1.0.0-rc.5 oxlint @oxlint/plugins
 ```
 
 ```bash
@@ -132,30 +132,37 @@ that says what to do instead, and examples.
 | `tests` | on | Tests that cannot fail: no assertion, constant or mock-only assertions, skips, module mocking |
 | `slop` | on | Swallowed errors, fake fallback values, `any` and double casts, commented-out code, elision and placeholder comments, comments that restate the next line or narrate an edit, emoji and "here" debug logs, throwaway names (`data2`, `fetchUserV2` beside `fetchUser`), mock data and placeholder copy in source |
 | `design` | on | Over-engineering and tangles: import cycles, nesting past 4 levels, functions over 80 statements, more than 5 parameters, boolean-flag arguments, tangled ternaries, pass-through functions and components, one-implementation interfaces, classes that should be functions |
-| `async` | on | Async callbacks nobody awaits, `fetch` without a status check, rethrows that drop the original error, fixed sleeps, success returned from a catch |
-| `react` | on | Effects that only derive state, racy fetches in effects, pointless memoisation, components defined inside components, twelve or more states in one component, needless `"use client"`, hook dependency mistakes |
+| `async` | on | Async callbacks nobody awaits, `fetch` without a status check, rethrows that drop the original error, fixed sleeps, success returned from a catch, exponential backoff (`2 ** attempt`) written outside the project's retry helper |
+| `perf` | on | In files named `*.hot.ts` or `*.hot.tsx` (code that runs on every request): regular expressions built inside functions, dynamic `import()`, deep copies (`structuredClone`, JSON round trips), work at module scope. A project with no `.hot.` files is unaffected |
+| `react` | on | Effects that only derive state, racy fetches in effects, pointless memoisation, components defined inside components, twelve or more states in one component, needless `"use client"`, hook dependency mistakes, impure render (random values or the clock read in render, refs read during render, mutated props or state) |
 | `security` | on | Live credentials, default secrets, secrets behind public env prefixes or in logs, SQL and shell commands built from strings, request bodies written straight to the database, `Math.random` tokens, disabled TLS checks, open redirects, unverified Stripe webhooks |
 | `next` | on | Server-only env read in a client file, server actions that write with no auth check |
 | `state` | on | Implicit state machines: three or more boolean flags doing one state's job |
-| `types` | on | Casts on outside data (`JSON.parse(x) as T`, `res.json() as T`, `req.body as T`, `process.env.X as string`), `!` on env, URL, header and storage values and on `find()`, type guards that check nothing, `{...} as T` where `satisfies` would check it, `as never` |
+| `types` | on | Casts on outside data (`JSON.parse(x) as T`, `res.json() as T`, `req.body as T`, `process.env.X as string`), `!` on env, URL, header and storage values and on `find()`, type guards that check nothing, `{...} as T` where `satisfies` would check it, `as never`, `T extends any` |
 | `validation` | on | Request input reaching a write, query or mail call unchecked, a parsed result thrown away while the raw value is used, `Number()`/`parseInt` on input with no NaN check, page sizes with no maximum, unguarded `JSON.parse(localStorage…)`, raw env reads beside a validated env module |
 | `naming` | on | Hook names that lie, lowercase components and types, type words in names (`isLoadingBoolean`), one word cased two ways (`userId` with `userID`), snake_case pasted into camelCase files, abbreviation soup, names over 56 characters, reassigned `UPPER_SNAKE` constants |
 | `globals` | on | State on `window`/`globalThis`, exported `let` and exported empty Map/Set/array stores, hand-rolled `getInstance()` singletons |
-| `ui` | on | Where the project has tokens or a Tailwind theme: hardcoded colours, type values (size, weight, line height, family), spacing, radius and z-index; raw palette classes; static inline styles; raw controls hand-styled beside the project's own `Button`/`Input`; images without `alt`, clickable `div`s |
-| `orm` | on | Drizzle and Prisma: queries on the outer client inside a transaction, update or delete with no `where`, find-then-create races, one lookup per loop item |
+| `ui` | on | Where the project has tokens or a Tailwind theme: hardcoded colours, type values (size, weight, line height, family), spacing, radius and z-index; raw palette classes; static inline styles; raw controls hand-styled beside the project's own `Button`/`Input`; images without `alt`, clickable `div`s, invalid ARIA, empty links and headings, untitled iframes, positive `tabIndex` |
+| `orm` | on | Drizzle and Prisma: queries on the outer client inside a transaction, update or delete with no `where`, find-then-create races, one lookup per loop item, a `status` or `state` update whose `where` does not check the current state |
 | `query` | on | TanStack Query: a `queryKey` missing values the `queryFn` reads, a `queryFn` asserting `id!` with no `enabled` |
 | `workers` | on | Cloudflare Workers: promises neither awaited nor passed to `waitUntil`, destructured `ctx.waitUntil` |
 | `supabase` | on | Supabase results whose `error` is never read, `auth.getSession()` trusted on the server |
 | `server` | on | Express and Fastify: sending twice without `return`, Express 4 async handlers with no error forwarding |
 | `start` | on | TanStack Start server functions whose validator only types the input |
-| `payments` | on | Stripe amounts built with floats or taken from the client; refunds, transfers and payouts with no idempotency key |
+| `payments` | on | Stripe amounts built with floats or taken from the client; refunds, transfers and payouts with no idempotency key; in files named `*.money.ts`, fractional literals, `Math.round`/`floor`/`ceil`/`trunc`, `parseFloat` and `toFixed` |
 | `auth` | on | A `userId` taken from the request in a handler that has the session |
 | `swift` | on | Swift through SwiftLint (`brew install swiftlint`): force `try` and force unwraps, empty `catch` and discarded `try?`, `print` logging, stub `fatalError`s, fixed `asyncAfter` delays, `Task` in `onAppear`, `AnyView`, flag clusters, deprecated SwiftUI APIs, fixed font sizes and raw colours outside design-system files, secrets in source or `UserDefaults`, type and identifier casing, view builders over 100 lines or nested past 7 levels, more than 12 `@State` properties, notification event buses and discarded observers, settable singletons, strong `self` in subscriptions and timers, redundant main-queue hops, generic `MARK`s, restating comments |
 | `runtime` | opt-in | Module-level mutable state, which leaks between requests on serverless |
 | `actions` | opt-in | Clickable elements with no `data-intersite` name |
+| `comments` | opt-in | Comments without a tag: a comment must open with `SAFETY:` (an invariant the code relies on), `PROVIDER:` (how an outside service behaves) or `ponytail:` (a known limit), or be a tool directive (a reasoned suppression, a JSDoc type, a bundler hint); and every type cast but `as const` needs a `SAFETY:` comment |
 
 A pack can also switch on rules oxlint already ships (`builtin:` in a pack file), and `lint.rules` turns any single
-rule off by name. A framework pack stays silent in a project that does not use the framework.
+rule off, or on, by name: `lint.rules: { require-comment-tag: error }` turns on one opt-in rule without restating
+the default packs. A framework pack stays silent in a project that does not use the framework. Files the project's
+own oxlint config ignores (`ignorePatterns`) are not linted.
+
+Two file suffixes mark code that needs stricter rules: `*.hot.ts` for code on every request's path (`perf`) and
+`*.money.ts` for money arithmetic (`payments`). Name a file that way to opt it in.
 
 Swift rules live in [lint/swift/rules.yml](lint/swift/rules.yml), in the same form: a message, `bad` and `good`
 examples, and either a SwiftLint rule or a regular expression. Intersite runs SwiftLint with only these rules, so a

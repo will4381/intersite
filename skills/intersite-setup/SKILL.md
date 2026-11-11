@@ -13,7 +13,7 @@ own agent instructions first and follow its branch and commit rules.
 Add to `devDependencies`, using the tag the user gives you or the latest one:
 
 ```json
-"intersite": "github:will4381/intersite#v1.0.0-rc.4"
+"intersite": "github:will4381/intersite#v1.0.0-rc.5"
 ```
 
 Add `oxlint` and `@oxlint/plugins` too if the project does not have them; if it has them older than 1.93, raise both in
@@ -100,7 +100,7 @@ replay can fill and submit the form. Turn on the `actions` pack so new elements 
 
 ```yaml
 lint:
-  packs: [tests, slop, security, state, async, react, next, design, types, validation, naming, globals, ui, orm, query, workers, supabase, server, start, payments, auth, swift, actions]
+  packs: [tests, slop, security, state, async, perf, react, next, design, types, validation, naming, globals, ui, orm, query, workers, supabase, server, start, payments, auth, swift, actions]
 ```
 
 Then baseline the existing ones with `npx intersite lint --write=init`, after checking that `npx intersite lint`

@@ -15,6 +15,8 @@ export function commentRule(message, matches, applies) {
         Program() {
           if (applies && !applies(context)) return;
           for (const comment of context.sourceCode.getAllComments()) {
+            // `#!/usr/bin/env node` tells the shell how to run the file; it is not a comment anyone wrote to explain code.
+            if (comment.type === "Shebang") continue;
             const first = comment.value.replace(/^[\s*]+/, "").split("\n")[0];
             if (matches(first, comment.value)) context.report({ loc: comment.loc, messageId: "found" });
           }
