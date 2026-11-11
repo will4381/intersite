@@ -6,7 +6,7 @@ user sessions into tests nobody has to write.
 ## Quickstart
 
 ```bash
-npm i -D github:will4381/intersite#v1.0.0-rc.2 oxlint @oxlint/plugins
+npm i -D github:will4381/intersite#v1.0.0-rc.3 oxlint @oxlint/plugins
 ```
 
 ```bash
