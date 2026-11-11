@@ -1,7 +1,7 @@
 // @ts-check
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -54,5 +54,13 @@ test("check skips replay with one line when nothing answers at replay.target", a
   r.commit("adapter");
   const { code, lines } = await check(r.cwd);
   assert.deepEqual(lines, ["skip replay: nothing answers at http://127.0.0.1:9 (start the server to replay recorded sessions)", "ok check: test-integrity, duplicates, similar, new-deps, artifacts, unused, naming, style-drift"]);
+  assert.equal(code, 0);
+});
+
+test("replay: false leaves replay out of check without a skip line", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "intersite-check-noreplay-"));
+  writeFileSync(join(cwd, "intersite.yml"), "project: t\nreplay: false\n");
+  const { code, lines } = await check(cwd);
+  assert.deepEqual(lines, ["skip gates: not a git repository (run `git init` to check changes)", "ok check: no stages ran"]);
   assert.equal(code, 0);
 });

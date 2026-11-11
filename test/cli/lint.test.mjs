@@ -74,3 +74,13 @@ test("an invalid lint.custom selector is reported with the parser's reason, not 
   assert.equal(r.code, 2);
   assert.match(r.out, /^intersite lint: a lint rule crashed on src\/a\.ts: SyntaxError: [^\n]+$/);
 });
+
+test("a lint.custom rule's ignore globs exempt files inside its files globs", async () => {
+  const cwd = fixture({
+    "intersite.json": { project: "custom", lint: { packs: [], custom: [{ id: "no-raw-fetch", selector: "CallExpression[callee.name='fetch']", message: "Use apiClient.", files: ["src/**"], ignore: ["src/api-client.ts"] }] } },
+    "src/a.ts": "fetch('/x');\n",
+    "src/api-client.ts": "fetch('/x');\n",
+  });
+  const r = await runLint(cwd, ["--json"]);
+  assert.deepEqual(JSON.parse(r.out).findings.map((/** @type {{ file: string, rule: string }} */ f) => `${f.file} ${f.rule}`), ["src/a.ts intersite/no-raw-fetch"]);
+});

@@ -124,7 +124,8 @@ export function loadConfig(cwd) {
     lint: { ...defaults.lint, ...file.lint },
     gates: { ...defaults.gates, ...file.gates },
     capture: { ...defaults.capture, ...file.capture, ttlDays: { ...defaults.capture.ttlDays, ...file.capture?.ttlDays } },
-    replay: { ...defaults.replay, ...file.replay },
+    // `replay: false` is a project that only lints and gates: no replay stage, adapter or replay skill.
+    replay: { ...defaults.replay, ...file.replay, enabled: file.replay !== false },
   };
 }
 
@@ -145,6 +146,7 @@ function readFile(path) {
   if (typeof file !== "object" || Array.isArray(file)) throw new Error(`${name}: must be a mapping of settings, such as \`project: acme\``);
   for (const section of Object.keys(defaults)) {
     const value = file[section];
+    if (section === "replay" && value === false) continue;
     if (value !== undefined && value !== null && (typeof value !== "object" || Array.isArray(value))) {
       throw new Error(`${name}: "${section}" must be a mapping, such as \`${section}:\` followed by indented settings`);
     }

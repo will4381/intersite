@@ -22,6 +22,12 @@ npx intersite check
 further setup. To add capture and replay, ask your agent to "set up intersite"; the `intersite-setup` skill walks it
 through the wiring.
 
+For lint and gates only, run `npx intersite init --no-replay`, or put `replay: false` in `intersite.yml`: `check` then
+runs no replay stage, and `init` writes no adapter and no replay skill.
+
+In a monorepo, install `intersite`, `oxlint` and `@oxlint/plugins` once at the repository root. A package with its own
+`intersite.yml` finds them from there, so a package with no `node_modules` of its own needs nothing installed in it.
+
 ## What `check` runs
 
 | Stage | Catches | Needs |
@@ -54,7 +60,7 @@ finding, exit code 0, 1 or 2.
 
 | Command | Does |
 | --- | --- |
-| `intersite init` | Sets a project up; safe to run again after upgrading |
+| `intersite init` | Sets a project up; safe to run again after upgrading. `--no-replay` sets up lint and gates only |
 | `intersite check [--base <ref>] [--skip <stage>]` | Runs every stage that applies; one line on success |
 | `intersite lint [paths] [--write] [--rules]` | Lints; `--write` lowers the baseline; `--rules` lists what applies |
 | `intersite gate <name> [--base <ref>]` | Runs one gate against the diff |
@@ -120,7 +126,7 @@ A deliberate exception is always written down where a reviewer sees it: `gates.a
 A rule is one YAML entry: a syntax-tree `selector` (or a `comment` pattern, for rules about comments), a message
 that says what to do instead, and examples.
 
-- For one project: add it to `lint.custom` in `intersite.yml`.
+- For one project: add it to `lint.custom` in `intersite.yml`. `files` limits it to path globs and `ignore` exempts some.
 - For every project: add it to a file in [lint/packs/](lint/packs/) with a `pack`, `bad` and `good` examples. The
   test suite fails unless every `bad` example is reported and no `good` one is.
 - A rule can leave out kinds of file with `skip: [tests]`, `[generated]` or both, and skip files that cannot match

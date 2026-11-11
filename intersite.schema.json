@@ -327,137 +327,145 @@
       }
     },
     "replay": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "target": {
-          "type": "string",
-          "default": "http://localhost:8787",
-          "description": "Base URL the cases are replayed against."
+      "description": "Replay of recorded traffic. `replay: false` turns it off for a project that only lints and gates: `intersite check` runs no replay stage and `intersite init` writes no adapter.",
+      "oneOf": [
+        {
+          "const": false
         },
-        "adapter": {
-          "type": "string",
-          "default": "./intersite.adapter.mjs",
-          "description": "Module that signs in seeded users and resolves IDs."
-        },
-        "modes": {
-          "type": "array",
-          "items": {
-            "enum": [
-              "baseline",
-              "twice",
-              "cross-tenant",
-              "ui",
-              "contract"
-            ]
-          },
-          "default": [
-            "baseline"
-          ]
-        },
-        "sample": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 200,
-          "default": 20,
-          "description": "Sessions per run when no --sample is given."
-        },
-        "uiTarget": {
-          "type": "string",
-          "description": "Base URL of the web app, for the `ui` mode."
-        },
-        "shiftDates": {
-          "type": "boolean",
-          "default": true,
-          "description": "Move recorded timestamps in requests forward by the time since capture, so date validation still passes."
-        },
-        "browser": {
-          "enum": [
-            "chrome",
-            "lightpanda"
-          ],
-          "default": "chrome",
-          "description": "Browser for the `ui` mode. `chrome` uses Chrome Headless Shell when Playwright has it installed, else Google Chrome; `lightpanda` starts `lightpanda serve` from PATH."
-        },
-        "browserUrl": {
-          "type": "string",
-          "description": "Chrome DevTools Protocol URL of a browser already running, for the `ui` mode to connect to instead of starting one (http://host:port or ws://...)."
-        },
-        "snapshotIgnore": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "pattern": "^/"
-          },
-          "default": [],
-          "description": "JSON pointers left out of --snapshot-base comparisons, for values that change on their own; `*` matches one segment (/updatedAt, /items/*/etag)."
-        },
-        "contractIgnore": {
-          "type": "array",
-          "default": [],
-          "description": "Deliberate exceptions to the contract replay mode; each silences the findings it matches and shows up in review.",
-          "items": {
-            "type": "object",
-            "required": [
-              "route",
-              "why"
-            ],
-            "additionalProperties": false,
-            "properties": {
-              "route": {
-                "type": "string",
-                "description": "Method and route template (GET /v1/orders/:id), or the template alone for every method."
-              },
-              "pointer": {
-                "type": "string",
-                "description": "JSON pointer of the finding (/data/created_at); omit to match every pointer."
-              },
-              "check": {
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "string",
+              "default": "http://localhost:8787",
+              "description": "Base URL the cases are replayed against."
+            },
+            "adapter": {
+              "type": "string",
+              "default": "./intersite.adapter.mjs",
+              "description": "Module that signs in seeded users and resolves IDs."
+            },
+            "modes": {
+              "type": "array",
+              "items": {
                 "enum": [
-                  "casing",
-                  "types",
-                  "envelope",
-                  "errors",
-                  "status",
-                  "values",
-                  "exposure",
-                  "size",
-                  "requests",
-                  "routes"
+                  "baseline",
+                  "twice",
+                  "cross-tenant",
+                  "ui",
+                  "contract"
                 ]
               },
-              "why": {
+              "default": [
+                "baseline"
+              ]
+            },
+            "sample": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 20,
+              "description": "Sessions per run when no --sample is given."
+            },
+            "uiTarget": {
+              "type": "string",
+              "description": "Base URL of the web app, for the `ui` mode."
+            },
+            "shiftDates": {
+              "type": "boolean",
+              "default": true,
+              "description": "Move recorded timestamps in requests forward by the time since capture, so date validation still passes."
+            },
+            "browser": {
+              "enum": [
+                "chrome",
+                "lightpanda"
+              ],
+              "default": "chrome",
+              "description": "Browser for the `ui` mode. `chrome` uses Chrome Headless Shell when Playwright has it installed, else Google Chrome; `lightpanda` starts `lightpanda serve` from PATH."
+            },
+            "browserUrl": {
+              "type": "string",
+              "description": "Chrome DevTools Protocol URL of a browser already running, for the `ui` mode to connect to instead of starting one (http://host:port or ws://...)."
+            },
+            "snapshotIgnore": {
+              "type": "array",
+              "items": {
                 "type": "string",
-                "minLength": 1
-              }
-            }
-          }
-        },
-        "crossTenantIgnore": {
-          "type": "array",
-          "default": [],
-          "description": "Routes whose records are public by design (a marketplace listing, a network program): the cross-tenant mode does not send them as another account, so neither its access check nor its list check reports them. Shows up in review.",
-          "items": {
-            "type": "object",
-            "required": [
-              "route",
-              "why"
-            ],
-            "additionalProperties": false,
-            "properties": {
-              "route": {
-                "type": "string",
-                "description": "Method and route template (GET /v1/programs/:id), or the template alone for every method."
+                "pattern": "^/"
               },
-              "why": {
-                "type": "string",
-                "minLength": 1,
-                "description": "Why another account may reach this record."
+              "default": [],
+              "description": "JSON pointers left out of --snapshot-base comparisons, for values that change on their own; `*` matches one segment (/updatedAt, /items/*/etag)."
+            },
+            "contractIgnore": {
+              "type": "array",
+              "default": [],
+              "description": "Deliberate exceptions to the contract replay mode; each silences the findings it matches and shows up in review.",
+              "items": {
+                "type": "object",
+                "required": [
+                  "route",
+                  "why"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "route": {
+                    "type": "string",
+                    "description": "Method and route template (GET /v1/orders/:id), or the template alone for every method."
+                  },
+                  "pointer": {
+                    "type": "string",
+                    "description": "JSON pointer of the finding (/data/created_at); omit to match every pointer."
+                  },
+                  "check": {
+                    "enum": [
+                      "casing",
+                      "types",
+                      "envelope",
+                      "errors",
+                      "status",
+                      "values",
+                      "exposure",
+                      "size",
+                      "requests",
+                      "routes"
+                    ]
+                  },
+                  "why": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            },
+            "crossTenantIgnore": {
+              "type": "array",
+              "default": [],
+              "description": "Routes whose records are public by design (a marketplace listing, a network program): the cross-tenant mode does not send them as another account, so neither its access check nor its list check reports them. Shows up in review.",
+              "items": {
+                "type": "object",
+                "required": [
+                  "route",
+                  "why"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "route": {
+                    "type": "string",
+                    "description": "Method and route template (GET /v1/programs/:id), or the template alone for every method."
+                  },
+                  "why": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Why another account may reach this record."
+                  }
+                }
               }
             }
           }
         }
-      }
+      ]
     }
   },
   "definitions": {
@@ -491,6 +499,13 @@
             "type": "string"
           },
           "description": "Path globs the rule applies to; all files when omitted."
+        },
+        "ignore": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Path globs the rule never applies to, such as the one file allowed to do what it bans."
         },
         "bad": {
           "type": "array",

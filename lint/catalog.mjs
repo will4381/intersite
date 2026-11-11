@@ -14,7 +14,7 @@ import { isGenerated, isTestFile, mentions } from "./rules/shared.mjs";
 /**
  * A rule declared in YAML: a `selector` over the syntax tree, or a `comment` regular expression (optionally with
  * `unless`, a second expression that exempts a comment).
- * @typedef {{ id: string, pack?: string, selector?: string, comment?: string, unless?: string, needs?: string, message: string, files?: string[], skip?: string[], ext?: string, bad?: string[], good?: string[] }} JsonRule
+ * @typedef {{ id: string, pack?: string, selector?: string, comment?: string, unless?: string, needs?: string, message: string, files?: string[], ignore?: string[], skip?: string[], ext?: string, bad?: string[], good?: string[] }} JsonRule
  */
 
 /** Every file in lint/packs: `rules` are declared rules, `builtin` switches on rules oxlint already ships. */
@@ -44,12 +44,12 @@ const SKIPS = /** @type {Record<string, (context: any) => boolean>} */ ({ tests:
 function appliesTo(r) {
   const unknown = r.skip?.find((kind) => !(kind in SKIPS));
   if (unknown) throw new Error(`intersite rule "${r.id}": skip "${unknown}" is not one of ${Object.keys(SKIPS).join(", ")}`);
-  const { files } = r;
+  const { files, ignore } = r;
   const skips = r.skip?.map((kind) => SKIPS[kind]) ?? [];
   const needs = r.needs ? new RegExp(r.needs) : undefined;
-  if (!files && !skips.length && !needs) return undefined;
+  if (!files && !ignore && !skips.length && !needs) return undefined;
   return (context) =>
-    (!files || files.some((glob) => matchesGlob(relative(context.cwd, context.filename), glob))) && !skips.some((skip) => skip(context)) && (!needs || mentions(context, needs));
+    (!files || files.some((glob) => matchesGlob(relative(context.cwd, context.filename), glob))) && !ignore?.some((glob) => matchesGlob(relative(context.cwd, context.filename), glob)) && !skips.some((skip) => skip(context)) && (!needs || mentions(context, needs));
 }
 
 /** The oxlint rule for a declared rule; throws, naming the rule, when it is malformed. @param {JsonRule} r */

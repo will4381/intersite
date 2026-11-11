@@ -44,7 +44,7 @@ export default async function check(argv, { cwd }) {
     { name: "lint", command: "lint", argv: [] },
     ...(git ? config.gates.run : []).map((/** @type {string} */ gate) => ({ name: gate, command: "gate", argv: [gate, ...base] })),
   ];
-  if (!skip.has("replay")) {
+  if (config.replay.enabled && !skip.has("replay")) {
     if (!existsSync(resolve(cwd, config.replay.adapter))) console.log(`skip replay: no adapter at ${config.replay.adapter}`);
     else if (!(await reachable(config.collector.url))) console.log(`skip replay: no collector at ${config.collector.url} (start one with \`intersite collector\`)`);
     else if (!(await answers(config.replay.target))) console.log(`skip replay: nothing answers at ${config.replay.target} (start the server to replay recorded sessions)`);

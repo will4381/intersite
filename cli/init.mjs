@@ -20,8 +20,9 @@ const packaged = (path) => readFileSync(join(packageRoot, path), "utf8");
  * @param {string[]} argv @param {{ cwd: string }} context
  */
 export default async function init(argv, { cwd }) {
-  if (argv.length) {
-    console.error(`intersite init: unexpected ${argv[0]}; usage: intersite init`);
+  const noReplay = argv[0] === "--no-replay";
+  if (argv.length > (noReplay ? 1 : 0)) {
+    console.error(`intersite init: unexpected ${argv[noReplay ? 1 : 0]}; usage: intersite init [--no-replay]`);
     return 2;
   }
   /** @type {string[]} */
@@ -36,8 +37,12 @@ export default async function init(argv, { cwd }) {
   };
 
   const fresh = !configPath(cwd);
-  if (fresh) write(CONFIG_FILE, packaged("templates/intersite.yml").replace("PROJECT", projectName(cwd)));
-  write("intersite.adapter.mjs", packaged("templates/adapter.mjs"), true);
+  if (fresh) {
+    const template = packaged("templates/intersite.yml").replace("PROJECT", projectName(cwd));
+    write(CONFIG_FILE, noReplay ? `${template.slice(0, template.indexOf("# replay:"))}# Lint and gates only: no replay stage, adapter or replay skill.\nreplay: false\n` : template);
+  }
+  const replays = loadConfig(cwd).replay.enabled;
+  if (replays) write("intersite.adapter.mjs", packaged("templates/adapter.mjs"), true);
 
   const block = `${START}\n${packaged("templates/agents.md").trimEnd()}\n${END}`;
   const agents = existsSync(join(cwd, "AGENTS.md")) ? readFileSync(join(cwd, "AGENTS.md"), "utf8") : "";
@@ -48,6 +53,8 @@ export default async function init(argv, { cwd }) {
     : `${agents.trimEnd()}${agents.trim() ? "\n\n" : ""}${block}\n`);
 
   for (const skill of readdirSync(join(packageRoot, "skills"))) {
+    // intersite-bug reproduces a bug from a recorded request, which a project without replay never has.
+    if (!replays && skill === "intersite-bug") continue;
     write(`.claude/skills/${skill}/SKILL.md`, packaged(`skills/${skill}/SKILL.md`));
   }
 

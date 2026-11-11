@@ -112,7 +112,7 @@ test("init takes no arguments: an unknown flag is a usage error, not silently ig
   } finally {
     console.error = original;
   }
-  assert.deepEqual(errors, ["intersite init: unexpected --force; usage: intersite init"]);
+  assert.deepEqual(errors, ["intersite init: unexpected --force; usage: intersite init [--no-replay]"]);
   assert.equal(existsSync(join(cwd, "intersite.yml")), false);
 });
 
@@ -139,4 +139,13 @@ test("in a Swift-only project init records the baseline through SwiftLint and do
   writeFileSync(join(cwd, "App/Settings.swift"), "import SwiftUI\n\nlet decoded = try! JSONDecoder().decode(Int.self, from: Data())\n");
   assert.match(await run(cwd), /^ok init: wrote .*, intersite-baseline\.json$/);
   assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(cwd, "intersite-baseline.json"), "utf8"))), ["App/Settings.swift"]);
+});
+
+test("init --no-replay writes replay: false and neither the adapter nor the replay skill", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "intersite-init-noreplay-"));
+  assert.equal(await init(["--no-replay"], { cwd, quiet: true }), 0);
+  assert.equal(loadConfig(cwd).replay.enabled, false);
+  assert.ok(!existsSync(join(cwd, "intersite.adapter.mjs")));
+  assert.ok(!existsSync(join(cwd, ".claude/skills/intersite-bug/SKILL.md")));
+  assert.ok(existsSync(join(cwd, ".claude/skills/intersite-rule/SKILL.md")));
 });
