@@ -40,6 +40,17 @@ test("the project's own .oxlintrc.json may have comments and trailing commas, as
   assert.match(broken.out, /^intersite lint: \.oxlintrc\.json is not a valid oxlint config: [^\n]+$/);
 });
 
+test("a path-scoped override in the project's own oxlint config still applies", async () => {
+  const cwd = fixture({
+    "intersite.json": { project: "scoped" },
+    ".oxlintrc.json": { rules: { "no-debugger": "off" }, overrides: [{ files: ["web/**"], rules: { "no-debugger": "error" } }] },
+    "web/a.ts": "debugger;\n",
+    "api/b.ts": "debugger;\n",
+  });
+  const r = await runLint(cwd, ["--json"]);
+  assert.deepEqual(JSON.parse(r.out).findings.map((/** @type {{ file: string, rule: string }} */ f) => [f.file, f.rule]), [["web/a.ts", "eslint/no-debugger"]]);
+});
+
 test("lint.ownRules: false leaves the project's own rules to the project's own lint command", async () => {
   const files = { ".oxlintrc.json": { rules: { "no-debugger": "error" } }, "src/a.ts": "debugger;\ntry { run(); } catch {}\n" };
   const rulesOf = async (/** @type {string} */ cwd) => JSON.parse((await runLint(cwd, ["--json"])).out).findings.map((/** @type {{ rule: string }} */ f) => f.rule).sort();

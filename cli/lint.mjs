@@ -1,7 +1,7 @@
 // @ts-check
 // intersite lint [paths...] [--write | --write=init | --json | --rules]
-import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { execFile, spawnSync } from "node:child_process";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -27,6 +27,31 @@ const bareSuppression = new RegExp(
 );
 
 const exec = promisify(execFile);
+const GENERATED = ".intersite-oxlintrc.json";
+const GENERATED_FILES = ".intersite-oxlintrc-files.json";
+
+/** Two lint runs at once write the same text, so a reader never sees half a file. @param {string} file @param {string} text */
+function writeIfChanged(file, text) {
+  if (existsSync(file) && readFileSync(file, "utf8") === text) return;
+  const partial = `${file}.${process.pid}`;
+  writeFileSync(partial, text);
+  renameSync(partial, file);
+}
+
+/**
+ * The generated configs are not the project's to commit, and an untracked file would fail a clean-tree check or the
+ * artifacts gate, so they go in this clone's own exclude list (never in the project's .gitignore). Outside git, nothing.
+ * @param {string} dir
+ */
+function keepOutOfGit(dir) {
+  const asked = spawnSync("git", ["rev-parse", "--git-path", "info/exclude"], { cwd: dir, encoding: "utf8" });
+  if (asked.status !== 0) return;
+  const exclude = resolve(dir, asked.stdout.trim());
+  const line = ".intersite-oxlintrc*.json*";
+  if (existsSync(exclude) && readFileSync(exclude, "utf8").split("\n").includes(line)) return;
+  mkdirSync(dirname(exclude), { recursive: true });
+  appendFileSync(exclude, `${existsSync(exclude) && !readFileSync(exclude, "utf8").endsWith("\n") ? "\n" : ""}${line}\n`);
+}
 
 /**
  * Every rule this oxlint ships. Asking takes a while, so the answer is kept until the binary changes.
@@ -247,7 +272,8 @@ async function ownSettings(oxlint, file) {
 }
 
 /**
- * Writes the generated oxlint config into node_modules/.cache/intersite and returns its path, with a second one for
+ * Writes the generated oxlint config (beside the project's own config when it has one, else into
+ * node_modules/.cache/intersite) and returns its path, with a second one for
  * listing files: the same minus intersite's plugin, which only lints and would be loaded for nothing, and the project's
  * own ignore patterns.
  * @param {string} cwd
@@ -257,9 +283,14 @@ async function ownSettings(oxlint, file) {
  */
 async function writeOxlintConfig(cwd, ownConfig, oxlint, rules) {
   const cacheDir = join(cwd, "node_modules/.cache/intersite");
-  const configFile = join(cacheDir, "oxlintrc.json");
-  const filesConfig = join(cacheDir, "oxlintrc-files.json");
+  // oxlint matches an extended config's `overrides` globs from the folder of the config it was started with, so with a
+  // project config the generated ones sit beside it; from the cache folder, `files: ["web/**"]` would match nothing.
+  // The real path: oxlint resolves its working folder, and a config named through a symlink would not line up with it.
+  const beside = existsSync(ownConfig) ? realpathSync(dirname(ownConfig)) : undefined;
+  const configFile = beside ? join(beside, GENERATED) : join(cacheDir, "oxlintrc.json");
+  const filesConfig = beside ? join(beside, GENERATED_FILES) : join(cacheDir, "oxlintrc-files.json");
   mkdirSync(cacheDir, { recursive: true });
+  if (beside) keepOutOfGit(beside);
   // Naming plugins replaces oxlint's default set, so start from the project's own list, or the defaults.
   /** @type {{ plugins?: string[], ignorePatterns?: string[] }} */
   const own = existsSync(ownConfig) ? await ownSettings(oxlint, ownConfig) : {};
@@ -276,8 +307,8 @@ async function writeOxlintConfig(cwd, ownConfig, oxlint, rules) {
   }
   // A built-in rule only runs when its plugin is on; `eslint` rules need none.
   const settings = { ...(existsSync(ownConfig) && { extends: [ownConfig] }), plugins: [...ownPlugins, ...added] };
-  writeFileSync(configFile, JSON.stringify({ ...settings, jsPlugins: [fileURLToPath(new URL("../lint/plugin.mjs", import.meta.url))], rules }));
-  writeFileSync(filesConfig, JSON.stringify({ ...settings, rules: Object.fromEntries(Object.entries(rules).filter(([id]) => !id.startsWith("intersite/"))) }));
+  writeIfChanged(configFile, JSON.stringify({ ...settings, jsPlugins: [fileURLToPath(new URL("../lint/plugin.mjs", import.meta.url))], rules }));
+  writeIfChanged(filesConfig, JSON.stringify({ ...settings, rules: Object.fromEntries(Object.entries(rules).filter(([id]) => !id.startsWith("intersite/"))) }));
   // oxlint drops `ignorePatterns` from an extended config, so the project's own ignores are passed on the command line.
   // ponytail: read relative to the working directory, which is where the own config sits unless lint.extends moves it.
   return { configFile, filesConfig, ignores: own.ignorePatterns ?? [] };
