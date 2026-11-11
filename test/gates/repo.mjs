@@ -8,32 +8,36 @@ import { dirname, join } from "node:path";
 import gate from "../../cli/gate.mjs";
 
 /**
- * @param {Record<string, string>} files committed as `base`
+ * @param {Record<string, string>} files committed as `base`, paths from the repository top
  * @param {Record<string, unknown>} [gates] the `gates` section of intersite.yml
+ * @param {{ at?: string }} [layout] `at`: the project's folder in a monorepo, where intersite.json goes; `cwd` is that
+ *   folder and `root` the repository top, which `write`, `rm` and `commit` work from
  */
-export function repo(files, gates = {}) {
-  const cwd = mkdtempSync(join(tmpdir(), "intersite-gate-repo-"));
+export function repo(files, gates = {}, { at = "" } = {}) {
+  const root = mkdtempSync(join(tmpdir(), "intersite-gate-repo-"));
+  const cwd = join(root, at);
   const git = (/** @type {string[]} */ ...args) =>
-    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...args], { cwd, encoding: "utf8" });
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...args], { cwd: root, encoding: "utf8" });
   const write = (/** @type {Record<string, string>} */ more) => {
     for (const [path, text] of Object.entries(more)) {
-      mkdirSync(dirname(join(cwd, path)), { recursive: true });
-      writeFileSync(join(cwd, path), text);
+      mkdirSync(dirname(join(root, path)), { recursive: true });
+      writeFileSync(join(root, path), text);
     }
   };
   git("init", "-q", "-b", "main");
   // No background housekeeping: a detached `git gc` can still be writing when a test deletes the repository.
   git("config", "gc.auto", "0");
   git("config", "maintenance.auto", "false");
-  write({ "intersite.json": JSON.stringify({ project: "t", gates: { base: "base", ...gates } }), ...files });
+  write({ [join(at, "intersite.json")]: JSON.stringify({ project: "t", gates: { base: "base", ...gates } }), ...files });
   git("add", ".");
   git("commit", "-qm", "base");
   git("tag", "base");
   return {
     cwd,
+    root,
     git,
     write,
-    rm: (/** @type {string} */ path) => rmSync(join(cwd, path)),
+    rm: (/** @type {string} */ path) => rmSync(join(root, path)),
     commit: (/** @type {string} */ message) => {
       git("add", "-A");
       git("commit", "-qm", message);

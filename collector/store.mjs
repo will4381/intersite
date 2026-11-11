@@ -6,8 +6,8 @@ import { caseProblem } from "../shared/case.mjs";
 /** Just the D1 surface used here. @typedef {{ prepare(sql: string): any, batch(statements: any[]): Promise<any[]> }} D1 */
 
 const DAY_MS = 86_400_000;
-/** Candidate session lookups read at most this many case rows, whatever the filters. */
-const CANDIDATE_ROWS = 5000;
+/** The sample is drawn from at most this many sessions, the most recently active first. */
+const CANDIDATE_SESSIONS = 5000;
 /** D1 allows 100 bound parameters per statement. */
 const PARAM_CHUNK = 90;
 const CLEANUP_BATCH = 1000;
@@ -96,7 +96,10 @@ export async function ingest(db, items, cap, now) {
 
 /**
  * Deterministic for a given seed: candidates are sorted, then shuffled with a seeded PRNG.
- * Reads: at most CANDIDATE_ROWS case rows for candidates, plus every case of the sampled sessions.
+ * Reads: every case row matching the filters, grouped into sessions (a cap on rows instead let one chatty session crowd
+ * every other out of the sample), plus every case of the sampled sessions.
+ * ponytail: the grouping reads all matching rows, bounded by dailyCap times ttlDays; add a sessions table kept on
+ * ingest if that read ever costs too much on D1.
  * @param {D1} db
  * @param {{ project: string, outcomes: string[], route?: string, action?: string, since?: number, knownGood: boolean, sample: number, seed: number }} query
  */
@@ -126,7 +129,7 @@ export async function sessions(db, query) {
     params.push(query.project);
   }
   const { results } = await db
-    .prepare(`SELECT DISTINCT session FROM (SELECT session FROM cases WHERE ${where.join(" AND ")} ORDER BY at_ms DESC LIMIT ${CANDIDATE_ROWS})`)
+    .prepare(`SELECT session FROM cases WHERE ${where.join(" AND ")} GROUP BY session ORDER BY MAX(at_ms) DESC LIMIT ${CANDIDATE_SESSIONS}`)
     .bind(...params)
     .all();
   const candidates = results.map((/** @type {any} */ row) => /** @type {string} */ (row.session)).sort();

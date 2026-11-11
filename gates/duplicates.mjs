@@ -1,9 +1,11 @@
 // @ts-check
 // Fails when an added block of source already exists elsewhere in the repository: pasted code that should be reused.
+// Only the project's own change is judged, but against the whole repository, since a copy of a shared package's code
+// is the case that matters most; the original is named relative to the project (`../../packages/ui/x.ts`).
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-import { addedLines, git, matches, resolveBase, topLevel, workingDiff } from "./lib.mjs";
+import { WORK_TREE, addedLines, git, matches, resolveBase, workingDiff } from "./lib.mjs";
 
 const CODE = /\.(?:[cm]?[jt]sx?|py|rb|go|rs|java|kts?|swift|c|h|cc|cpp|hpp|cs|php|vue|svelte|scala|sh|sql|css|scss)$/;
 const SKIP = /(?:^|\/)(?:node_modules|dist|build|out|vendor|coverage|generated|__generated__)\/|\.min\.|\.d\.ts$|\.generated\./;
@@ -71,17 +73,16 @@ function windowKey(f, i, n) {
  */
 export async function duplicates({ cwd, base, testPaths, duplicateLines: n }) {
   const sha = resolveBase(cwd, base);
-  const top = topLevel(cwd);
   const [patch] = workingDiff(cwd, [["-U0", "-M", sha]]);
   const added = addedLines(patch);
-  const tracked = git(top, ["ls-files", "-z"]).split("\0").filter((f) => CODE.test(f) && !SKIP.test(f));
+  const tracked = git(cwd, ["ls-files", "-z", "--", ...WORK_TREE]).split("\0").filter((f) => CODE.test(f) && !SKIP.test(f));
 
   // One index of every window of pre-existing lines. Windows touching added lines are left out, so the added block
   // never matches itself, and code moved within the change (gone from its old place) has no original to match.
   /** @type {Map<number, number>} */
   const index = new Map();
   for (const [fi, file] of tracked.entries()) {
-    const f = read(join(top, file));
+    const f = read(join(cwd, file));
     if (!f) continue;
     const fresh = added.get(file);
     for (let i = 0; i + n <= f.line.length; i++) {
@@ -96,7 +97,7 @@ export async function duplicates({ cwd, base, testPaths, duplicateLines: n }) {
   let checked = 0;
   for (const [file, fresh] of added) {
     if (!fresh.size || !CODE.test(file) || SKIP.test(file) || matches(file, testPaths)) continue;
-    const f = read(join(top, file));
+    const f = read(join(cwd, file));
     if (!f) continue;
     checked++;
     /** @type {{ first: number, last: number, at: number } | undefined} */

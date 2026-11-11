@@ -6,7 +6,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, posix } from "node:path";
 
-import { addedLines, listFiles, matches, resolveBase, topLevel, workingDiff } from "./lib.mjs";
+import { addedLines, listFiles, matches, projectPrefix, resolveBase, topLevel, workingDiff } from "./lib.mjs";
 import { blankComments, colourDistance, isNeutral, valuesOf } from "./style-values.mjs";
 
 const STYLED = /\.(?:css|scss|sass|less|[cm]?[jt]sx?|vue|svelte|astro|html|swift)$/;
@@ -244,11 +244,16 @@ export function drift(fresh, old, refs) {
  */
 export async function styleDrift({ cwd, base, testPaths }) {
   const sha = resolveBase(cwd, base);
-  const top = topLevel(cwd);
   const [patch] = workingDiff(cwd, [["-U0", "-M", sha]]);
   const added = new Map([...addedLines(patch)].filter(([file]) => STYLED.test(file) && !SKIP.test(file) && !matches(file, testPaths)));
   if (!added.size) return { findings: [], summary: "0 added styling lines checked" };
-  const { fresh, old, refs } = scan(top, listFiles(top).filter((f) => !matches(f, testPaths)), added);
-  const findings = drift(fresh, old, refs);
+  // The project's added values against the whole repository, with paths from the repository top so package scoping
+  // (an app sees its own tokens, those of packages above it and shared ones) works from a project in a subfolder.
+  // Findings are only ever in the project, and are named relative to it again.
+  const prefix = projectPrefix(cwd);
+  const fromTop = (/** @type {string} */ file) => posix.normalize(prefix + file);
+  const files = listFiles(cwd).filter((f) => !matches(f, testPaths)).map(fromTop);
+  const { fresh, old, refs } = scan(topLevel(cwd), files, new Map([...added].map(([file, lines]) => [fromTop(file), lines])));
+  const findings = drift(fresh, old, refs).map((f) => ({ target: f.target.slice(prefix.length), message: f.message.slice(prefix.length) }));
   return { findings, summary: `${fresh.length} added styling values checked against ${old.length} in the repository` };
 }

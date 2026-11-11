@@ -6,12 +6,15 @@
 /** @typedef {Record<string, Answer>} Snapshot caseId -> normalised answer */
 /** @typedef {{ pointer: string, before?: unknown, after?: unknown, order?: unknown[][] }} Difference `order` is the ids of the rows on both sides, before and after */
 /** @typedef {{ created: Set<string>, numbers: Map<string, number>, from: number }} Run */
+/** @typedef {{ before: number, after: number }} Starts  Each run's start (`_meta.startedAt`), in ms; NaN when a file predates it. */
 
 const NEAR = 10 * 60_000;
 const SHOWN = 3;
 const VALUE = 40;
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})$/;
 const REQUEST_ID_KEY = /^(?:request|trace|correlation)[_-]?id$/i;
+// A secret or token a write hands out is new every run, and has no business in a file on disk either.
+const SECRET_KEY = /(?:secret|token|password)$/i;
 
 /** @param {string} text */
 const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -29,7 +32,8 @@ export function idMatcher(ids) {
  * A JSON body with the values that change from run to run on their own replaced, everything else kept exactly: an ID
  * this session created (`run.created`, also inside a longer string) becomes `<id:n>`, numbered across the session in
  * order of first appearance; a timestamp from ten minutes before the session started to ten minutes from now becomes
- * `<now>`; a string under a request-ID key (`requestId`, `trace_id`, `correlationId`) becomes `<request-id>`.
+ * `<now>`; a string under a request-ID key (`requestId`, `trace_id`, `correlationId`) becomes `<request-id>`, and one
+ * under a key ending in secret, token or password (`clientSecret`, `accessToken`) becomes `<secret>`.
  * @param {unknown} body @param {Run} run @returns {unknown}
  */
 export function normalise(body, run) {
@@ -46,6 +50,7 @@ export function normalise(body, run) {
     if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, walk(v, k)]));
     if (typeof value !== "string") return value;
     if (REQUEST_ID_KEY.test(key)) return "<request-id>";
+    if (SECRET_KEY.test(key)) return "<secret>";
     const time = TIMESTAMP.test(value) ? Date.parse(value) : Number.NaN;
     if (time > run.from - NEAR && time < to) return "<now>";
     return created ? value.replace(created, placeholder) : value;
@@ -55,11 +60,13 @@ export function normalise(body, run) {
 
 /**
  * Each case whose status or body differs between the base snapshot and this run. A case missing on either side is
- * ignored. `ignore` holds JSON-pointer globs (`/items/*\/etag`, `*` is one segment) left out of the comparison.
- * @param {Snapshot} base @param {Snapshot} now @param {string[]} ignore
+ * ignored. `ignore` holds JSON-pointer globs (`/items/*\/etag`, `*` is one segment) left out of the comparison. Two
+ * timestamps the same time after their own run's start (`starts`), to within a minute, are the same value: an expiry of
+ * `now + 7 days` matches in both runs, while 7 days becoming 14 still differs.
+ * @param {Snapshot} base @param {Snapshot} now @param {string[]} ignore @param {Starts} [starts]
  * @returns {{ caseId: string, differences: Difference[] }[]}
  */
-export function compareSnapshots(base, now, ignore) {
+export function compareSnapshots(base, now, ignore, starts = { before: Number.NaN, after: Number.NaN }) {
   const ignored = ignore.map((glob) => new RegExp(`^${glob.split("*").map(escape).join("[^/]*")}$`));
   return Object.entries(now).flatMap(([caseId, answer]) => {
     const before = base[caseId];
@@ -67,7 +74,7 @@ export function compareSnapshots(base, now, ignore) {
     /** @type {Difference[]} */
     const out = [];
     if (before.status !== answer.status) out.push({ pointer: "status", before: before.status, after: answer.status });
-    diff(before.body, answer.body, "", { ignored, out });
+    diff(before.body, answer.body, "", { ignored, out, starts });
     return out.length ? [{ caseId, differences: out }] : [];
   });
 }
@@ -93,7 +100,7 @@ const isObject = (value) => value !== null && typeof value === "object" && !Arra
  * Pushes where `after` departs from `before` to `context.out`. Arrays compare by position, except when every element
  * on both sides is an object with a distinct `id`: then by id, so a reorder is one difference, not every row.
  * @param {unknown} before @param {unknown} after @param {string} pointer
- * @param {{ ignored: RegExp[], out: Difference[] }} context
+ * @param {{ ignored: RegExp[], out: Difference[], starts: Starts }} context
  */
 function diff(before, after, pointer, context) {
   if (context.ignored.some((glob) => glob.test(pointer)) || JSON.stringify(before) === JSON.stringify(after)) return;
@@ -109,7 +116,13 @@ function diff(before, after, pointer, context) {
     }
     return;
   }
-  context.out.push({ pointer: pointer || "/", before, after });
+  if (!sameOffset(before, after, context.starts)) context.out.push({ pointer: pointer || "/", before, after });
+}
+
+/** Whether two values are timestamps the same time after their run's start, to within a minute. @param {unknown} before @param {unknown} after @param {Starts} starts */
+function sameOffset(before, after, starts) {
+  if (typeof before !== "string" || typeof after !== "string" || !TIMESTAMP.test(before) || !TIMESTAMP.test(after)) return false;
+  return Math.abs(Date.parse(before) - starts.before - (Date.parse(after) - starts.after)) < 60_000;
 }
 
 /** Each element's `id` as text, when every element is an object with a distinct one. @param {unknown[]} list */
@@ -121,7 +134,7 @@ function keys(list) {
 /**
  * Arrays of objects with ids: a changed order of the rows on both sides is one difference; then each row present on
  * both sides is compared by id, and a row on one side only is a difference at its index.
- * @param {unknown[]} before @param {unknown[]} after @param {string} pointer @param {{ ignored: RegExp[], out: Difference[] }} context
+ * @param {unknown[]} before @param {unknown[]} after @param {string} pointer @param {{ ignored: RegExp[], out: Difference[], starts: Starts }} context
  */
 function diffById(before, after, pointer, context) {
   const was = /** @type {string[]} */ (keys(before));

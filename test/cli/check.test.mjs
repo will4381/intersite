@@ -12,10 +12,10 @@ import { repo } from "../gates/repo.mjs";
 
 const bin = fileURLToPath(new URL("../../bin/intersite.mjs", import.meta.url));
 
-/** Runs `intersite check` in `cwd`. @param {string} cwd @returns {Promise<{ code: number, lines: string[] }>} */
+/** Runs `intersite check` in `cwd`. @param {string} cwd @returns {Promise<{ code: number, lines: string[], stderr: string }>} */
 function check(cwd) {
   return new Promise((done) => {
-    execFile(process.execPath, [bin, "check", "--skip", "lint"], { cwd }, (error, stdout) => done({ code: error ? Number(error.code) : 0, lines: stdout.trim().split("\n") }));
+    execFile(process.execPath, [bin, "check", "--skip", "lint"], { cwd }, (error, stdout, stderr) => done({ code: error ? Number(error.code) : 0, lines: stdout.trim().split("\n"), stderr }));
   });
 }
 
@@ -30,7 +30,7 @@ test("check runs every gate, names the ones that failed, and passes once the cha
   r.write({ "PLAN.md": "# Plan\n\n1. do the thing\n", "intersite.adapter.mjs": "export async function signIn() { return {}; }\n" });
 
   const dirty = await check(r.cwd);
-  assert.equal(dirty.code, 1);
+  assert.equal(dirty.code, 1, dirty.stderr);
   assert.equal(dirty.lines.at(-1), "FAIL check: artifacts");
   assert.ok(dirty.lines.some((line) => line.startsWith("PLAN.md")));
   assert.ok(!dirty.lines.some((line) => line.startsWith("intersite.adapter.mjs")), "the adapter is loaded by convention, not unused");
@@ -38,7 +38,7 @@ test("check runs every gate, names the ones that failed, and passes once the cha
   rmSync(join(r.cwd, "PLAN.md"));
   const clean = await check(r.cwd);
   assert.deepEqual(clean.lines, ["ok check: test-integrity, duplicates, similar, new-deps, artifacts, unused, naming, style-drift, replay"], "success is one line");
-  assert.equal(clean.code, 0);
+  assert.equal(clean.code, 0, clean.stderr);
 });
 
 test("outside a git repository check skips the gates with one line and passes", async () => {

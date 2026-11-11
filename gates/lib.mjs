@@ -4,9 +4,9 @@
 import { spawn, spawnSync } from "node:child_process";
 import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, matchesGlob, relative, resolve } from "node:path";
+import { dirname, join, matchesGlob, posix, relative, resolve } from "node:path";
 
-import { DEFAULT_BASE } from "../shared/config.mjs";
+import { DEFAULT_BASE, loadConfig } from "../shared/config.mjs";
 
 /** A setup problem (bad ref, failing baseline): the CLI prints its message on one line and exits 2. */
 export class GateError extends Error {}
@@ -67,31 +67,55 @@ export function resolveBase(cwd, base) {
   return mb.stdout.trim();
 }
 
-// ponytail: git paths are relative to the repository top and testPaths are matched against them as-is, so a project
-// in a subfolder of a monorepo needs globs that include that folder; rebase paths onto cwd if monorepos need it
 /** @param {string} cwd */
 export const topLevel = (cwd) => git(cwd, ["rev-parse", "--show-toplevel"]).trim();
 
-/**
- * The whole repository except installed packages and Intersite's own data, which a project with no .gitignore leaves
- * untracked and which are never part of a change.
- */
-const WORK_TREE = [":(top)", ":(top,exclude,glob)**/node_modules/**", ":(top,exclude,glob)**/.intersite/**"];
+/** The project's folder relative to the repository top, with a trailing slash, or "" at the top. @param {string} cwd */
+export const projectPrefix = (cwd) => git(cwd, ["rev-parse", "--show-prefix"]).trim();
+
+/** Installed packages and Intersite's own data, which a project with no .gitignore leaves untracked: never a change. */
+const NOT_WORK = [":(top,exclude,glob)**/node_modules/**", ":(top,exclude,glob)**/.intersite/**"];
+/** The whole repository. Run from the project folder, git names its files relative to it (`../../packages/ui/x.ts`). */
+export const WORK_TREE = [":(top)", ...NOT_WORK];
+/** The names shared/config.mjs reads a project's config from. */
+const CONFIGS = ["intersite.yml", "intersite.yaml", "intersite.json"];
 
 /**
- * Every tracked and untracked (not ignored) path, relative to the repository top. Tracked files deleted from the
- * working tree are still listed, so callers that read files check they exist.
- * @param {string} top
+ * The project as a pathspec, run from its folder: that folder, minus every nested folder holding its own config, which
+ * is another project and judged by its own `check`. This is how the gates' world is the project, not the repository.
+ * A config that does not load (a template with `project: PROJECT`) makes no project, as no command could run there.
+ * @param {string} cwd the project folder
  */
-export const listFiles = (top) => [...new Set(git(top, ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ...WORK_TREE]).split("\0"))].filter(Boolean);
+export function projectSpec(cwd) {
+  const configs = git(cwd, ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ...CONFIGS.map((name) => `:(glob)**/${name}`), ...NOT_WORK]).split("\0");
+  const loads = (/** @type {string} */ dir) => {
+    try {
+      return Boolean(loadConfig(join(cwd, dir)));
+    } catch {
+      return false;
+    }
+  };
+  const nested = new Set(configs.filter((f) => f.includes("/")).map((f) => posix.dirname(f)).filter(loads));
+  return [".", ...[...nested].map((dir) => `:(exclude,literal)${dir}`), ...NOT_WORK];
+}
 
 /**
- * Runs `git diff --cached <args>` for each args list against a throwaway index holding the whole working tree, so
- * staged, unstaged and untracked (not ignored) work all count, and renames are found even before `git add`.
+ * Every tracked and untracked (not ignored) path the pathspec covers, relative to `cwd`: the whole repository by
+ * default, so files outside the project start with `../`. Tracked files deleted from the working tree are still
+ * listed, so callers that read files check they exist.
+ * @param {string} cwd @param {string[]} [spec]
+ */
+export const listFiles = (cwd, spec = WORK_TREE) => [...new Set(git(cwd, ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ...spec]).split("\0"))].filter(Boolean);
+
+/**
+ * Runs `git diff --cached --relative <args> -- <spec>` for each args list against a throwaway index holding the
+ * working tree under `spec`, so staged, unstaged and untracked (not ignored) work all count, and renames are found
+ * even before `git add`. Paths are relative to `cwd`, and only changes inside `spec` (by default the project) show.
  * @param {string} cwd
  * @param {string[][]} argsList
+ * @param {string[]} [spec]
  */
-export function workingDiff(cwd, argsList) {
+export function workingDiff(cwd, argsList, spec = projectSpec(cwd)) {
   const dir = mkdtempSync(join(tmpdir(), "intersite-index-"));
   const forget = onInterrupt(() => rmSync(dir, { recursive: true, force: true }));
   try {
@@ -106,8 +130,8 @@ export function workingDiff(cwd, argsList) {
       utimesSync(index, atime, mtime);
     }
     const env = { ...process.env, GIT_INDEX_FILE: index };
-    git(cwd, ["add", "-A", "--", ...WORK_TREE], env);
-    return argsList.map((args) => git(cwd, ["diff", "--cached", "--no-color", "--no-ext-diff", ...args], env));
+    git(cwd, ["add", "-A", "--", ...spec], env);
+    return argsList.map((args) => git(cwd, ["diff", "--cached", "--no-color", "--no-ext-diff", "--relative", ...args, "--", ...spec], env));
   } finally {
     forget();
     rmSync(dir, { recursive: true, force: true });
@@ -115,13 +139,15 @@ export function workingDiff(cwd, argsList) {
 }
 
 /**
- * Files changed between `sha` and the working tree. `from` is the old path of a rename, else the same as `path`.
+ * Files changed in the project between `sha` and the working tree, relative to `cwd`. `from` is the old path of a
+ * rename, else the same as `path`.
  * @param {string} cwd
  * @param {string} sha
+ * @param {string[]} [spec]
  * @returns {Change[]}
  */
-export function changes(cwd, sha) {
-  const [out] = workingDiff(cwd, [["--name-status", "-M", "-z", sha]]);
+export function changes(cwd, sha, spec) {
+  const [out] = workingDiff(cwd, [["--name-status", "-M", "-z", sha]], spec);
   return parseNameStatus(out);
 }
 
@@ -186,7 +212,7 @@ export function addedLines(patch) {
 
 /**
  * The contents of many files at a commit, in one git process: a spawn per file costs seconds on a large change.
- * A path that does not exist at the commit maps to "".
+ * Paths are relative to `cwd`. A path that does not exist at the commit maps to "".
  * @param {string} cwd @param {string} sha @param {string[]} paths
  * @returns {Map<string, string>}
  */
@@ -194,7 +220,7 @@ export function showMany(cwd, sha, paths) {
   /** @type {Map<string, string>} */
   const texts = new Map();
   if (paths.length === 0) return texts;
-  const run = spawnSync("git", ["cat-file", "--batch"], { cwd, input: paths.map((path) => `${sha}:${path}\n`).join(""), maxBuffer: 1 << 30 });
+  const run = spawnSync("git", ["cat-file", "--batch"], { cwd, input: paths.map((path) => `${sha}:./${path}\n`).join(""), maxBuffer: 1 << 30 });
   if (run.status !== 0) throw new GateError(`git cat-file failed: ${String(run.stderr).trim()}`);
   const out = /** @type {Buffer} */ (run.stdout);
   let at = 0;
@@ -214,21 +240,26 @@ export function showMany(cwd, sha, paths) {
 }
 
 /**
- * A file's text at a commit, or "" when it did not exist there.
+ * A file's text at a commit, or "" when it did not exist there. The path is relative to `cwd`.
  * @param {string} cwd
  * @param {string} sha
  * @param {string} path
  */
 export function show(cwd, sha, path) {
-  const run = spawnSync("git", ["show", `${sha}:${path}`], { cwd, encoding: "utf8", maxBuffer: 1 << 30 });
+  const run = spawnSync("git", ["show", `${sha}:./${path}`], { cwd, encoding: "utf8", maxBuffer: 1 << 30 });
   return run.status === 0 ? run.stdout : "";
 }
 
 /**
+ * Whether a project-relative path matches one of the config's globs. A path outside the project (`../../x`) is
+ * matched without its leading `../` steps, so the default test globs still know a sibling package's tests.
  * @param {string} path
  * @param {string[]} globs
  */
-export const matches = (path, globs) => globs.some((glob) => matchesGlob(path, glob));
+export const matches = (path, globs) => {
+  const inside = path.replace(/^(?:\.\.\/)+/, "");
+  return globs.some((glob) => matchesGlob(inside, glob));
+};
 
 /** Cleanups that must run if the user interrupts: running test commands (own process groups) and temporary worktrees. */
 const pending = new Set();
@@ -295,8 +326,11 @@ function killGroup(pid) {
   try {
     process.kill(-pid, "SIGKILL");
   } catch (error) {
-    // ESRCH: the group has already exited, which is the outcome we wanted.
-    if (/** @type {NodeJS.ErrnoException} */ (error).code !== "ESRCH") throw error;
+    // ESRCH: the group has already exited, which is the outcome we wanted. EPERM: macOS answers it when what is
+    // left of the group cannot be signalled (a zombie leader); there is nothing more to stop, and throwing from
+    // here would skip the worktree cleanup.
+    const { code } = /** @type {NodeJS.ErrnoException} */ (error);
+    if (code !== "ESRCH" && code !== "EPERM") throw error;
   }
 }
 
@@ -331,12 +365,16 @@ export async function withWorktree({ cwd, ref, setup, overlay }, fn) {
       }
     }
     const work = join(dir, relative(top, realpathSync(cwd)));
+    mkdirSync(work, { recursive: true });
     if (setup) {
       const { code } = await sh(setup, work);
       if (code !== 0) throw new GateError(`setup command failed in a worktree of ${ref}: ${setup}`);
-    } else if (existsSync(join(top, "node_modules")) && !existsSync(join(dir, "node_modules"))) {
-      // ponytail: links only the top-level node_modules, set gates.setup for nested workspaces
-      symlinkSync(join(top, "node_modules"), join(dir, "node_modules"), "dir");
+    } else {
+      // A workspace's packages are hoisted to the top, its own node_modules, or both: link each one that exists.
+      // ponytail: sibling packages' own node_modules are not linked, set gates.setup if the tests need them
+      for (const [from, to] of [[top, dir], [realpathSync(cwd), work]]) {
+        if (existsSync(join(from, "node_modules")) && !existsSync(join(to, "node_modules"))) symlinkSync(join(from, "node_modules"), join(to, "node_modules"), "dir");
+      }
     }
     return await fn(work);
   } finally {

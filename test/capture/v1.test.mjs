@@ -122,15 +122,30 @@ test("actions: a valid name and a server-reduced page become case.action; forged
   assert.ok(!JSON.stringify(cases).match(/alice|Smith|jdoe/i));
   for (const item of cases) assert.equal(caseProblem(item), undefined);
 
-  // The session header stands in when the caller gives none; with neither, it is "anonymous".
+  // The session header stands in when the caller gives none; with neither, each request is a session of its own.
   cases.length = 0;
   await record({ "x-intersite-session": "tab-123" });
   await record({}, "tab-123");
   await record({});
-  await record({}, "anonymous");
+  await record({});
   assert.equal(cases[0].session, cases[1].session);
-  assert.equal(cases[2].session, cases[3].session);
+  assert.notEqual(cases[2].session, cases[3].session);
   assert.notEqual(cases[0].session, cases[2].session);
+});
+
+test("signed-out requests with no session are sampled one by one, not as one session of the day", async () => {
+  const { instance, cases } = capture({ sample: 0.25 });
+  for (let index = 0; index < 400; index++) {
+    await instance.record({ request: new Request("https://a.test/v1/x"), response: Response.json({}), route: "/v1/x", actor: { kind: "anonymous" }, id: `case-${index}`, at: AT });
+  }
+  assert.ok(cases.length > 60 && cases.length < 140, `sampled ${cases.length} of 400 anonymous requests`);
+  assert.equal(new Set(cases.map((item) => item.session)).size, cases.length);
+
+  // A UI event with no session is its own session too.
+  const ui = capture();
+  await ui.instance.recordUi({ page: "/home", outcome: "error", errorName: "TypeError" });
+  await ui.instance.recordUi({ page: "/home", outcome: "error", errorName: "TypeError" });
+  assert.notEqual(ui.cases[0].session, ui.cases[1].session);
 });
 
 test("wrapFetch records one case and hands the caller the response untouched", async () => {

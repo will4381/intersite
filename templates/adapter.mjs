@@ -21,6 +21,8 @@ export async function resolveId(_id, _options) {
   return undefined;
 }
 
+// Optional: `export function headers({ caseId, method, route }) { return {}; }` adds headers to every replayed request,
+// signed in or not: an API version header the server requires, or an idempotency key per case (`twice` resends it).
 // Optional: `export async function reset({ target }) {}` runs before each session, for example to reseed.
 // Optional: `export const invariants = [{ name, async check({ target, fetch }) { return undefined; } }]` is checked
 // after each session; return a message when something that must always hold does not.

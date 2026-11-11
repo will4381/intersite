@@ -19,16 +19,24 @@ import { shapeOf } from "../shared/shape.mjs";
  * @typedef {{ caseId: string, method: string, route: string, path: string, actor: string, body: unknown, status: number, shape: Shape, live?: Live }} Evidence
  */
 /** @typedef {"casing" | "types" | "envelope" | "errors" | "status" | "values" | "exposure" | "size" | "requests" | "routes"} Check */
-/** @typedef {{ check: Check, method: string, route: string, pointer: string, message: string, caseId: string }} Finding */
+/**
+ * `detail`: the kinds a field is typed as, for a group's examples. `group`: the parent pointer of the findings it was
+ * grouped with (see groupFindings).
+ * @typedef {{ check: Check, method: string, route: string, pointer: string, message: string, caseId: string, detail?: string, group?: string }} Finding
+ */
 /** @typedef {{ route: string, pointer?: string, check?: string, why: string }} Ignore */
 /** @typedef {{ caseId: string, status: number, shape: Shape, live: Live | undefined }} Answer */
 /** @typedef {{ key: string, method: string, route: string, cases: Evidence[], answers: Answer[], ok: Answer[] }} Route */
-/** @typedef {{ routes: Route[], pattern: RegExp, add: (route: Route, check: Check, pointer: string, caseId: string, message: string) => void }} Api */
+/** @typedef {{ routes: Route[], pattern: RegExp, add: (route: Route, check: Check, pointer: string, caseId: string, message: string) => Finding }} Api */
 
 // ponytail: thresholds borrowed from gates/naming.mjs (tuned on 22 repositories), not yet tuned on recorded traffic.
 const MIN_AGREE = 5;
 const SHARE = 0.9;
 const SHOWN = 3;
+// Findings of one kind under one object, this many or more, print as one line: one root cause, not dozens of lines.
+const GROUP = 3;
+/** How a group of findings is described, per check. */
+const GROUP_PHRASE = { types: "are typed two ways across answers", requests: "arrive in two forms across cases" };
 const STYLE_NAME = { kebab: "kebab-case", snake: "snake_case", camel: "camelCase", Pascal: "PascalCase" };
 // Routes that receive or relay another party's payload, whose keys follow that party's casing.
 const FOREIGN_ROUTE = /(?:^|\/)(?:webhooks?|callbacks?|hooks)(?:\/|$)/;
@@ -131,6 +139,7 @@ export function lintContract(evidence, { idPattern, ignore = [] }) {
     add(route, check, pointer, caseId, message) {
       const key = `${check}\0${route.key}\0${pointer}`;
       if (!found.has(key)) found.set(key, { check, method: route.method, route: route.route, pointer, message, caseId });
+      return /** @type {Finding} */ (found.get(key));
     },
   };
   for (const side of /** @type {const} */ (["response", "request"])) {
@@ -138,7 +147,69 @@ export function lintContract(evidence, { idPattern, ignore = [] }) {
     types(api, side);
   }
   for (const check of [typesAcrossRoutes, envelope, lists, errors, statusAndBody, values, absence, exposure, repeated, requests, routeNames]) check(api);
-  return [...found.values()].filter((finding) => !ignore.some((entry) => ignores(entry, finding)));
+  const visible = [...found.values()].filter((finding) => !ignore.some((entry) => ignores(entry, finding)));
+  groupFindings(visible);
+  // An entry on a group's parent pointer silences the whole group.
+  return visible.filter((finding) => finding.group === undefined || !ignore.some((entry) => ignores(entry, { ...finding, pointer: finding.group })));
+}
+
+/** What a finding says to do: the text after its last `: `. @param {string} message */
+const remedyOf = (message) => message.slice(message.lastIndexOf(": ") + 2);
+/** The pointer of the object holding a field: `/a/b` -> `/a`, `/a` -> `` (the answer itself). @param {string} pointer */
+const parentOf = (pointer) => pointer.slice(0, Math.max(pointer.lastIndexOf("/"), 0));
+
+/**
+ * Sets `group` on findings that share a check, a route, a remedy and a parent object, when there are at least GROUP of
+ * them: one cause (a metrics object whose values are strings in some answers) is one line. Sibling groups under one
+ * object (`/metrics/tiktok/*` and `/metrics/meta/*`) become one group under it, but never one for the whole answer.
+ * @param {Finding[]} findings
+ */
+function groupFindings(findings) {
+  /** @type {Map<string, Map<string, Finding[]>>} check, route and remedy -> parent pointer -> findings */
+  const kinds = new Map();
+  for (const finding of findings.filter((item) => item.pointer.length > 1)) {
+    const kind = `${finding.check}\0${finding.method} ${finding.route}\0${remedyOf(finding.message)}`;
+    const parents = kinds.get(kind) ?? new Map();
+    kinds.set(kind, parents);
+    const parent = parentOf(finding.pointer);
+    parents.set(parent, [...(parents.get(parent) ?? []), finding]);
+  }
+  for (const parents of kinds.values()) {
+    lift(parents);
+    for (const [parent, list] of parents) if (list.length >= GROUP) for (const finding of list) finding.group = parent || "/";
+  }
+}
+
+/** Merges sibling groups (two or more findings each) into their parent object, repeatedly, below the answer's root. @param {Map<string, Finding[]>} parents */
+function lift(parents) {
+  for (let changed = true; changed;) {
+    changed = false;
+    const ups = Map.groupBy([...parents].filter(([parent, list]) => list.length >= 2 && parentOf(parent) !== ""), ([parent]) => parentOf(parent));
+    for (const [up, entries] of ups) {
+      if (entries.length < 2) continue;
+      parents.set(up, [...(parents.get(up) ?? []), ...entries.flatMap(([, list]) => list)]);
+      for (const [parent] of entries) parents.delete(parent);
+      changed = true;
+    }
+  }
+}
+
+/**
+ * The findings as they print: each group as one finding on its parent pointer, naming how many fields and a few
+ * examples; every other finding as it is.
+ * @param {Finding[]} findings @returns {Finding[]}
+ */
+export function printable(findings) {
+  const keyOf = (/** @type {Finding} */ finding) => `${finding.check}\0${finding.method} ${finding.route}\0${finding.group}\0${remedyOf(finding.message)}`;
+  const groups = Map.groupBy(findings.filter((finding) => finding.group !== undefined), keyOf);
+  return findings.flatMap((finding) => {
+    const list = finding.group === undefined ? undefined : groups.get(keyOf(finding));
+    if (!list) return [finding];
+    if (list[0] !== finding) return [];
+    const examples = list.slice(0, SHOWN).map((item) => (item.detail ? `${item.pointer} (${item.detail})` : item.pointer)).join(", ");
+    const phrase = GROUP_PHRASE[/** @type {keyof typeof GROUP_PHRASE} */ (finding.check)] ?? `have the same ${finding.check} finding`;
+    return [{ ...finding, pointer: /** @type {string} */ (finding.group), message: `${finding.group}: ${list.length} fields under it ${phrase}, for example ${examples}: ${remedyOf(finding.message)}` }];
+  });
 }
 
 /** @param {Ignore} entry @param {Finding} finding */
@@ -216,20 +287,29 @@ function types(api, side) {
   for (const route of api.routes) {
     /** @type {Map<string, Map<string, Set<string>>>} pointer -> kind -> case IDs */
     const kinds = new Map();
+    // A list whose rows type one field differently within a single answer (a field definition's `default`) is a union
+    // by design, not drift between cases.
+    /** @type {Set<string>} */
+    const unions = new Set();
     for (const { caseId, shape } of side === "request" ? requestShapes(route) : route.ok) {
+      /** @type {Map<string, string>} */
+      const here = new Map();
       for (const field of fieldsOf(shape).filter((item) => kindOf(item.shape) !== "null")) {
+        if (here.has(field.pointer) && here.get(field.pointer) !== kindOf(field.shape)) unions.add(field.pointer);
+        here.set(field.pointer, kindOf(field.shape));
         const seen = kinds.get(field.pointer) ?? new Map();
         kinds.set(field.pointer, seen.set(kindOf(field.shape), (seen.get(kindOf(field.shape)) ?? new Set()).add(caseId)));
       }
     }
     for (const [pointer, seen] of kinds) {
-      if (seen.size < 2) continue;
+      if (seen.size < 2 || unions.has(pointer)) continue;
       const [top, ...rest] = [...seen].sort((a, b) => b[1].size - a[1].size);
       const [kind, cases] = rest[0];
       const total = [...seen.values()].reduce((sum, ids) => sum + ids.size, 0);
       const where = side === "request" ? `request ${pointer} arrives as` : `${pointer} is`;
-      api.add(route, side === "request" ? "requests" : "types", pointer, [...cases][0],
+      const finding = api.add(route, side === "request" ? "requests" : "types", pointer, [...cases][0],
         `${where} ${article(kind)} here; ${top[1].size} of ${total} cases of this route have ${article(top[0])}: ${side === "request" ? "clients disagree; accept" : "answer"} one type every time`);
+      finding.detail ??= `${kind}, ${top[0]}`;
     }
   }
 }
@@ -373,9 +453,12 @@ function errorForm({ shape, live }) {
   return `{ ${Object.keys(shape).join(", ")} }`;
 }
 
-/** 4xx and 5xx answers in another form than the API's dominant error form. @param {Api} api */
-function errors(api) {
-  /** @type {Map<string, { route: Route, status: number, form: string, caseId: string }>} route and status -> form; a live answer wins */
+/**
+ * The form of each route's error answers per status (a live answer wins), and the API's dominant one.
+ * @param {Api} api
+ */
+function errorForms(api) {
+  /** @type {Map<string, { route: Route, status: number, form: string, caseId: string }>} route and status -> form */
   const units = new Map();
   for (const route of api.routes) {
     for (const answer of route.answers.filter((item) => item.status >= 400)) {
@@ -383,7 +466,12 @@ function errors(api) {
       if (!units.has(unit) || answer.live) units.set(unit, { route, status: answer.status, form: errorForm(answer), caseId: answer.caseId });
     }
   }
-  const rule = majority([...units.values()].map((unit) => unit.form));
+  return { units, rule: majority([...units.values()].map((unit) => unit.form)) };
+}
+
+/** 4xx and 5xx answers in another form than the API's dominant error form. @param {Api} api */
+function errors(api) {
+  const { units, rule } = errorForms(api);
   for (const unit of rule ? [...units.values()].filter((item) => item.form !== rule.value) : []) {
     api.add(unit.route, "errors", "/", unit.caseId, `the ${unit.status} answer is ${unit.form}; ${rule?.agree} of ${rule?.total} error answers in this API are ${rule?.value}: answer in that form`);
   }
@@ -395,11 +483,19 @@ function errors(api) {
  * @param {Api} api
  */
 function statusAndBody(api) {
+  // A success answered in the API's own error form (problem+json, `{ error }`) is a failure with the wrong status.
+  const own = errorForms(api).rule?.value;
+  // A record with a `title` and a `type` is not a problem document: one carries its HTTP status as a number.
+  const problem = (/** @type {Answer} */ { shape, live }) => /problem\+json/.test(live?.contentType ?? "") || (isObject(shape) && shape.status === "number" && shape.title === "string");
+  const errorShaped = (/** @type {Answer} */ answer) => own !== undefined && errorForm(answer) === own
+    && (own === "problem+json" ? problem(answer) : own.startsWith("{ error"));
   for (const route of api.routes) {
-    for (const { caseId, status, shape, live } of route.ok) {
+    for (const answer of route.ok) {
+      const { caseId, status, shape, live } = answer;
       const json = live ? live.json : undefined;
       const failed = isObject(json) && (json.success === false || json.ok === false) ? `"${json.success === false ? "success" : "ok"}": false`
-        : isObject(shape) && ["string", "object"].includes(kindOf(shape.error ?? "null")) && Object.keys(shape).every((key) => ERROR_BODY.test(key)) ? "an error" : undefined;
+        : isObject(shape) && ["string", "object"].includes(kindOf(shape.error ?? "null")) && Object.keys(shape).every((key) => ERROR_BODY.test(key)) ? "an error"
+        : errorShaped(answer) ? `a ${own} error` : undefined;
       if (failed) api.add(route, "status", "/", caseId, `answers ${status} with ${failed} in the body: answer a 4xx or 5xx status for a failure`);
     }
     for (const { caseId, live } of route.answers) {
@@ -408,7 +504,9 @@ function statusAndBody(api) {
       }
     }
   }
-  const creates = api.routes.filter((route) => route.method === "POST" && /\/[a-z][\w-]*s$/.test(route.route)).flatMap((route) => route.ok.slice(0, 1).map((answer) => ({ route, ...answer })));
+  const creates = api.routes.filter((route) => route.method === "POST" && /\/[a-z][\w-]*s$/.test(route.route)).flatMap((route) => route.ok.slice(0, 1).map((answer) => ({ route, ...answer })))
+    // 202 says the work was queued, not done: a different answer, not another way of saying created.
+    .filter((answer) => answer.status !== 202);
   const created = majority(creates.map((answer) => answer.status));
   for (const answer of created ? creates.filter((item) => item.status !== created.value) : []) {
     api.add(answer.route, "status", "/", answer.caseId, `a create answers ${answer.status}; ${created?.agree} of ${created?.total} creates in this API answer ${created?.value}: answer ${created?.value}`);

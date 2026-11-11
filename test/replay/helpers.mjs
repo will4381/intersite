@@ -51,10 +51,13 @@ export async function startTarget() {
     counter = 0;
   };
   /** @param {string} prefix */
-  const nextId = (prefix) => `${prefix}_${bugs.has("fresh") ? randomBytes(4).toString("hex") : String(++counter).padStart(6, "0")}`;
+  // A fresh ID always holds a digit: eight random hex letters with none (1 in 2,600) would not look like an ID at all.
+  const nextId = (prefix) => `${prefix}_${bugs.has("fresh") ? `${randomBytes(4).toString("hex")}0` : String(++counter).padStart(6, "0")}`;
   /** @param {{ id: string, text: string, createdAt: string }} note */
   const view = (note) => ({
     id: note.id, text: bugs.has("migration") ? note.text.toUpperCase() : note.text, ...(bugs.has("fresh") && { createdAt: note.createdAt }),
+    // An invite-style expiry: now plus a fixed offset, set when answered.
+    ...(bugs.has("expiry") && { expiresAt: new Date(Date.now() + (bugs.has("longer-expiry") ? 14 : 7) * 86_400_000).toISOString() }),
   });
   reset();
 

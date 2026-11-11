@@ -76,6 +76,28 @@ test("collector serves, actions and pin print their lines, SIGTERM exits cleanly
   assert.equal(existsSync(join(cwd, "data", "cases.db")), true);
 });
 
+test("with no --port the collector listens where collector.url says, so capture and the other commands find it", async () => {
+  const probe = createServer().listen(0, "127.0.0.1");
+  await once(probe, "listening");
+  const port = /** @type {import("node:net").AddressInfo} */ (probe.address()).port;
+  await new Promise((done) => probe.close(done));
+  const { child, line } = await startCli(project(`http://127.0.0.1:${port}`), ["--db", ":memory:"]);
+  child.kill("SIGTERM");
+  await once(child, "exit");
+  assert.equal(line, `ok collector: http://127.0.0.1:${port} (db :memory:)`);
+});
+
+test("with no --port, only a local collector.url's port is used: a remote URL's port, or a local URL without one, gives 8790", () => {
+  // Every listen fails as if the port were taken, so the message names the port chosen and nothing is ever bound:
+  // a real collector on 8790 would be found by other tests' commands running at the same time.
+  const taken = 'data:text/javascript,import net from "node:net"; net.Server.prototype.listen = function () { process.nextTick(() => this.emit("error", Object.assign(new Error("taken"), { code: "EADDRINUSE" }))); return this; };';
+  /** @param {string} url */
+  const chosen = (url) => spawnSync(process.execPath, ["--import", taken, cli, "collector", "--db", ":memory:"], { cwd: project(url), env, encoding: "utf8" }).stderr;
+  assert.equal(chosen("http://127.0.0.1:9123"), "port 9123 is already in use: stop what holds it or pass --port <n>\n");
+  assert.equal(chosen("https://collector.example.com:9123"), "port 8790 is already in use: stop what holds it or pass --port <n>\n");
+  assert.equal(chosen("http://localhost"), "port 8790 is already in use: stop what holds it or pass --port <n>\n");
+});
+
 test("a local collector that is not running is served from the project's database; an unreachable remote one is a setup error", () => {
   // Port 9 cannot be bound without privileges: the command serves .intersite/cases.db on a free port of its own instead.
   const local = project("http://127.0.0.1:9");

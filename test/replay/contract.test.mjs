@@ -6,7 +6,7 @@ import { join, relative } from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { lintContract } from "../../replay/contract.mjs";
+import { lintContract, printable } from "../../replay/contract.mjs";
 import { DEFAULT_ID_PATTERN, shapeOf } from "../../shared/shape.mjs";
 import { SHOP_RESOURCES, recordFrom, replayCli, shopOffenderSpecs, shopResourceSpecs, startCollector, startShop } from "./helpers.mjs";
 
@@ -42,7 +42,7 @@ const rerunArgs = (line) => line.split(" | rerun: intersite replay ")[1].split("
 
 // One finding per implemented check, each naming the route, the pointer, what the rest of the API does and a case.
 const EXPECTED = [
-  ["GET /v1/legacy-reports/:id", "/data/created_at, /data/display_name are not camelCase; 239 of 242 response fields in this API are camelCase: rename them createdAt, displayName (case s-odd-51)"],
+  ["GET /v1/legacy-reports/:id", "/data/created_at, /data/display_name are not camelCase; 239 of 247 response fields in this API are camelCase: rename them createdAt, displayName (case s-odd-51)"],
   ["GET /v1/gift-cards/:id", "/data/balance is a string here; 3 of 4 cases of this route have a number: answer one type every time (case s-odd-55)"],
   ["GET /v1/products/:id", "/data/discount is a number here; 1 of 2 cases of this route have a string: answer one type every time (case s-odd-68)"],
   ["POST /v1/line-items", "request /order_id is snake_case; 35 of 36 request fields in this API are camelCase: rename it orderId (case s-odd-80)"],
@@ -185,4 +185,66 @@ test("--openapi lints a documented contract with no server and no traffic", asyn
   delete paths["/v1/legacy-reports/{id}"];
   writeFileSync(join(dir, "api.json"), JSON.stringify({ openapi: "3.1.0", paths }));
   assert.equal((await replayCli(["--openapi", "api.json"], dir)).stdout, "ok replay: openapi api.json; contract: 10 routes, 0 findings\n");
+});
+
+test("a 200 answered in the API's own problem+json error form is a status finding", () => {
+  const problem = { type: "https://api.test/problems/invalid", title: "Request failed", status: 422, detail: "x", code: "invalid" };
+  /** @param {string} route @param {number} status @param {unknown} json */
+  const item = (route, status, json) => ({ caseId: `${route} ${status}`, method: "GET", route, path: route, actor: "member", body: undefined, status, shape: shapeOf(json),
+    live: { status, json, text: JSON.stringify(json), contentType: status >= 400 ? "application/problem+json" : "application/json", sent: [] } });
+  const evidence = [
+    ...["/v1/a", "/v1/b", "/v1/c", "/v1/d", "/v1/e", "/v1/f"].flatMap((route) => [item(route, 200, { id: "x", name: "y" }), item(route, 404, problem)]),
+    item("/v1/balance", 200, problem),
+    // A record that happens to have a title and a type is not a problem document.
+    item("/v1/account", 200, { id: "acct_8fK2abQ9", type: "brand", title: "Acme", status: "active" }),
+  ];
+  const findings = lintContract(evidence, { idPattern: DEFAULT_ID_PATTERN }).filter((finding) => finding.check === "status");
+  assert.deepEqual(findings.map((finding) => `${finding.route}: ${finding.message}`), ["/v1/balance: answers 200 with a problem+json error in the body: answer a 4xx or 5xx status for a failure"]);
+});
+
+test("a create answered 202 (queued) is not reported against an API whose creates answer 201", () => {
+  /** @param {string} route @param {number} status */
+  const item = (route, status) => ({ caseId: route, method: "POST", route, path: route, actor: "member", body: { name: "x" }, status, shape: shapeOf({ id: "x", name: "y" }) });
+  const evidence = [...["/v1/orders", "/v1/notes", "/v1/tags", "/v1/files", "/v1/users", "/v1/teams", "/v1/plans", "/v1/posts", "/v1/pages", "/v1/links"].map((route) => item(route, 201)), item("/v1/exports", 202), item("/v1/imports", 200)];
+  const findings = lintContract(evidence, { idPattern: DEFAULT_ID_PATTERN }).filter((finding) => finding.check === "status");
+  assert.deepEqual(findings.map((finding) => finding.route), ["/v1/imports"]);
+});
+
+test("a list whose rows type a field differently within one answer is a union by design; drift between answers is still reported", () => {
+  /** @param {string} id @param {unknown} json */
+  const item = (id, json) => ({ caseId: id, method: "GET", route: "/v1/fields", path: "/v1/fields", actor: "member", body: undefined, status: 200, shape: shapeOf(json) });
+  const union = { data: [{ name: "a", default: true }, { name: "b", default: 3 }] };
+  const evidence = [item("c1", union), item("c2", union), item("c3", { data: [{ name: "a", default: true, size: 1 }] }), item("c4", { data: [{ name: "a", default: true, size: "1" }] })];
+  const findings = lintContract(evidence, { idPattern: DEFAULT_ID_PATTERN }).filter((finding) => finding.check === "types");
+  assert.deepEqual(findings.map((finding) => finding.pointer), ["/data/*/size"]);
+});
+
+test("findings of one kind under one object print as one line; --json keeps each with its group; an ignore on the parent silences it", () => {
+  const providers = ["tiktok", "meta", "google", "snap"];
+  const fields = ["spend", "clicks", "impressions"];
+  /** @param {string} caseId @param {(value: number) => unknown} form */
+  const campaign = (caseId, form) => ({
+    caseId, method: "GET", route: "/v1/campaigns/:id", path: "/v1/campaigns/cmp_8fK2abQ9", actor: "member", body: undefined, status: 200,
+    shape: shapeOf({ id: "cmp_8fK2abQ9", name: "x", platformMetrics: Object.fromEntries(providers.map((provider) => [provider, Object.fromEntries(fields.map((field) => [field, form(1)]))])),
+      pair: { a: form(1), b: form(1) } }),
+  });
+  /** @param {string} caseId @param {unknown} total */
+  const order = (caseId, total) => ({ caseId, method: "GET", route: "/v1/orders/:id", path: "/v1/orders/ord_8fK2abQ9", actor: "member", body: undefined, status: 200, shape: shapeOf({ id: "ord_8fK2abQ9", total }) });
+  const evidence = [campaign("c1", (value) => value), campaign("c2", (value) => value), campaign("c3", String), order("o1", 1), order("o2", "1")];
+  const findings = lintContract(evidence, { idPattern: DEFAULT_ID_PATTERN });
+
+  const grouped = findings.filter((finding) => finding.group === "/platformMetrics");
+  assert.equal(grouped.length, providers.length * fields.length, "--json keeps every finding, each naming its group");
+  assert.deepEqual(findings.filter((finding) => finding.group === undefined).map((finding) => finding.pointer).sort(), ["/pair/a", "/pair/b", "/total"], "two siblings, and another route, stay apart");
+
+  const lines = printable(findings).map((finding) => `${finding.route} ${finding.pointer}: ${finding.message} (case ${finding.caseId})`);
+  assert.deepEqual(lines.filter((line) => line.includes("platformMetrics")), [
+    "/v1/campaigns/:id /platformMetrics: /platformMetrics: 12 fields under it are typed two ways across answers, for example /platformMetrics/google/clicks (string, number),"
+      + " /platformMetrics/google/impressions (string, number), /platformMetrics/google/spend (string, number): answer one type every time (case c3)",
+  ]);
+  assert.ok(lines.includes("/v1/orders/:id /total: /total is a string here; 1 of 2 cases of this route have a number: answer one type every time (case o2)"), "a lone finding prints as before");
+  assert.equal(lines.length, 4);
+
+  const ignore = [{ route: "/v1/campaigns/:id", check: "types", pointer: "/platformMetrics", why: "provider metrics arrive as each provider sends them" }];
+  assert.deepEqual(lintContract(evidence, { idPattern: DEFAULT_ID_PATTERN, ignore }).map((finding) => finding.pointer).sort(), ["/pair/a", "/pair/b", "/total"]);
 });

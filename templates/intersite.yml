@@ -11,10 +11,11 @@ project: PROJECT
 #       message: Call the API through apiClient so errors and auth are handled.
 #       files: [src/**]
 
-# gates:
+gates:
 #   base: origin/main
 #   testCmd: npm test
-#   acknowledged:
+  acknowledged:
+    - { gate: new-deps, target: intersite, why: "the testing library that runs this check" }
 #     - { gate: new-deps, target: zod, why: "validates every request body" }
 
 # replay:

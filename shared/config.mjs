@@ -82,6 +82,8 @@ const defaults = {
     snapshotIgnore: [],
     /** @type {{ route: string, pointer?: string, check?: string, why: string }[]} */
     contractIgnore: [],
+    /** @type {{ route: string, why: string }[]} */
+    crossTenantIgnore: [],
   },
 };
 

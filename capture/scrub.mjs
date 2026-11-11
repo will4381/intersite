@@ -2,7 +2,8 @@
 
 /*
  * Default-deny scrubbing. A string is KEPT only when it is provably structural: an ID, a short number, an ISO date
- * under a date-like key (`createdAt`, `dueDate`), or a short lowercase code under a structural key (`status`, `sort`).
+ * under a date-like key (`createdAt`, `dueDate`), or a short lowercase code, a comma-separated list of them or a media
+ * type under a structural key (`status`, `sort`, `group`, `contentType`).
  * Everything else is replaced with a stable fake derived from HMAC-SHA256(salt, value) that keeps the value's form
  * (email, URL, date, digits, phone, text). Keys are matched on their last word; `keepKeys` adds project keys, and the
  * sensitive lists and `redactKeys` win over both.
@@ -35,6 +36,7 @@ export const STRUCTURAL_WORDS = [
   "event", "outcome", "source", "channel", "platform", "provider", "category", "level", "priority", "severity",
   "visibility", "scope", "stage", "step", "phase", "plan", "tier", "variant", "theme", "layout", "view", "tab", "filter",
   "field", "operator", "op", "reason", "code", "intent", "purpose", "flag", "feature", "env", "environment", "version",
+  "group",
 ];
 
 /** An ISO date is kept only under a key whose last word is one of these, or its plural. */
@@ -54,6 +56,8 @@ export const SENSITIVE_WORDS = [
 const SECRET_PREFIX = /^(?:sk|rk|ghp|gho|ghu|ghs|ghr|github_pat|glpat|whsec|shpat|shpss|npm|pypi|key|secret|token|pat)_/i;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/;
 const CODE = /^[a-z][a-z0-9_.-]{0,31}$/;
+// A media type under a type key (`contentType: image/png`).
+const MIME = /^[a-z]+\/[a-z0-9][a-z0-9.+-]{0,63}$/;
 const SHORT_NUMBER = /^-?\d{1,4}$/;
 const DIGITS = /^\d+$/;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -104,8 +108,11 @@ export function createScrubber({ salt, idPattern, redactKeys = [], keepKeys = []
   const isId = (text) => idRegex.test(text) && !SECRET_PREFIX.test(text);
   /** "cardId", "address_ids": an ID under these is an opaque reference, not the sensitive value. @param {string} key */
   const isIdKey = (key) => ["id", "ids", "uuid"].includes(wordsOf(key).at(-1) ?? "");
-  /** Lowercase hex or digit-heavy strings are secrets, phone numbers or birth years, not enum codes. @param {string} text */
-  const looksRandom = (text) => text.replace(/\D/g, "").length >= 4 || (text.length >= 16 && /^[0-9a-f]+$/.test(text));
+  /**
+   * Lowercase hex, digit-heavy or letter-digit-letter-digit strings are secrets, access codes, phone numbers or birth
+   * years, not enum codes (`fb25c0` is an access code; `h264` and `mp4` are enums). @param {string} text
+   */
+  const looksRandom = (text) => text.replace(/\D/g, "").length >= 4 || (text.length >= 16 && /^[0-9a-f]+$/.test(text)) || /[a-z]\d+[a-z]+\d/.test(text);
 
   /** `keepKeys` match the key's last words: "sortBy" keeps "sort_by" and "listSortBy". @param {string[]} parts */
   const isKept = (parts) => kept.some((needle) => ` ${parts.join(" ")}`.endsWith(` ${needle}`));
@@ -116,7 +123,10 @@ export function createScrubber({ salt, idPattern, redactKeys = [], keepKeys = []
     const parts = wordsOf(key);
     const last = forms(parts.at(-1) ?? "");
     if (isIsoDate(text)) return last.some((word) => dateWords.has(word)) || isKept(parts);
-    return CODE.test(text) && !looksRandom(text) && (last.some((word) => structural.has(word)) || isKept(parts));
+    // A comma-separated list of codes (`group=creator,platform`) is kept when every code would be.
+    const codes = text.split(",");
+    const coded = codes.every((code) => (CODE.test(code) && !looksRandom(code)) || MIME.test(code));
+    return coded && codes.length <= 16 && (last.some((word) => structural.has(word)) || isKept(parts));
   }
 
   /** A stable stand-in with the same form. @param {string} text */

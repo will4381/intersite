@@ -3,7 +3,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { GateError, addedLines, matches, parseNameStatus, resolveBase, sh, stripCode, topLevel, withWorktree, workingDiff } from "./lib.mjs";
+import { GateError, WORK_TREE, addedLines, matches, parseNameStatus, resolveBase, sh, stripCode, topLevel, withWorktree, workingDiff } from "./lib.mjs";
 
 const SOURCE = /\.(?:[cm]?js|tsx?|jsx)$/;
 // Longest first. The compound tokens are matched only so their pieces are never mutated on their own.
@@ -30,17 +30,13 @@ function interleave(lists) {
 export async function mutation({ cwd, base, testCmd, testPaths, setup, mutants: max, timeout }) {
   if (!testCmd) throw new GateError('needs a test command: pass --cmd "<command>" or set "gates.testCmd" in intersite.yml');
   const sha = resolveBase(cwd, base);
-  const top = topLevel(cwd);
-  const [patch, sinceHead] = workingDiff(cwd, [
-    ["-U0", "-M", sha],
-    ["--name-status", "--no-renames", "-z", "HEAD"],
-  ]);
+  const [patch] = workingDiff(cwd, [["-U0", "-M", sha]]);
 
   /** @type {{ path: string, line: number, at: number, from: string, to: string }[][]} */
   const perFile = [];
   for (const [path, lines] of [...addedLines(patch)].sort(([a], [b]) => a.localeCompare(b))) {
     if (!SOURCE.test(path) || matches(path, testPaths)) continue;
-    const text = readFileSync(join(top, path), "utf8");
+    const text = readFileSync(join(cwd, path), "utf8");
     const code = stripCode(text).split("\n");
     let offset = 0;
     /** @type {(typeof perFile)[number][]} */
@@ -56,7 +52,10 @@ export async function mutation({ cwd, base, testCmd, testPaths, setup, mutants: 
   }
   const chosen = interleave(perFile).slice(0, max);
 
-  // A worktree of HEAD with the working tree's uncommitted changes (and deletions) copied over.
+  // A worktree of HEAD with the whole repository's uncommitted changes (and deletions) copied over, since the project's
+  // tests may use a sibling package edited alongside it. Paths are relative to the repository top, as the overlay wants.
+  const top = topLevel(cwd);
+  const [sinceHead] = workingDiff(top, [["--name-status", "--no-renames", "-z", "HEAD"]], WORK_TREE);
   const overlay = parseNameStatus(sinceHead).map((c) => ({ path: c.path, deleted: c.status === "D" }));
   return withWorktree({ cwd, ref: "HEAD", setup, overlay }, async (dir) => {
     const baseline = await sh(testCmd, dir, { timeout, output: "ignore" });

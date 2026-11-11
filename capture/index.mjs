@@ -81,7 +81,7 @@ const enc = new TextEncoder();
  * @property {string} route      Route template such as `/v1/programs/:id`.
  * @property {{ kind: string }} [actor]
  * @property {string} [session]  A stable caller identifier; only its salted daily hash is stored. Defaults to the
- *                               `x-intersite-session` header, then `anonymous`.
+ *                               `x-intersite-session` header; with neither, the request is a session of its own.
  * @property {"ok" | "warn" | "rejected" | "error"} [outcome]
  * @property {string} [id]
  * @property {string | Date} [at]
@@ -108,6 +108,23 @@ function globToRegExp(glob) {
     return part === "*" ? "[^/]+" : `\\${part}`;
   });
   return new RegExp(`^${source}$`);
+}
+
+const MOUNT = /^(?:[a-z]{1,20}|v\d{1,3})$/;
+
+/**
+ * The route template's segments lined up with the path's. A server mounted under a prefix (`/api/v1/me` for the route
+ * `/v1/me`) has extra leading segments: the template is matched against the path's tail, and a prefix segment that is a
+ * short lowercase word or a version stands for itself; anything else in it is scrubbed like a value.
+ * @param {string[]} segments @param {string[]} template
+ */
+function templateFor(segments, template) {
+  const extra = segments.length - template.length;
+  if (extra <= 0) return template;
+  const [root, ...rest] = template;
+  if (rest.some((part, index) => !part.startsWith(":") && part !== segments[extra + 1 + index])) return template;
+  // A prefix word maps to itself (kept as is); anything else maps to nothing, which never equals it (scrubbed).
+  return [root, ...segments.slice(1, extra + 1).map((segment) => (MOUNT.test(segment) ? segment : ":")), ...rest];
 }
 
 /** cyrb53: a fast 53-bit non-cryptographic hash, used only for the sampling decision. @param {string} text */
@@ -218,6 +235,16 @@ function withDeadline(promise) {
 
 const resolved = Promise.resolve();
 
+// ponytail: one warning per isolate or process, so a broken setup is visible without a line per request; a capture
+// that recovers stays quiet. Make it per endpoint if one process ever sends to two collectors.
+let warned = false;
+/** @param {string} endpoint @param {unknown} error */
+function warnUndelivered(endpoint, error) {
+  if (warned) return;
+  warned = true;
+  console.error(`intersite capture: cases are not reaching ${endpoint} (${error instanceof Error ? error.message : error}); check the collector URL and token, and that this runtime may call it`);
+}
+
 /** @param {string} reason */
 const disabled = (reason) => {
   console.error(`intersite capture disabled: ${reason}`);
@@ -274,12 +301,12 @@ export function createCapture(options) {
 
     /**
      * Fields every case shares. `session` is the raw caller value; only its salted daily HMAC is stored.
-     * @param {string} rawSession @param {string} at @param {string} outcome @param {string} [id]
+     * @param {string} rawSession @param {string} at @param {string} outcome @param {string} id
      */
     async function base(rawSession, at, outcome, id) {
       return {
         v: /** @type {1} */ (1),
-        id: id ?? crypto.randomUUID(),
+        id,
         project,
         session: (await scrubber.hash(`${rawSession}|${at.slice(0, 10)}`)).slice(0, 32),
         seq: Date.parse(at),
@@ -316,9 +343,10 @@ export function createCapture(options) {
             signal: AbortSignal.timeout(TIMEOUT_MS),
           });
           discard(sent.body);
+          if (!sent.ok) throw new Error(`the collector answered ${sent.status}`);
         })
-        // oxlint-disable-next-line intersite/no-empty-catch -- a failed send drops its cases; record() must never reject into the request it observes
-        .catch(() => {})
+        // A failed send drops its cases: record() must never reject into the request it observes.
+        .catch((error) => warnUndelivered(endpoint, error))
         .finally(() => {
           for (const entry of batch) entry.done();
         });
@@ -338,17 +366,18 @@ export function createCapture(options) {
 
     /**
      * @param {RecordInput} input @param {Request | PlainRequest} request @param {Response | PlainResponse} response
-     * @param {{ status: number, outcome: string, at: string, session: string }} known
+     * @param {{ status: number, outcome: string, at: string, session: string, id: string }} known
      */
-    async function build(input, request, response, { status, outcome, at, session }) {
+    async function build(input, request, response, { status, outcome, at, session, id }) {
       const { route } = input;
       const requestUrl = new URL(request.url, "http://localhost");
       const path = requestUrl.pathname;
       if (!include.some((glob) => glob.test(path)) || exclude.some((glob) => glob.test(path))) return undefined;
 
-      const routeParts = route.split("/");
+      const segments = path.split("/");
+      const routeParts = templateFor(segments, route.split("/"));
       const pathParts = await Promise.all(
-        path.split("/").map(async (segment, index) => {
+        segments.map(async (segment, index) => {
           const template = routeParts[index];
           if (segment === "" || (segment === template && !template.startsWith(":"))) return segment;
           let decoded = segment;
@@ -376,13 +405,13 @@ export function createCapture(options) {
       const code = /** @type {{ code?: unknown } | null} */ (json)?.code;
       /** @type {import("../shared/case.mjs").Case} */
       const item = {
-        ...(await base(session, at, outcome, input.id)),
+        ...(await base(session, at, outcome, id)),
         actor: actorOf(input.actor),
         request: { method: request.method.toUpperCase(), route, path: pathParts.join("/"), query, body },
         response: {
           status,
           shape: shapeOf(json),
-          ids: idsOf(json, idPattern),
+          ids: await keptIds(json),
           // Only on errors: a 2xx `code` is as likely an invite or verification code as an error code.
           ...(status >= 400 && typeof code === "string" && /^[A-Za-z][A-Za-z0-9_.:-]{0,63}$/.test(code) ? { errorCode: code } : {}),
         },
@@ -390,6 +419,21 @@ export function createCapture(options) {
       };
       if (caseProblem(item)) item.request.body = { $omitted: "too large" };
       return item;
+    }
+
+    /**
+     * The response's IDs that the scrubber would keep in a request under the same key: a secret shaped like an ID
+     * (`whsec_…` under `webhookSecret`, `sk_…`) is not one. The key is the nearest object key above the value.
+     * @param {unknown} json
+     */
+    async function keptIds(json) {
+      /** @type {Record<string, string>} */
+      const kept = {};
+      for (const [pointer, value] of Object.entries(idsOf(json, idPattern))) {
+        const key = pointer.split("/").filter((part) => part !== "" && !/^\d+$/.test(part)).at(-1) ?? "";
+        if ((await scrubber.scrub(value, key)) === value) kept[pointer] = value;
+      }
+      return kept;
     }
 
     /** @param {RecordInput} input @returns {Promise<void>} */
@@ -408,11 +452,13 @@ export function createCapture(options) {
         // The outcome comes from the status alone, so the sampling decision is made before any body is touched.
         const outcome = input.outcome ?? (status >= 500 ? "error" : status >= 400 ? "rejected" : "ok");
         const ms = input.at === undefined ? Date.now() : new Date(input.at).getTime();
-        const session = String(input.session ?? header(request.headers, "x-intersite-session") ?? "anonymous");
+        // With no caller session and no tab header, each request is its own session, so sampling takes about `sample` of them.
+        const id = input.id ?? crypto.randomUUID();
+        const session = String(input.session ?? header(request.headers, "x-intersite-session") ?? id);
         if (!sampled(outcome, session, ms)) return skip();
         // Clone synchronously, before the caller returns the original and the runtime starts streaming it.
         const copy = isFetchMessage(response) ? response.clone() : response;
-        const known = { status: /** @type {number} */ (status), outcome, at: new Date(ms).toISOString(), session };
+        const known = { status: /** @type {number} */ (status), outcome, at: new Date(ms).toISOString(), session, id };
         return enqueue(
           build(input, request, copy, known).finally(() => {
             discard(isFetchMessage(copy) ? copy.body : undefined);
@@ -431,11 +477,12 @@ export function createCapture(options) {
         const outcome = input.outcome;
         const ms = Date.now();
         const at = new Date(ms).toISOString();
-        const session = String(input.session ?? "anonymous");
+        const id = crypto.randomUUID();
+        const session = String(input.session ?? id);
         if (!page || !OUTCOMES.includes(outcome) || !sampled(outcome, session, ms)) return resolved;
         const errorName = typeof input.errorName === "string" && ERROR_NAME.test(input.errorName) ? { errorCode: input.errorName } : {};
         return enqueue(
-          base(session, at, outcome).then((fields) => ({
+          base(session, at, outcome, id).then((fields) => ({
             ...fields,
             release: typeof input.release === "string" ? input.release : release,
             actor: actorOf(input.actor),

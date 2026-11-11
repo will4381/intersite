@@ -1,16 +1,26 @@
 // @ts-check
 // `intersite collector [--port 8790] [--db .intersite/cases.db]`: the collector on 127.0.0.1 over SQLite, until interrupted.
+// The port defaults to the one in a local `collector.url`, so capture and the other commands find it.
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 import { startNodeCollector } from "../collector/node.mjs";
+import { LOCAL_HOST } from "../replay/collector.mjs";
 import { collectorTokens, loadConfig } from "../shared/config.mjs";
 
 const USAGE = "usage: intersite collector [--port 8790] [--db .intersite/cases.db]";
 
 /** @param {string[]} argv @param {{ cwd: string }} context @returns {Promise<number>} */
 export default async function collector(argv, { cwd }) {
-  const flags = { "--port": "8790", "--db": ".intersite/cases.db" };
+  /** @type {import("../shared/config.mjs").Config} */
+  let config;
+  try {
+    config = loadConfig(cwd);
+  } catch (error) {
+    console.error(/** @type {Error} */ (error).message);
+    return 2;
+  }
+  const flags = { "--port": localPort(config.collector.url) ?? "8790", "--db": ".intersite/cases.db" };
   for (let i = 0; i < argv.length; i += 2) {
     if (!(argv[i] in flags) || argv[i + 1] === undefined) {
       console.error(USAGE);
@@ -21,14 +31,6 @@ export default async function collector(argv, { cwd }) {
   const port = Number(flags["--port"]);
   if (!Number.isInteger(port) || port < 0 || port > 65_535) {
     console.error(USAGE);
-    return 2;
-  }
-  /** @type {import("../shared/config.mjs").Config} */
-  let config;
-  try {
-    config = loadConfig(cwd);
-  } catch (error) {
-    console.error(/** @type {Error} */ (error).message);
     return 2;
   }
   const db = flags["--db"];
@@ -51,4 +53,11 @@ export default async function collector(argv, { cwd }) {
   });
   await running.stop();
   return 0;
+}
+
+/** The port of a local collector URL, or undefined for a remote or portless one. @param {string} url */
+function localPort(url) {
+  if (!URL.canParse(url)) return undefined;
+  const parsed = new URL(url);
+  return LOCAL_HOST.test(parsed.hostname) && parsed.port ? parsed.port : undefined;
 }

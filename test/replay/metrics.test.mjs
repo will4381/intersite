@@ -7,6 +7,8 @@ import { compareMetrics, countersOf } from "../../replay/metrics.mjs";
 test("counters come from Server-Timing entries whose desc is a number, quoted or not; dur-only entries are ignored", () => {
   assert.deepEqual(countersOf('queries;desc=7, cache_misses;desc="2";dur=4.5, db;dur=12.3, cdn-cache;desc=HIT, total;desc="1.5"'), { queries: 7, cache_misses: 2, total: 1.5 });
   assert.deepEqual(countersOf("db;dur=12"), {});
+  // A count written with its unit, as a server shows it in the browser's network panel.
+  assert.deepEqual(countersOf('connect;dur=1.2, db;dur=8.5;desc="5 trips", total;dur=20, cache;desc="v2 warm"'), { db: 5 });
   assert.deepEqual(countersOf(null), {});
 });
 

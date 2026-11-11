@@ -6,7 +6,7 @@ user sessions into tests nobody has to write.
 ## Quickstart
 
 ```bash
-npm i -D github:will4381/intersite#v1.0.0-beta.4 oxlint @oxlint/plugins
+npm i -D github:will4381/intersite#v1.0.0-rc.1 oxlint @oxlint/plugins
 ```
 
 ```bash
@@ -39,6 +39,10 @@ through the wiring.
 
 `gates.base` defaults to `origin/main` and falls back to `main` or `master`; a repository with no commits compares
 against an empty tree, and outside git `check` skips the gates.
+
+In a monorepo, put `intersite.yml` in the app's folder: its `check` judges only that folder's changes, names files
+relative to it, and still reports a copy of code that lives in a shared package. A root config skips folders that
+have their own.
 
 Two more gates run the tests and are opt-in through `gates.run`: `fails-on-base` (a bug fix's new test must fail
 without the fix) and `mutation` (a deliberate break on a changed line must make a test fail).
@@ -104,6 +108,8 @@ capture:
 replay:
   target: http://localhost:8787
   modes: [baseline, twice, cross-tenant]
+  crossTenantIgnore:
+    - { route: "GET /v1/programs/:id", why: "network programs are public by design" }
 ```
 
 A deliberate exception is always written down where a reviewer sees it: `gates.acknowledged` for a gate, or
@@ -177,6 +183,8 @@ Fastify, Next.js and browser-only (`wrapFetch`) forms are shown at the top of
 `project` and the `capture` section of `intersite.yml` apply. Capture never reads files itself; on Workers pass
 `project`, `exclude`, `redactKeys` and `keepKeys` inline.
 
+- **Mounted servers work.** A server under a prefix (`/api/v1/me` for the route `/v1/me`) is recorded with its real
+  path. When cases cannot reach the collector, capture prints one line saying so.
 - **Scrubbing is default-deny.** A string is kept only when it is an ID, a date under a date key such as `createdAt`, or a short
   code such as `active` under a structural key such as `status`. Numbers are kept so replay has amounts and counts.
   Everything else becomes a stable fake. No headers and no response bodies are stored. Before turning capture on in
@@ -190,14 +198,16 @@ Fastify, Next.js and browser-only (`wrapFetch`) forms are shown at the top of
   freely as long as the name stays.
 - **Replay modes:** `baseline` (same status and response shape as production; a server error production recorded
   fails while it still happens and passes once it is fixed), `twice` (a repeated write must not
-  error), `cross-tenant` (another account must be refused, and its lists must not show records the session created), `ui` (each named action's page loads cleanly in Chrome;
+  error), `cross-tenant` (another account must be refused, and its lists must not show records the session created; a record public by design goes in
+  `replay.crossTenantIgnore` with a reason), `ui` (each named action's page loads cleanly in Chrome;
   reads are clicked, and writes fill the form from the recorded body, submit it and must get the recorded status).
 - **Cheaper `ui` runs:** `npx playwright install chromium-headless-shell` makes `ui` use Chrome Headless Shell instead
   of full Chrome (about half the memory and a third of the browser CPU in our benchmark). Lightpanda
   (`replay.browser: lightpanda`) is lighter still but has no real layout, so clicks and visibility checks may not
   work; it is unverified with Intersite.
 - **The adapter** (`intersite.adapter.mjs`) tells replay how to sign in a seeded test user and which seeded record
-  stands in for an ID from production.
+  stands in for an ID from production. Capture stores no headers, so anything every request needs (an API version,
+  an idempotency key) comes from its optional `headers` export.
 - Replay refuses a target that is not local unless `--allow-remote` is passed.
 
 Nightly on the main branch, `intersite replay --sample 200 --mark --release <sha>` records which sessions pass. Pull
@@ -232,7 +242,8 @@ casing, one field typed two ways, envelopes and list paging, error shapes, a sta
 values in disguise (`"true"`, float noise, dates as numbers), fields that must not leave the server, and route
 naming. Conventions are inferred from your own API (what 90% of it already does), never configured, so a finding
 reads `/created_at is snake_case; 212 of 214 response fields in this API are camelCase`. A deliberate exception goes
-in `replay.contractIgnore` with a reason.
+in `replay.contractIgnore` with a reason. Three or more findings of one kind under one object print as one line
+naming the object, the count and a few examples; an ignore entry on that object accepts them all.
 
 `intersite replay --mode contract --openapi openapi.json` does the same on a documented contract, with no server
 and no recorded traffic.
@@ -243,7 +254,8 @@ Before a migration, backfill or refactor, run `intersite replay --seed 1 --snaps
 against your local server and data. Apply the change, then run
 `intersite replay --snapshot-base .intersite/snapshot/before.json`. Every response whose status or values changed is
 one `FAIL snapshot` line with the JSON pointer and both values. IDs the session created, timestamps near now and
-request IDs are normalised, so two runs of unchanged code report nothing. Other fields that change on their own go in
+request IDs are normalised, a timestamp set as now plus a fixed offset (an invite's expiry) is compared by its
+offset from each run's start, so two runs of unchanged code report nothing. Other fields that change on their own go in
 `replay.snapshotIgnore` (`[/updatedAt, /items/*/etag]`). The file holds response bodies from your local server, so
 keep it under the git-ignored `.intersite/`.
 

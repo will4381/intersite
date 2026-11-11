@@ -66,6 +66,25 @@ test("a failing run exits 1 with one FAIL line, marks the failure, and its rerun
   assert.deepEqual(rerun.stdout.trim().split("\n"), ["replay: 1 sessions; steps: 2 passed, 1 failed, 0 skipped", fail]);
 });
 
+test("a cross-tenant FAIL line ends with the replay.crossTenantIgnore entry that accepts it, and the entry silences it", async () => {
+  target.bugs.add("leak");
+  const run = await cli(["--mode", "cross-tenant", "--seed", "7"]);
+  assert.equal(run.code, 1, run.stderr);
+  const line = run.stdout.split("\n").find((item) => item.startsWith("FAIL cross-tenant s-a-2 "));
+  assert.equal(line, "FAIL cross-tenant s-a-2 GET /notes/:id: another account got 200, expected 400, 401, 403, 404 or 422 | rerun: intersite replay --id s-a-2 --mode cross-tenant"
+    + ' | to accept: add { "route": "GET /notes/:id", "why": "…" } to replay.crossTenantIgnore in intersite.yml', run.stdout);
+
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "intersite-replay-")));
+  const replay = { target: target.url, adapter: relative(dir, adapterFile), crossTenantIgnore: [{ route: "GET /notes/:id", why: "notes are published to the network" }] };
+  writeFileSync(join(dir, "intersite.json"), JSON.stringify({ project: "demo", collector: { url: collector.url }, replay }));
+  const accepted = await cli(["--mode", "cross-tenant", "--seed", "7"], dir);
+  assert.ok(!accepted.stdout.includes("GET /notes/:id:"), accepted.stdout);
+  writeFileSync(join(dir, "intersite.json"), JSON.stringify({ project: "demo", collector: { url: collector.url }, replay: { ...replay, crossTenantIgnore: [{ route: "GET /notes/:id" }] } }));
+  const invalid = await cli(["--mode", "cross-tenant"], dir);
+  assert.equal(invalid.code, 2);
+  assert.match(invalid.stderr, /replay\.crossTenantIgnore must be a list of \{ route: "GET \/v1\/orders\/:id", why \} entries/);
+});
+
 test("--id replays the case together with the earlier cases of its session", async () => {
   const run = await cli(["--id", "s-b-3"]);
   assert.equal(run.code, 0, run.stderr);

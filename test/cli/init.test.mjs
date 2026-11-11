@@ -8,6 +8,7 @@ import { test } from "node:test";
 
 import init from "../../cli/init.mjs";
 import { loadConfig } from "../../shared/config.mjs";
+import { run as runGate } from "../gates/repo.mjs";
 import { fixture } from "../lint/fixture.mjs";
 
 /** Runs init in `cwd` and returns what it printed. @param {string} cwd */
@@ -76,6 +77,18 @@ test("in a git repository with no .gitignore, init creates one so recorded cases
   await run(cwd);
   assert.equal(readFileSync(join(cwd, ".gitignore"), "utf8"), ".intersite/\n");
   assert.equal(await run(cwd), "ok init: already set up");
+});
+
+test("installing intersite itself does not fail the first check: init acknowledges it for new-deps", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "intersite-init-deps-"));
+  const git = (/** @type {string[]} */ ...args) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...args], { cwd });
+  git("init", "-q", "-b", "main");
+  writeFileSync(join(cwd, "package.json"), JSON.stringify({ name: "app", devDependencies: { vite: "^5.0.0" } }));
+  git("add", ".");
+  git("commit", "-qm", "base");
+  writeFileSync(join(cwd, "package.json"), JSON.stringify({ name: "app", devDependencies: { vite: "^5.0.0", intersite: "github:will4381/intersite#v1" } }));
+  await run(cwd);
+  assert.equal((await runGate(cwd, ["new-deps"])).code, 0);
 });
 
 test("init leaves .gitignore alone when a parent .gitignore already covers .intersite", async () => {

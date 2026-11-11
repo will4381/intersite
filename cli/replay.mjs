@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
 import { LOCAL_HOST, getCase, listSessions, postResults } from "../replay/collector.mjs";
-import { evidenceOf, lintContract } from "../replay/contract.mjs";
+import { evidenceOf, lintContract, printable } from "../replay/contract.mjs";
 import { compareMetrics } from "../replay/metrics.mjs";
 import { openapiEvidence } from "../replay/openapi.mjs";
 import { answers, replaySessions } from "../replay/run.mjs";
@@ -65,7 +65,8 @@ async function main(argv, cwd, quiet) {
   const target = flags.target ?? config.replay.target;
   const modes = /** @type {import("../replay/run.mjs").Mode[]} */ (flags.mode ?? config.replay.modes);
   for (const mode of modes) if (!MODES.includes(mode)) throw new Error(`unknown mode ${mode}; use ${MODES.join(", ")}`);
-  const ignoreContract = contractIgnore(config.replay);
+  const ignoreContract = ignoreList(config.replay, "contractIgnore", "pointer?, check?, ");
+  const crossTenantIgnore = ignoreList(config.replay, "crossTenantIgnore", "");
   if (flags.openapi) return lintOpenapi({ cwd, file: flags.openapi, modes: flags.mode ?? ["contract"], idPattern: config.capture.idPattern, ignore: ignoreContract, json: flags.json, quiet });
   const contract = modes.includes("contract");
   if (contract && flags.id && !flags.seed) {
@@ -118,10 +119,12 @@ async function main(argv, cwd, quiet) {
     }
   }
 
+  // Timestamps a server sets as "now plus an offset" are compared by their offset from each run's start.
+  const startedAt = Date.now();
   const results = await replaySessions({
     sessions, target, adapter, modes, idPattern: config.capture.idPattern, shiftDates: config.replay.shiftDates,
     concurrency, uiTarget: config.replay.uiTarget, headed: flags.headed, cwd, browser: config.replay.browser, browserUrl: config.replay.browserUrl,
-    snapshots: Boolean(files.snapshot || flags["snapshot-out"]),
+    snapshots: Boolean(files.snapshot || flags["snapshot-out"]), crossTenantIgnore,
   });
 
   if (flags.mark) await markResults(collector, /** @type {string} */ (flags.release), results);
@@ -133,13 +136,15 @@ async function main(argv, cwd, quiet) {
   const snapshot = Object.assign({}, ...results.map((result) => result.snapshot));
   // Both bases were read before the run, so an --*-out naming the same file is written after comparing.
   writeRun(cwd, flags["metrics-out"], meta, metrics);
-  writeRun(cwd, flags["snapshot-out"], meta, snapshot);
+  writeRun(cwd, flags["snapshot-out"], { ...meta, startedAt: new Date(startedAt).toISOString() }, snapshot);
   const { _meta: _metricsMeta, ...metricsBefore } = bases.metrics ?? { _meta: meta };
-  const { _meta: _snapshotMeta, ...snapshotBefore } = bases.snapshot ?? { _meta: meta };
+  const { _meta: snapshotMeta, ...snapshotBefore } = bases.snapshot ?? { _meta: meta };
+  // A file written before `startedAt` was recorded has no start: NaN, so its timestamps are compared as written.
+  const startedBefore = typeof snapshotMeta.startedAt === "string" ? Date.parse(snapshotMeta.startedAt) : Number.NaN;
   const compared = {
     metrics: bases.metrics && { failures: compareMetrics(metricsBefore, metrics), count: Object.keys(metrics).filter((id) => metricsBefore[id]).length },
     snapshot: bases.snapshot && {
-      failures: compareSnapshots(/** @type {import("../replay/snapshot.mjs").Snapshot} */ (snapshotBefore), snapshot, ignore),
+      failures: compareSnapshots(/** @type {import("../replay/snapshot.mjs").Snapshot} */ (snapshotBefore), snapshot, ignore, { before: startedBefore, after: startedAt }),
       count: Object.keys(snapshot).filter((id) => snapshotBefore[id]).length,
     },
   };
@@ -182,7 +187,7 @@ function lintOpenapi({ cwd, file, modes, idPattern, ignore, json, quiet }) {
     if (!quiet) console.log(`ok ${summary}`);
     return 0;
   }
-  console.log([summary, ...findings.map((finding) => contractLine(finding, `intersite replay --openapi ${file} --mode contract`))].join("\n"));
+  console.log([summary, ...printable(findings).map((finding) => contractLine(finding, `intersite replay --openapi ${file} --mode contract`))].join("\n"));
   return 1;
 }
 
@@ -202,13 +207,17 @@ function sampleFlags(flags, seed) {
     + (flags["known-good"] ? " --known-good" : "");
 }
 
-/** `replay.contractIgnore`, checked: deliberate exceptions to the contract lint. @param {Record<string, unknown>} replayConfig @returns {import("../replay/contract.mjs").Ignore[]} */
-function contractIgnore(replayConfig) {
-  const ignore = replayConfig.contractIgnore ?? [];
+/**
+ * `replay.contractIgnore` or `replay.crossTenantIgnore`, checked: deliberate exceptions, each naming a route and why.
+ * @param {Record<string, unknown>} replayConfig @param {"contractIgnore" | "crossTenantIgnore"} name @param {string} fields the optional fields, for the message
+ * @returns {import("../replay/contract.mjs").Ignore[]}
+ */
+function ignoreList(replayConfig, name, fields) {
+  const ignore = replayConfig[name] ?? [];
   const valid = (/** @type {unknown} */ entry) => entry !== null && typeof entry === "object" && "route" in entry && typeof entry.route === "string"
     && "why" in entry && typeof entry.why === "string" && entry.why.trim() !== "";
   if (!Array.isArray(ignore) || !ignore.every(valid)) {
-    throw new Error('replay.contractIgnore must be a list of { route: "GET /v1/orders/:id", pointer?, check?, why } entries, each saying why in why');
+    throw new Error(`replay.${name} must be a list of { route: "GET /v1/orders/:id", ${fields}why } entries, each saying why in why`);
   }
   return ignore;
 }
@@ -252,14 +261,15 @@ function report({ flags, quiet, seed, sessions, results, steps, compared, files,
     ...steps
       .filter((step) => step.result === "failed")
       .flatMap((s) => [
-        `FAIL ${s.mode} ${s.caseId} ${s.method} ${s.route}: ${s.reason} | rerun: intersite replay --id ${s.caseId} --mode ${s.mode}${extra}`,
+        `FAIL ${s.mode} ${s.caseId} ${s.method} ${s.route}: ${s.reason} | rerun: intersite replay --id ${s.caseId} --mode ${s.mode}${extra}`
+          + (s.mode === "cross-tenant" ? ` | to accept: add { "route": "${s.method} ${s.route}", "why": "…" } to replay.crossTenantIgnore in intersite.yml` : ""),
         ...(flags.verbose && s.sent !== undefined ? [`  sent: ${s.sent}`, `  got: ${s.got}`] : []),
       ]),
     ...metricFailures.map(({ caseId, reason }) =>
       `FAIL metrics ${caseId} ${where(caseId)?.method} ${where(caseId)?.route}: ${reason} | rerun: intersite replay --id ${caseId} --metrics-base ${files.metrics}${extra}`),
     ...snapshotFailures.map(({ caseId, differences }) =>
       `FAIL snapshot ${caseId} ${where(caseId)?.method} ${where(caseId)?.route}: ${describe(differences)} | rerun: intersite replay --id ${caseId} --snapshot-base ${files.snapshot}${extra}`),
-    ...contractFindings.map((finding) => contractLine(finding, `intersite replay --id ${finding.caseId}${sampleFlags(flags, flags.id ? flags.seed : seed)} --mode contract${extra}`)),
+    ...printable(contractFindings).map((finding) => contractLine(finding, `intersite replay --id ${finding.caseId}${sampleFlags(flags, flags.id ? flags.seed : seed)} --mode contract${extra}`)),
     ...results.filter((result) => result.skipped).map((result) => `SKIP ${result.session}: ${result.skipped}`),
   ];
   console.log(lines.join("\n"));
@@ -268,7 +278,7 @@ function report({ flags, quiet, seed, sessions, results, steps, compared, files,
 
 /**
  * Writes a --metrics-out or --snapshot-out file, creating its folder, with the seed and sessions first.
- * @param {string} cwd @param {string | undefined} file @param {{ seed: number | null, sessions: string[] }} meta @param {object} data
+ * @param {string} cwd @param {string | undefined} file @param {{ seed: number | null, sessions: string[], startedAt?: string }} meta @param {object} data
  */
 function writeRun(cwd, file, meta, data) {
   if (!file) return;
@@ -303,7 +313,7 @@ function named(module, file) {
       throw new Error(`${file} ${name}: ${error instanceof Error ? error.message : error}${code ? ` (${code})` : ""}`, { cause: error });
     }
   };
-  const functions = ["signIn", "resolveId", "reset"].filter((name) => typeof module[name] === "function");
+  const functions = ["signIn", "resolveId", "reset", "headers"].filter((name) => typeof module[name] === "function");
   return {
     ...module,
     ...Object.fromEntries(functions.map((name) => [name, wrap(module[name], name)])),
@@ -316,7 +326,7 @@ function named(module, file) {
 /**
  * Reads a --metrics-out or --snapshot-out file to compare against, failing when it is unreadable or has no _meta.
  * @param {string} cwd @param {string} file @param {"metrics" | "snapshot"} kind
- * @returns {{ _meta: { seed: number | null, sessions: string[] } } & Record<string, any>}
+ * @returns {{ _meta: { seed: number | null, sessions: string[], startedAt?: string } } & Record<string, any>}
  */
 function readBase(cwd, file, kind) {
   let base;

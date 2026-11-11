@@ -6,7 +6,7 @@ import { join, relative } from "node:path";
 import { after, before, beforeEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { compareSnapshots, describe } from "../../replay/snapshot.mjs";
+import { compareSnapshots, describe, normalise } from "../../replay/snapshot.mjs";
 import { listSession, replayCli, startCollector, startTarget } from "./helpers.mjs";
 
 const adapterFile = fileURLToPath(new URL("./adapter.mjs", import.meta.url));
@@ -54,9 +54,12 @@ test("two runs with nothing changed write the same snapshot and report no differ
   assert.equal(run.code, 0, run.stdout + run.stderr);
   assert.equal(run.stdout, "ok replay: 1 sessions; steps: 6 passed, 0 failed, 0 skipped; seed 7; snapshot: 5 cases compared, 0 changed\n");
   assert.notEqual(reads().at(-1), before.at(-1), "the second run read a note with a new ID");
-  assert.equal(readFileSync(join(dir, SNAP), "utf8"), first);
   const written = JSON.parse(first);
-  assert.deepEqual(written._meta, { seed: 7, sessions: ["s-list"] });
+  const { _meta: { startedAt, ...meta }, ...bodies } = written;
+  const { _meta: { startedAt: startedAgain, ...metaAgain }, ...bodiesAgain } = JSON.parse(readFileSync(join(dir, SNAP), "utf8"));
+  assert.deepEqual([metaAgain, bodiesAgain], [meta, bodies], "only the start time differs");
+  assert.deepEqual(meta, { seed: 7, sessions: ["s-list"] });
+  assert.ok(startedAt < startedAgain && new Date(startedAt).toISOString() === startedAt, "_meta.startedAt is the run's start, as ISO");
   assert.deepEqual(written["s-list-4"], {
     status: 200,
     body: { notes: [{ id: "note_seed01", text: "seed", createdAt: "<now>" }, { id: "<id:1>", text: "t1", createdAt: "<now>" }, { id: "<id:2>", text: "t2", createdAt: "<now>" }], requestId: "<request-id>" },
@@ -132,4 +135,35 @@ test("by position, an added or missing row and a long value are shown truncated,
   assert.deepEqual(found.differences[1], { pointer: "/items/2", before: undefined, after: 4 });
   assert.equal(describe(found.differences), `/items/1 2 → 3; /items/2 (none) → 4; /text "${"x".repeat(38)}… → "${"y".repeat(38)}…; and 2 more`);
   assert.deepEqual(compareSnapshots(base, { gone: now.c }, []), [], "a case on one side only is not compared");
+});
+
+test("a secret or token in an answer is written as <secret>: new every run, and not for a file on disk", () => {
+  const run = { created: new Set(), numbers: new Map(), from: Date.now() };
+  const body = { id: "key_8fK2abQ9", secret: "lucra_test_50d73eb11a_m2FG3Y", setupIntentClientSecret: "seti_123_secret_456", accessToken: "eyJ.x.y", name: "Replay" };
+  assert.deepEqual(normalise(body, run), { id: "key_8fK2abQ9", secret: "<secret>", setupIntentClientSecret: "<secret>", accessToken: "<secret>", name: "Replay" });
+});
+
+test("a timestamp set as now plus a fixed offset matches across runs by its offset from each run's start; a changed offset still shows", async () => {
+  // The recorded answers have no expiresAt, so baseline fails those steps; only the snapshot lines matter here.
+  target.bugs.add("expiry");
+  const dir = project();
+  await replayCli(["--seed", "7", "--snapshot-out", SNAP], dir);
+  const same = await replayCli(["--snapshot-base", SNAP], dir);
+  assert.match(same.stdout, /snapshot: 5 cases compared, 0 changed\n/);
+
+  target.bugs.add("longer-expiry");
+  const longer = await replayCli(["--snapshot-base", SNAP], dir);
+  assert.match(longer.stdout, /snapshot: 5 cases compared, 4 changed\n/);
+  assert.match(longer.stdout, /FAIL snapshot s-list-1 POST \/notes: \/note\/expiresAt "\d{4}-[^"]+" → "\d{4}-[^"]+" \|/);
+  assert.ok(!longer.stdout.includes("createdAt"), "a timestamp near now is still <now>");
+
+  // A file written before the start time was recorded still loads; its timestamps are compared as they were written.
+  target.bugs.delete("longer-expiry");
+  const file = join(dir, SNAP);
+  const { _meta: { startedAt: _startedAt, ...meta }, ...bodies } = JSON.parse(readFileSync(file, "utf8"));
+  writeFileSync(file, JSON.stringify({ _meta: meta, ...bodies }));
+  const old = await replayCli(["--snapshot-base", SNAP], dir);
+  assert.equal(old.stderr, "");
+  assert.match(old.stdout, /snapshot: 5 cases compared, 4 changed\n/);
+  assert.match(old.stdout, /FAIL snapshot s-list-1 POST \/notes: \/note\/expiresAt "/);
 });

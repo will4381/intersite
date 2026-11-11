@@ -170,7 +170,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Globs for test files."
+          "description": "Globs for test files, relative to the project folder."
         },
         "testCmd": {
           "type": "string",
@@ -210,7 +210,7 @@
               },
               "target": {
                 "type": "string",
-                "description": "File path or dependency name the exception covers."
+                "description": "File path (relative to the project folder) or dependency name the exception covers."
               },
               "why": {
                 "type": "string",
@@ -224,14 +224,14 @@
           "items": {
             "type": "string"
           },
-          "description": "Extra globs for files that are loaded by convention and never imported (routes, pages, scripts), so `unused` leaves them alone."
+          "description": "Extra globs, relative to the project folder, for files that are loaded by convention and never imported (routes, pages, scripts), so `unused` leaves them alone."
         },
         "artifacts": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "description": "Extra globs for leftover files `artifacts` should report, on top of the built-in list."
+          "description": "Extra globs, relative to the project folder, for leftover files `artifacts` should report, on top of the built-in list."
         }
       }
     },
@@ -279,7 +279,7 @@
         },
         "idPattern": {
           "type": "string",
-          "description": "Regular expression for values that are IDs; they are kept so replay can remap them."
+          "description": "Regular expression for values that are IDs; they are kept so replay can remap them. The default takes `prefix_` IDs whose part after the prefix holds a digit or a capital (or is 16 or more characters) and UUIDs; set this when the project's IDs differ (base64url with `-` or `_`, plain numbers)."
         },
         "ttlDays": {
           "type": "object",
@@ -423,6 +423,30 @@
               "why": {
                 "type": "string",
                 "minLength": 1
+              }
+            }
+          }
+        },
+        "crossTenantIgnore": {
+          "type": "array",
+          "default": [],
+          "description": "Routes whose records are public by design (a marketplace listing, a network program): the cross-tenant mode does not send them as another account, so neither its access check nor its list check reports them. Shows up in review.",
+          "items": {
+            "type": "object",
+            "required": [
+              "route",
+              "why"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "route": {
+                "type": "string",
+                "description": "Method and route template (GET /v1/programs/:id), or the template alone for every method."
+              },
+              "why": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Why another account may reach this record."
               }
             }
           }

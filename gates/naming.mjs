@@ -2,10 +2,11 @@
 // Fails when a file or folder the change adds breaks a naming convention its siblings already keep: casing, a shared
 // suffix (`*.service.ts`), the test-name pattern, or file names that match their main export. Nothing is configured:
 // a convention is whatever a clear majority of enough siblings already do, measured per folder and per kind of file.
+// Siblings are the project's own files on disk: another package of a monorepo keeps its own conventions.
 import { readFileSync } from "node:fs";
 import { join, posix } from "node:path";
 
-import { changes, listFiles, matches, resolveBase, topLevel } from "./lib.mjs";
+import { changes, listFiles, matches, projectSpec, resolveBase } from "./lib.mjs";
 
 // What the casing inference looks at: code and style files. Data, docs, assets and migrations name files by other rules.
 const CODE = /\.(?:[cm]?[jt]sx?|swift|py|rb|go|rs|kts?|java|vue|svelte|astro|css|scss|less)$/;
@@ -302,10 +303,10 @@ function readText(path) {
  */
 export async function naming({ cwd, base, testPaths }) {
   const sha = resolveBase(cwd, base);
-  const top = topLevel(cwd);
-  const added = changes(cwd, sha).filter((c) => (c.status === "A" || (c.status === "R" && posix.basename(c.from) !== posix.basename(c.path))) && !SKIP.test(c.path)).map((c) => c.path);
+  const spec = projectSpec(cwd);
+  const added = changes(cwd, sha, spec).filter((c) => (c.status === "A" || (c.status === "R" && posix.basename(c.from) !== posix.basename(c.path))) && !SKIP.test(c.path)).map((c) => c.path);
   if (!added.length) return { findings: [], summary: "0 added files checked" };
-  const files = listFiles(top);
+  const files = listFiles(cwd, spec);
   const fresh = new Set(added);
   const before = new Set(files.filter((f) => !fresh.has(f)).flatMap(ancestors));
   const newDirs = [...new Set(added.flatMap(ancestors))].filter((d) => !before.has(d) && !SKIP.test(`${d}/`));
@@ -315,7 +316,7 @@ export async function naming({ cwd, base, testPaths }) {
   /** @type {Map<string, string>} */
   const cache = new Map();
   const read = (/** @type {string} */ file) => {
-    if (!cache.has(file)) cache.set(file, readText(join(top, file)));
+    if (!cache.has(file)) cache.set(file, readText(join(cwd, file)));
     return /** @type {string} */ (cache.get(file));
   };
   /** @type {import("./lib.mjs").Finding[]} */

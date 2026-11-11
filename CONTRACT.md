@@ -53,12 +53,15 @@ local collector accepts.
 
 Defined in `shared/case.mjs` (`Case` typedef, `caseProblem`). `response.shape` comes from `shapeOf` and is compared
 with `shapeDiff`; `response.ids` comes from `idsOf` (all in `shared/shape.mjs`). A case never holds cookies, tokens,
-`Authorization` or API-key headers, or a raw user identifier. Response bodies are not stored, only their shape and IDs.
+`Authorization` or API-key headers, or a raw user identifier. Response bodies are not stored, only their shape and IDs. `response.ids` holds only the IDs the scrubber would keep
+under the same key, so a secret shaped like an ID is never stored.
 Request path, query and body values are scrubbed by `capture/scrub.mjs`: a string is kept only when it is an ID, a
 short digit string, an ISO date under a date-like key, or a short lowercase code under a structural key (or one in
 `capture.keepKeys`); every other string becomes a stable fake of the same form, such as `text-1a2b3c4d`.
 
-A **session** is every case with the same `session` value, ordered by `seq`. Capture samples whole sessions, and
+A **session** is every case with the same `session` value, ordered by `seq`. With no caller session and no
+`x-intersite-session` header, a request is a session of its own, so sampling takes about `sample` of signed-out
+requests. Capture samples whole sessions, and
 always records a case whose outcome is not `ok`. An `ok` request of an unsampled session costs one small hash: nothing
 is cloned or read. Cases are sent in batches of up to 50 per request. On Cloudflare Workers, create the capture
 inside the request handler, because a Worker may not carry I/O from one request into another.
@@ -113,6 +116,7 @@ Rules the collector enforces:
 - Every case passes `caseProblem`; a failing one is dropped with its reason, the rest are stored.
 - A duplicate `(project, id)` is ignored, so capture may retry.
 - Each case expires `ttlDays` after `at`. A scheduled run deletes expired cases that are not pinned.
+- `GET /v1/sessions` draws its sample from the 5,000 most recently active sessions matching the filters.
 - A daily cap per project and outcome class (`ok` versus everything else) drops the overflow with reason `cap`.
 - `known_good=1` returns only sessions whose latest result passed. A session that failed last time, or has never
   been replayed, is left out. So the nightly run on the main branch replays without `known_good` and with `--mark`,
@@ -129,6 +133,17 @@ the length of the command when the configured collector is local and nothing is 
 Each gate looks at the change between `gates.base` and the working tree (uncommitted work included). The default
 base falls back from `origin/main` to `origin/HEAD`, `origin/master`, `main`, `master`; with no commits the change
 is compared with an empty tree. Untracked `node_modules` and `.intersite` are never part of a change.
+
+A gate's world is the project: the folder holding the config, or the working directory when there is none, minus
+any nested folder whose own config loads (that is another project). Changes outside it are not its changes. Paths
+in findings, `--json`, `gates.acknowledged` targets and every `gates` glob are relative to the project folder, as
+lint's are. Gates read wider only where that is the point: `duplicates` and `similar` look for the original in the
+whole repository and name it relative to the project (`../../packages/ui/x.ts`); `unused` counts a mention anywhere
+in the repository as a use; `style-drift` offers tokens from the project's own package, packages above it and
+shared ones; `new-deps` also checks the workspace root's `package.json` for a project in a subfolder.
+`fails-on-base` and `mutation` use a worktree of the whole repository and run `gates.testCmd` in the project's
+folder inside it, each run limited to `--timeout` seconds (120 by default): for `fails-on-base` a run that does not
+finish is stopped and counts as failing on the base, like any other failure there.
 `intersite gate <name> [--base <ref>]` runs one; `intersite check` runs those in `gates.run`.
 
 | Gate | Fails when |
@@ -159,6 +174,8 @@ export async function signIn(actorKind, { target, other }) { return { cookie: "�
 export async function resolveId(id, { target }) { return undefined; }
 /** Runs before each session, for example to reseed. */
 export async function reset({ target }) {}
+/** Extra headers for every replayed request, signed in or not: an API version, an idempotency key per case. */
+export function headers({ caseId, method, route }) { return {}; }
 /** Checked after each session; return a message when broken. */
 export const invariants = [{ name: "ledger balances", async check({ target, fetch }) { return undefined; } }];
 ```
@@ -170,21 +187,32 @@ UI cases are skipped by every mode except `ui`.
 - `baseline`: replay each session in order; a step passes when the status equals the recorded status and
   `shapeDiff(recorded, replayed)` is undefined. A step recorded with a 5xx is the reverse: it fails
   (`still fails as production did`) on a 5xx or no answer, and passes once the answer is below 500. A dropped
-  connection is status 0 (`got no answer (<code>)`). `--json --verbose` adds the `recorded` request. Then run the adapter's invariants.
-- `twice`: send each non-GET request a second time; the second answer must not be a 5xx.
-- `cross-tenant`: send each request that names an ID as `signIn(kind, { other: true })`; the answer must be 401, 403
-  or 404. A request with no ID (a create in the caller's own account) is not checked, and `anonymous` cases are
+  connection is status 0 (`got no answer (<code>)`). `--json --verbose` adds the `recorded` request. A redirect is
+  compared as answered, never followed; a `text/event-stream` answer is judged on its status and its body is not
+  read; an answer that takes over 30 s is status 0. A refusal recorded with an `errorCode` passes when the replay
+  answers the same status and code. In an array, a replayed row shape the recording had not seen passes while
+  another replayed row matches a recorded one. A step whose recorded body is `{ $omitted }`, and a session whose
+  actor kind `signIn` cannot sign in, are skipped with the reason. Then run the adapter's invariants.
+- `twice`: send each non-GET request a second time; the second answer must not be a 5xx. A write whose first send
+  got a 5xx or no answer is skipped: baseline reports it.
+- `cross-tenant`: send each request that names an ID as `signIn(kind, { other: true })`; the answer must be 400, 401, 403,
+  404 or 422 (many APIs validate before they check access). A request names an ID when its path or body holds one;
+  a GET whose only ID is in the query gets the list check. A request with no ID (a create in the caller's own account) is not checked, and `anonymous` cases are
   skipped. A GET that names no ID (a list, search or dashboard) is sent as the other account too, once the session
   has created something, and fails when its answer holds an ID this session's writes created earlier. Only IDs first
   seen in the answer to one of the session's writes count, so shared records both accounts see (a catalogue, plans)
   pass; records the session did not create are not checked. Each checked request is then sent as its owner so the
-  session's state keeps moving.
+  session's state keeps moving. A route in `replay.crossTenantIgnore` (`{ route, why }`) is public by design: it is
+  not sent as the other account, so neither check reports it. Each FAIL line ends with the entry that would accept it.
 - `contract`: lint the API's wire format across every route. Evidence is each sampled case's recorded request body
   and route and the production status and shape, plus, for each replayed case, the local server's body and headers.
   A convention is whatever at least 5 units and 90% of all units share (fields per route and pointer, routes, error
   answers, list routes); with less, nothing is reported. Findings are per method and route, one line each:
   `FAIL contract <METHOD> <route>: <pointer and what is wrong>; <n of m in this API do X>: <what to do> (case <id>)`,
-  ending with the rerun command and the `replay.contractIgnore` entry that would accept it. With `--id` it replays
+  ending with the rerun command and the `replay.contractIgnore` entry that would accept it. Three or more findings
+  with the same check, route, parent pointer and remedy are one group: one line on the parent pointer with the count
+  and up to three examples; `--json` keeps every finding with its `group`, and an ignore entry on the parent
+  silences the group. With `--id` it replays
   that case's session and takes the conventions from the seeded sample, so `--id` needs `--seed`. With `baseline`
   in the same run it reads the baseline answers instead of sending again. `--openapi <file>` (JSON, with
   `--mode contract` only) lints a documented contract with no server and no traffic. `check` in an ignore entry is
@@ -215,19 +243,22 @@ Dates: with `replay.shiftDates`, every ISO date or timestamp in a request's quer
 time between the case's `at` and now, so "starts tomorrow" is still in the future. Each value keeps its format, and a
 date without a time moves by whole days. `replaySessions` takes `now` as an option so this is exact in tests.
 
-Metrics: a server may report per-request counters in `Server-Timing` as entries whose `desc` is a number
-(`queries;desc=7`); entries with only `dur` are ignored, since durations vary and counts do not.
+Metrics: a server may report per-request counters in `Server-Timing` as entries whose `desc` is a number, alone
+or followed by a unit word (`queries;desc=7`, `db;desc="7 trips"`); entries with only `dur` are ignored, since durations vary and counts do not.
 `--metrics-out <file>` writes `{ "_meta": { seed, sessions }, "<caseId>": { "<counter>": n } }` from the baseline
 mode. `--metrics-base <file>` fails a case whose counter is higher than in that file (`FAIL metrics …`), and is a
 setup error when the run replays other sessions than the file's; without `--seed` it reuses the file's seed. Compare
 two local runs on the same data, never against production.
 
-Snapshots: `--snapshot-out <file>` writes `{ "_meta": { seed, sessions }, "<caseId>": { status, body } }` from the
+Snapshots: `--snapshot-out <file>` writes `{ "_meta": { seed, sessions, startedAt }, "<caseId>": { status, body } }` from the
 baseline mode, with each body normalised so two runs of the same code on the same data are identical: an ID first
 seen in the answer to one of the session's writes becomes `<id:n>`, an ISO timestamp within ten minutes of the run
-becomes `<now>`, and a string under a `requestId`, `traceId` or `correlationId` key becomes `<request-id>`;
+becomes `<now>`, a string under a `requestId`, `traceId` or `correlationId` key becomes `<request-id>`, and one under a key ending
+in secret, token or password becomes `<secret>`;
 everything else is kept. `--snapshot-base <file>` fails each case whose status or values differ
 (`FAIL snapshot <caseId> <METHOD> <route>: <pointer> <before> → <after>`, at most three per line), comparing arrays
 by position, or by `id` when every row has a distinct one, so a reorder is one difference. Pointers matching a
 `replay.snapshotIgnore` glob are left out. The seed rules are those of `--metrics-base`. The file holds response
-bodies from the local server: keep it under `.intersite/`.
+bodies from the local server: keep it under `.intersite/`. Two timestamps whose offsets from their own run's
+`startedAt` differ by under a minute are the same value, so `now + 7 days` matches across runs and 7 days becoming
+14 does not. A file without `startedAt` still loads; its timestamps are compared as written.

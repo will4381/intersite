@@ -245,3 +245,22 @@ test("captureOptions hands intersite.yml's capture section and project to create
   assert.equal(sent[0].project, "acme");
   assert.notEqual(sent[0].request.body.nickname, "maria");
 });
+
+test("a server mounted under a prefix keeps the path's static words: /api/v1/me for the route /v1/me is not scrubbed", async () => {
+  const { instance, cases } = capture();
+  const paths = [["/api/v1/me", "/v1/me"], ["/api/v1/programs/prog_8fK2abQ9", "/v1/programs/:id"], ["/t/Maria%20Lopez/v1/me", "/v1/me"], ["/other/path", "/v1/me"]];
+  for (const [path, route] of paths) await instance.record({ request: req(`https://api.acme.com${path}`), response: Response.json({}), route, session: "s" });
+  const [mounted, withId, named, unrelated] = cases.map((item) => item.request.path);
+  assert.equal(mounted, "/api/v1/me");
+  assert.equal(withId, "/api/v1/programs/prog_8fK2abQ9");
+  assert.match(named, /^\/t\/text-[0-9a-f]{8}\/v1\/me$/);
+  assert.match(unrelated, /^\/text-[0-9a-f]{8}\/text-[0-9a-f]{8}$/);
+});
+
+test("a secret in the response shaped like an ID is not stored among the response's IDs", async () => {
+  const { instance, cases } = capture();
+  const response = Response.json({ id: "hook_8fK2abQ9", webhookSecret: "whsec_143Op6pcyIvNBbaJ", signing: { key: "sk_4eC39HqLyjWDarjtT1zdp7dc" }, accounts: ["acct_7Gh3kLmN"] }, { status: 201 });
+  await instance.record({ request: req("https://api.acme.com/v1/hooks", { method: "POST" }), response, route: "/v1/hooks", session: "s" });
+  assert.deepEqual(cases[0].response.ids, { "/id": "hook_8fK2abQ9", "/accounts/0": "acct_7Gh3kLmN" });
+  assert.ok(!JSON.stringify(cases[0]).includes("whsec_143Op6"));
+});

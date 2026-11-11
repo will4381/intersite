@@ -12,6 +12,8 @@ import { idMatcher, normalise } from "./snapshot.mjs";
  * @property {(actorKind: string, options: { target: string, other: boolean }) => Promise<Record<string, string>>} signIn
  * @property {(id: string, options: { target: string }) => Promise<string | undefined>} [resolveId]
  * @property {(options: { target: string }) => Promise<void>} [reset]
+ * @property {(request: { caseId: string, method: string, route: string }) => Record<string, string> | Promise<Record<string, string>>} [headers]
+ *   Headers for every replayed request, signed in or not: an API version the server requires, a per-request idempotency key.
  * @property {{ name: string, check: (options: { target: string, fetch: typeof fetch }) => Promise<string | undefined> }[]} [invariants]
  */
 /**
@@ -32,7 +34,8 @@ import { idMatcher, normalise } from "./snapshot.mjs";
  * `snapshot`, with the `snapshots` option: each baseline case's status and body, normalised. `live`, in the `contract`
  * mode: what the server answered each case, for the contract lint.
  */
-/** @typedef {{ target: string, adapter: Adapter, pattern: RegExp, fetch: typeof fetch, startedAt: number | undefined, snapshots: boolean, contract: boolean }} Context */
+/** @typedef {{ route: string, why: string }} Accepted  A `replay.crossTenantIgnore` entry: a route public by design. */
+/** @typedef {{ target: string, adapter: Adapter, pattern: RegExp, fetch: typeof fetch, startedAt: number | undefined, snapshots: boolean, contract: boolean, crossTenantIgnore: Accepted[] }} Context */
 /**
  * One pass over a session in one mode. `known` holds every ID sent or answered so far; `mine` the IDs the owner's
  * writes produced, `theirs` those another account's writes produced.
@@ -42,6 +45,15 @@ import { idMatcher, normalise } from "./snapshot.mjs";
 
 const DAY = 86_400_000;
 const CLIP = 500;
+// ponytail: one fixed limit per answer, so a request that hangs fails its step instead of the run; make it an option if a
+// project has legitimately slower endpoints.
+const ANSWER_MS = 30_000;
+const STREAM = /^text\/event-stream\b/i;
+// What another account may get for a record it does not own. Many APIs validate a request before they check access, so a
+// 400 or 422 is a refusal too: nothing was served and nothing changed. A 409 is not: it says what state the record is in.
+const REFUSED = [400, 401, 403, 404, 422];
+// The headers that carry a credential, whose values an answer must never echo; an account selector or an origin may be.
+const CREDENTIAL_HEADER = /^(?:authorization|cookie|proxy-authorization)$|token|secret|api-?key|session/i;
 
 /** Whether anything answers HTTP at this URL, whatever the status. @param {string} url */
 export function answers(url) {
@@ -53,16 +65,17 @@ export function answers(url) {
  * `concurrency` sessions run at once, except when the adapter has `reset` (shared state), when they run one at a time.
  * @param {{ sessions: { session: string, cases: Case[] }[], target: string, adapter: Adapter, modes: Mode[], idPattern: string,
  *   fetch?: typeof fetch, shiftDates?: boolean, now?: number, concurrency?: number, uiTarget?: string, headed?: boolean, cwd?: string,
- *   browser?: string, browserUrl?: string, snapshots?: boolean }} options
+ *   browser?: string, browserUrl?: string, snapshots?: boolean, crossTenantIgnore?: Accepted[] }} options
  * @returns {Promise<SessionResult[]>}
  */
 export async function replaySessions({
   sessions, target, adapter, modes, idPattern, fetch = globalThis.fetch,
-  shiftDates = true, now = Date.now(), concurrency = 1, uiTarget = "", headed = false, cwd = process.cwd(), browser, browserUrl, snapshots = false,
+  shiftDates = true, now = Date.now(), concurrency = 1, uiTarget = "", headed = false, cwd = process.cwd(), browser, browserUrl, snapshots = false, crossTenantIgnore = [],
 }) {
   /** @type {Context} */
   const context = {
     target: target.replace(/\/$/, ""), adapter, pattern: new RegExp(idPattern), fetch, startedAt: shiftDates ? now : undefined, snapshots, contract: modes.includes("contract"),
+    crossTenantIgnore,
   };
   const ui = modes.includes("ui") ? await (await import("./ui.mjs")).openBrowser({ uiTarget, headed, cwd, browser, browserUrl }) : undefined;
   try {
@@ -118,6 +131,11 @@ async function replayOnce(mode, cases, result, context) {
   /** @type {Pass} */
   const pass = { mode, steps: result.steps, send: sender(context), auth: signer(context), pattern, known: new Set(), mine: new Set(), theirs: new Set() };
   const snapshot = context.snapshots && mode === "baseline" ? { created: pass.mine, numbers: new Map(), from: Date.now() } : undefined;
+  const unsigned = await signInFailure(cases, pass);
+  if (unsigned) {
+    for (const item of cases) if (counts(mode, item, pattern)) record(pass, item, "skipped", unsigned);
+    return unsigned;
+  }
 
   for (const [index, item] of cases.entries()) {
     const { method } = item.request;
@@ -128,19 +146,28 @@ async function replayOnce(mode, cases, result, context) {
       return prepared.skip;
     }
     const { request } = prepared;
+    const omitted = /** @type {{ $omitted?: string } | null} */ (request.body)?.$omitted;
+    // Capture kept no body (an upload, a form post, one too large): sending the placeholder would fail for that alone.
+    if (omitted !== undefined) {
+      if (counts(mode, item, pattern)) record(pass, item, "skipped", `the request body was not recorded (${omitted}), so it cannot be sent again`);
+      continue;
+    }
     mapIds(request, pattern, (id) => (pass.known.add(id), id));
 
-    // Another account's request goes first, so a leaky DELETE is not hidden by the owner's DELETE.
-    if (mode === "cross-tenant") await asOtherAccount(item, request, pass);
+    // Another account's request goes first, so a leaky DELETE is not hidden by the owner's DELETE. A route public by
+    // design is not sent as another account at all.
+    const open = publicByDesign(context, item);
+    if (mode === "cross-tenant" && !open) await asOtherAccount(item, request, pass);
 
     const headers = await pass.auth(kind, false);
     const first = await pass.send(request, item, headers);
     learnIds(item, first.json, ids);
     if (context.contract && (mode === "baseline" || mode === "contract")) {
-      (result.live ??= {})[item.id] = { status: first.status, json: first.json, text: first.text, contentType: first.contentType, sent: Object.values(headers) };
+      const sent = Object.entries(headers).filter(([name]) => CREDENTIAL_HEADER.test(name)).map(([, value]) => value);
+      (result.live ??= {})[item.id] = { status: first.status, json: first.json, text: first.text, contentType: first.contentType, sent };
     }
     const foreign = noteIds(first.json, method, pass, pass.mine).find((id) => pass.theirs.has(id));
-    if (foreign) record(pass, item, "failed", `this session's response contains ${foreign}, created by another account`, first.exchange);
+    if (foreign && !open) record(pass, item, "failed", `this session's response contains ${foreign}, created by another account`, first.exchange);
 
     if (mode === "baseline") {
       const reason = baselineReason(item, first);
@@ -148,10 +175,36 @@ async function replayOnce(mode, cases, result, context) {
       if (Object.keys(first.counters).length) /** @type {Step} */ (pass.steps.at(-1)).counters = first.counters;
       if (snapshot) (result.snapshot ??= {})[item.id] = { status: first.status, body: normalise(first.json ?? null, snapshot) };
     }
-    if (mode === "twice" && method !== "GET") {
+    if (mode === "twice" && method !== "GET" && (first.status >= 500 || first.status === 0)) {
+      // The write failed the first time: that is baseline's finding, and a resend says nothing about repeating it.
+      record(pass, item, "skipped", `the first send already got ${first.status}, so a resend says nothing about repeating it`);
+    } else if (mode === "twice" && method !== "GET") {
       const second = await pass.send(request, item, await pass.auth(kind, false));
       if (second.status >= 500 || second.status === 0) record(pass, item, "failed", `second send got ${second.status}, first got ${first.status}`, second.exchange);
       else record(pass, item, "passed");
+    }
+  }
+  return undefined;
+}
+
+/** Whether `replay.crossTenantIgnore` accepts another account reaching this case's route. @param {Context} context @param {Case} item */
+function publicByDesign({ crossTenantIgnore }, { request }) {
+  return crossTenantIgnore.some((entry) => entry.route === request.route || entry.route === `${request.method} ${request.route}`);
+}
+
+/**
+ * Signs in every actor kind the session uses (and, in cross-tenant, another account of each) before it starts, so an
+ * adapter that cannot sign one kind in skips that session with the reason instead of ending the whole run.
+ * @param {Case[]} cases @param {Pass} pass
+ */
+async function signInFailure(cases, pass) {
+  for (const kind of new Set(cases.map((item) => item.actor.kind))) {
+    for (const other of pass.mode === "cross-tenant" ? [false, true] : [false]) {
+      try {
+        await pass.auth(kind, other);
+      } catch (error) {
+        return `signIn could not sign in ${other ? "another account's " : ""}${kind}: ${error instanceof Error ? error.message : error}`;
+      }
     }
   }
   return undefined;
@@ -168,8 +221,8 @@ async function asOtherAccount(item, request, pass) {
   if (counts("cross-tenant", item, pass.pattern)) {
     const { status, json, exchange } = await pass.send(request, item, await pass.auth(item.actor.kind, true));
     noteIds(json, method, pass, pass.theirs);
-    if ([401, 403, 404].includes(status)) record(pass, item, "passed");
-    else record(pass, item, "failed", `another account got ${status}, expected 401, 403 or 404`, exchange);
+    if (REFUSED.includes(status)) record(pass, item, "passed");
+    else record(pass, item, "failed", `another account got ${status}, expected ${REFUSED.slice(0, -1).join(", ")} or ${REFUSED.at(-1)}`, exchange);
     return;
   }
   if (item.actor.kind === "anonymous" || method !== "GET" || !pass.mine.size) return;
@@ -216,9 +269,10 @@ function signer({ adapter, target }) {
 }
 
 /** Sends a prepared request and reads the answer. @param {Context} context */
-function sender({ target, fetch }) {
-  /** @param {Case["request"]} request @param {Case} item @param {Record<string, string>} headers */
-  return async (request, item, headers) => {
+function sender({ target, fetch, adapter }) {
+  /** @param {Case["request"]} request @param {Case} item @param {Record<string, string>} signedIn */
+  return async (request, item, signedIn) => {
+    const headers = { ...(await adapter.headers?.({ caseId: item.id, method: request.method, route: request.route })), ...signedIn };
     const url = new URL(target + request.path);
     for (const [key, value] of Object.entries(request.query)) url.searchParams.set(key, value);
     const hasBody = request.body !== undefined && request.body !== null && !["GET", "HEAD"].includes(request.method);
@@ -226,12 +280,16 @@ function sender({ target, fetch }) {
     const sent = clip(`${request.method} ${url.pathname}${url.search}${body ? ` ${body}` : ""}`);
     const headersSent = { ...headers, "x-intersite-replay": item.id, "x-intersite-time": item.at, ...(hasBody && { "content-type": "application/json" }) };
     // A dropped connection is the server failing this request (it crashed or hung up), not a setup error: status 0.
-    const response = await fetch(url, { method: request.method, headers: headersSent, body }).catch((/** @type {Error} */ error) => error);
-    if (response instanceof Error) {
-      const cause = /** @type {{ code?: string }} */ (response.cause)?.code ?? response.message;
+    // A stream (server-sent events) is answered and left open: its status and headers are the answer, its body is not read.
+    // A redirect is the answer production recorded, not a hop to follow (its target may be another host entirely).
+    const answered = await fetch(url, { method: request.method, headers: headersSent, body, redirect: "manual", signal: AbortSignal.timeout(ANSWER_MS) })
+      .then(async (response) => ({ response, text: STREAM.test(response.headers.get("content-type") ?? "") ? (await response.body?.cancel(), "") : await response.text() }))
+      .catch((/** @type {Error} */ error) => error);
+    if (answered instanceof Error) {
+      const cause = answered.name === "TimeoutError" ? `nothing within ${ANSWER_MS / 1000}s` : /** @type {{ code?: string }} */ (answered.cause)?.code ?? answered.message;
       return { status: 0, json: undefined, text: "", contentType: "", exchange: { sent, got: `no answer (${cause})` }, counters: {} };
     }
-    const text = await response.text();
+    const { response, text } = answered;
     let json;
     try { json = JSON.parse(text); } catch { json = undefined; }
     return {
@@ -242,7 +300,8 @@ function sender({ target, fetch }) {
 }
 
 /**
- * Why a baseline step failed, or undefined when it passed: the same status and response shape as recorded. A server
+ * Why a baseline step failed, or undefined when it passed: the same status and response shape (for a refusal with a
+ * recorded error code, the same code) as recorded. A server
  * error production recorded is a bug, not the answer to keep: that step fails while the replay still gets a 5xx or no
  * answer (the reproduction), and passes once it does not (the fix), whatever the new status and shape.
  * @param {Case} item @param {{ status: number, json: unknown, exchange: { got: string } }} answer
@@ -252,6 +311,13 @@ function baselineReason(item, answer) {
   const got = answer.status === 0 ? answer.exchange.got : answer.status;
   if (recorded >= 500) return answer.status >= 500 || answer.status === 0 ? `still fails as production did: status recorded ${recorded}, got ${got}` : undefined;
   if (answer.status !== recorded) return `status recorded ${recorded}, got ${got}`;
+  // A refusal is judged by its error code where one was recorded: its body's optional fields (a `fix`, a field list)
+  // vary with which check refused it, not with the code that answers.
+  const code = item.response.errorCode;
+  if (recorded >= 400 && code !== undefined) {
+    const now = /** @type {{ code?: unknown } | undefined} */ (answer.json)?.code;
+    return now === code ? undefined : `error code recorded ${code}, got ${typeof now === "string" ? now : "none"}`;
+  }
   return shapeDiff(item.response.shape, shapeOf(answer.json));
 }
 
@@ -298,8 +364,9 @@ export function learnIds(item, json, ids) {
 }
 
 /**
- * Whether a case is a step in this mode. Cross-tenant only checks requests that name a record: another account
- * may legitimately create in its own account. The contract mode reports per route, not per step.
+ * Whether a case is a step in this mode. Cross-tenant only checks requests that name a record in the path or the body:
+ * another account may legitimately create in its own account, and an ID in the query filters a list (an empty answer is
+ * right), so such a GET gets the list check instead. The contract mode reports per route, not per step.
  * @param {Mode} mode @param {Case} item @param {RegExp} pattern
  */
 function counts(mode, item, pattern) {
@@ -308,7 +375,7 @@ function counts(mode, item, pattern) {
   if (mode === "cross-tenant") {
     if (item.actor.kind === "anonymous") return false;
     let named = false;
-    mapIds(item.request, pattern, (id) => ((named = true), id));
+    mapIds({ ...item.request, query: {} }, pattern, (id) => ((named = true), id));
     return named;
   }
   return true;

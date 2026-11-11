@@ -5,7 +5,7 @@
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-import { addedLines, listFiles, matches, resolveBase, topLevel, workingDiff } from "./lib.mjs";
+import { addedLines, listFiles, matches, resolveBase, workingDiff } from "./lib.mjs";
 import { units as jsUnits } from "./units.mjs";
 
 /** @typedef {import("./units.mjs").Unit} Unit */
@@ -77,18 +77,18 @@ function memberSimilarity(a, b) {
 
 /**
  * Every unit in the repository's source files, with which ones the change added (its first line is an added line).
- * @param {string} top @param {string[]} files @param {Map<string, Set<number>>} added
+ * @param {string} cwd @param {string[]} files @param {Map<string, Set<number>>} added
  */
 // ponytail: tokenizes every source file on every run (~0.6s CPU for 4,000 files); cache units by blob hash past that
-function collect(top, files, added) {
+function collect(cwd, files, added) {
   /** @type {Entry[]} */
   const all = [];
   /** @type {Entry[]} */
   const fresh = [];
   for (const file of files) {
     const lang = LANGUAGES.find((l) => l.test.test(file));
-    if (!lang || statSync(join(top, file), { throwIfNoEntry: false })?.isFile() !== true) continue;
-    const text = readFileSync(join(top, file), "utf8");
+    if (!lang || statSync(join(cwd, file), { throwIfNoEntry: false })?.isFile() !== true) continue;
+    const text = readFileSync(join(cwd, file), "utf8");
     // ponytail: files over MAX_BYTES are skipped, as in duplicates; chunk them if large hand-written files matter
     if (text.length > MAX_BYTES || text.includes("\0") || /@generated|DO NOT EDIT/.test(text.slice(0, 500))) continue;
     const lines = added.get(file);
@@ -159,11 +159,11 @@ function candidate(e, other) {
 
 /**
  * Whether the two units share a run of `n` identical non-trivial lines: the duplicates gate reports those.
- * @param {string} top @param {Entry} a @param {Entry} b @param {number} n
+ * @param {string} cwd @param {Entry} a @param {Entry} b @param {number} n
  */
-function pasted(top, a, b, n) {
+function pasted(cwd, a, b, n) {
   const lines = (/** @type {Entry} */ e) =>
-    readFileSync(join(top, e.file), "utf8").split("\n").slice(e.unit.line - 1, e.unit.endLine).map((l) => l.trim().replace(/\s+/g, " ")).filter(Boolean);
+    readFileSync(join(cwd, e.file), "utf8").split("\n").slice(e.unit.line - 1, e.unit.endLine).map((l) => l.trim().replace(/\s+/g, " ")).filter(Boolean);
   const la = lines(a);
   const lb = lines(b);
   const runs = new Set();
@@ -321,15 +321,15 @@ function message(e, other, sim) {
 
 /**
  * Pairs of an added unit and the existing unit it repeats.
- * @param {string} top @param {string[]} files @param {Map<string, Set<number>>} added @param {number} n duplicates' block size
+ * @param {string} cwd @param {string[]} files @param {Map<string, Set<number>>} added @param {number} n duplicates' block size
  */
-function similarPairs(top, files, added, n) {
-  const { all, fresh } = collect(top, files, added);
+function similarPairs(cwd, files, added, n) {
+  const { all, fresh } = collect(cwd, files, added);
   /** @type {Set<string>} */
   const seen = new Set();
   const pairs = match(fresh, all).filter(([e, other, sim]) => {
     const key = [e, other].map((x) => `${x.file}:${x.unit.line}`).sort().join(" ");
-    if (sim < (e.unit.kind === "type" ? TYPE_THRESHOLD : THRESHOLD) || seen.has(key) || pasted(top, e, other, n) || apart(e.unit, other.unit)) return false;
+    if (sim < (e.unit.kind === "type" ? TYPE_THRESHOLD : THRESHOLD) || seen.has(key) || pasted(cwd, e, other, n) || apart(e.unit, other.unit)) return false;
     seen.add(key);
     return true;
   });
@@ -342,13 +342,13 @@ function similarPairs(top, files, added, n) {
  */
 export async function similar({ cwd, base, testPaths, duplicateLines }) {
   const sha = resolveBase(cwd, base);
-  const top = topLevel(cwd);
+  // The project's added units against every unit in the repository: the original may be in a shared package.
   const [patch] = workingDiff(cwd, [["-U0", "-M", sha]]);
   const added = addedLines(patch);
-  const files = listFiles(top).filter((f) => !SKIP.test(f) && !NOT_SOURCE.test(f) && !matches(f, testPaths));
+  const files = listFiles(cwd).filter((f) => !SKIP.test(f) && !NOT_SOURCE.test(f) && !matches(f, testPaths));
   const sources = new Set(files);
   if (![...added.keys()].some((f) => sources.has(f))) return { findings: [], summary: `0 added units checked` };
-  const { pairs, units, fresh } = similarPairs(top, files, added, duplicateLines);
+  const { pairs, units, fresh } = similarPairs(cwd, files, added, duplicateLines);
   const findings = pairs.map(([e, other, sim]) => ({ target: `${e.file}:${e.unit.name}`, message: message(e, other, sim) }));
   return { findings, summary: `${fresh} added units checked against ${units} units` };
 }

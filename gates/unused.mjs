@@ -1,10 +1,12 @@
 // @ts-check
 // Fails when the change leaves code nothing uses: an added file nothing references, an added export nothing uses, or
 // a file whose last import the change removed. Text only: a file is referenced when another file names its stem.
+// Only the project's files are judged, but a mention anywhere in the repository counts as a use: a sibling package may
+// import them.
 import { readFileSync, statSync } from "node:fs";
 import { join, posix } from "node:path";
 
-import { listFiles, matches, parseNameStatus, patchPath, resolveBase, topLevel, workingDiff } from "./lib.mjs";
+import { listFiles, matches, parseNameStatus, patchPath, resolveBase, workingDiff } from "./lib.mjs";
 
 // ponytail: Go and Swift link every file of a package or module without naming it, so they are not checked; a
 // per-language symbol table if that matters
@@ -57,10 +59,10 @@ function words(text, see) {
 /**
  * Paths named in any package.json (main, module, types, bin, exports, scripts), without extension, and the folders of
  * published packages (not private, with exports, module, files or publishConfig), whose exports are for outside consumers.
- * @param {string} top
+ * @param {string} cwd
  * @param {string[]} files
  */
-function packageEntries(top, files) {
+function packageEntries(cwd, files) {
   /** @type {Set<string>} */
   const named = new Set();
   /** @type {string[]} */
@@ -71,7 +73,7 @@ function packageEntries(top, files) {
     if (posix.basename(file) !== "package.json" || SKIP.test(file)) continue;
     let pkg;
     try {
-      pkg = JSON.parse(readFileSync(join(top, file), "utf8"));
+      pkg = JSON.parse(readFileSync(join(cwd, file), "utf8"));
     } catch (error) {
       // An unreadable or invalid package.json names no entries; new-deps reports invalid JSON.
       if (!(error instanceof SyntaxError) && /** @type {NodeJS.ErrnoException} */ (error).code !== "ENOENT") throw error;
@@ -151,7 +153,8 @@ function lostImports(removed, all, exists, fresh, conventional) {
         const names = [...RESOLVE.map((ext) => path + ext), ...RESOLVE.slice(1).map((ext) => bare + ext), ...RESOLVE.slice(1).map((ext) => `${path}/index${ext}`)];
         const found = alias ? [...new Set(names.flatMap((n) => (byName.get(posix.basename(n)) ?? []).filter((f) => f.endsWith(`/${n}`))))] : names.filter((p) => exists.has(p));
         const target = found.length === 1 || !alias ? found[0] : undefined;
-        if (target && !fresh.has(target) && SOURCE.test(target) && !conventional(target)) orphans.add(target);
+        // A file outside the project is another project's to keep or delete.
+        if (target && !target.startsWith("../") && !fresh.has(target) && SOURCE.test(target) && !conventional(target)) orphans.add(target);
       }
     }
   }
@@ -160,9 +163,9 @@ function lostImports(removed, all, exists, fresh, conventional) {
 
 /**
  * One pass over the repository recording which files mention each stem and each export name, and the exporting files' text.
- * @param {string} top @param {string[]} all @param {Set<string>} stems @param {Set<string>} names @param {Set<string>} exporting
+ * @param {string} cwd @param {string[]} all @param {Set<string>} stems @param {Set<string>} names @param {Set<string>} exporting
  */
-function scanReferences(top, all, stems, names, exporting) {
+function scanReferences(cwd, all, stems, names, exporting) {
   /** @type {Map<string, Set<string>>} */ const pathHits = new Map();
   /** @type {Map<string, Set<string>>} */ const wordHits = new Map();
   const hit = (/** @type {Map<string, Set<string>>} */ map, /** @type {string} */ word, /** @type {string} */ file) => {
@@ -176,7 +179,7 @@ function scanReferences(top, all, stems, names, exporting) {
   if (stems.size || names.size) {
     for (const file of all) {
       if (!CORPUS.test(file) || SKIP.test(file)) continue;
-      const text = readFileSync(join(top, file), "utf8");
+      const text = readFileSync(join(cwd, file), "utf8");
       if (text.length > MAX_BYTES || text.includes("\0")) continue;
       scanned++;
       if (names.size) {
@@ -197,13 +200,12 @@ function scanReferences(top, all, stems, names, exporting) {
  */
 export async function unused({ cwd, base, testPaths, entryPaths }) {
   const sha = resolveBase(cwd, base);
-  const top = topLevel(cwd);
   const [status, patch] = workingDiff(cwd, [["--name-status", "-M", "-z", sha], ["-U0", "-M", sha]]);
   const changed = parseNameStatus(status);
   const { added, removed } = patchLines(patch);
-  const all = listFiles(top).filter((f) => statSync(join(top, f), { throwIfNoEntry: false })?.isFile());
+  const all = listFiles(cwd).filter((f) => statSync(join(cwd, f), { throwIfNoEntry: false })?.isFile());
   const exists = new Set(all);
-  const { named, published } = packageEntries(top, all);
+  const { named, published } = packageEntries(cwd, all);
   const conventional = (/** @type {string} */ f) =>
     matches(f, testPaths) || matches(f, entryPaths) || CONVENTION_DIR.test(f) || CONVENTION_NAME.test(noExt(posix.basename(f))) || named.has(noExt(f)) || SKIP.test(f);
   const fresh = new Set(changed.filter((c) => c.status === "A").map((c) => c.path));
@@ -217,11 +219,11 @@ export async function unused({ cwd, base, testPaths, entryPaths }) {
   // 3. Files that lost a local import and existed before the change.
   const orphans = lostImports(removed, all, exists, fresh, conventional);
 
-  // One pass over the repository records which files mention each stem and each export name.
+  // One pass over the whole repository records which files mention each stem and each export name.
   const stems = new Set([...newFiles, ...orphans].map(stem));
   const names = new Set(exports.map((e) => e.name));
   const exporting = new Set(exports.map((e) => e.file));
-  const { pathHits, wordHits, texts, scanned } = scanReferences(top, all, stems, names, exporting);
+  const { pathHits, wordHits, texts, scanned } = scanReferences(cwd, all, stems, names, exporting);
   const referenced = (/** @type {string} */ file) => [...(pathHits.get(stem(file)) ?? [])].some((f) => f !== file);
 
   /** @type {import("./lib.mjs").Finding[]} */

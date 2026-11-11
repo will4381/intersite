@@ -33,7 +33,7 @@ the gate; a replay failure ends with `| rerun: <command>`, which reruns only tha
 | `skip gates:` / `skip replay:` | That stage could not run here (no git, no adapter, no server answering) | Nothing to fix; say so if the change needed it |
 | `FAIL baseline` | The API answered differently from production, or a server error production recorded still happens | Run the rerun command with `--verbose`, then fix the code |
 | `FAIL twice` | Repeating a write caused a server error | Make the write safe to repeat |
-| `FAIL cross-tenant` | Another account could reach the record, or its list showed a record this session created | Fix the authorization check |
+| `FAIL cross-tenant` | Another account could reach the record, or its list showed a record this session created | Fix the authorization check; if the record is public by design (a marketplace listing, a network program), add the entry the line gives to `replay.crossTenantIgnore` with the reason |
 | `FAIL ui` | A page or named action broke | Run the rerun command with `--headed` to watch |
 | `FAIL contract` | One route's requests or answers break a convention the rest of the API keeps, or carry something that should not be sent | Make the route match the API as the line says; if the difference is deliberate, add the entry the line gives to `replay.contractIgnore` with the reason |
 | `FAIL snapshot` | A response's status or a value changed since the `--snapshot-out` run (`/items/0/total 1999 → 2199`) | If the change was not meant to alter it, fix the code or data change; if it was, write a new snapshot |

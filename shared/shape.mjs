@@ -1,8 +1,12 @@
 // @ts-check
 
-/** Prefixed public IDs (`prog_8fK2abQ9`) and UUIDs. Projects override it with `capture.idPattern`. */
+/**
+ * Prefixed public IDs (`prog_8fK2abQ9`) and UUIDs. Projects override it with `capture.idPattern`. The part after the
+ * prefix holds a digit or a capital, or is 16 characters or more: `not_started`, `in_review` and `session_required`
+ * are snake_case words (enum values, error codes), not IDs.
+ */
 export const DEFAULT_ID_PATTERN =
-  "^(?:[a-z][a-z0-9]{1,15}_[A-Za-z0-9]{6,}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$";
+  "^(?:[a-z][a-z0-9]{1,15}_(?:(?=[a-z]*[0-9A-Z])[A-Za-z0-9]{6,}|[a-z]{16,})|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$";
 
 /**
  * A shape is a JSON value's keys and types with the values dropped:
@@ -31,7 +35,8 @@ export function shapeOf(value) {
 
 /**
  * Where a replayed shape departs from the recorded one, or undefined when they agree.
- * "null" matches anything and an empty array matches any array, since both depend on the data, not the code.
+ * "null" matches anything and an empty array matches any array, since both depend on the data, not the code; so does
+ * a row shape the recording had not seen, while another row still matches.
  * @param {Shape} recorded @param {Shape} replayed @param {string} [path]
  * @returns {string | undefined}
  */
@@ -44,11 +49,10 @@ export function shapeDiff(recorded, replayed, path = "") {
   if (Array.isArray(recorded) || Array.isArray(replayed)) {
     if (!Array.isArray(recorded) || !Array.isArray(replayed)) return `${at}: recorded ${kind(recorded)}, got ${kind(replayed)}`;
     if (recorded.length === 0 || replayed.length === 0) return undefined;
-    for (const element of replayed) {
-      const diffs = recorded.map((candidate) => shapeDiff(candidate, element, `${path}/*`));
-      if (diffs.every((diff) => diff !== undefined)) return diffs[0];
-    }
-    return undefined;
+    // Rows of one list vary with the data (an account with a parent beside one without); the list keeps its shape while
+    // at least one replayed row matches a recorded one. A change to every row (a field renamed or retyped) still fails.
+    const diffs = replayed.map((element) => recorded.map((candidate) => shapeDiff(candidate, element, `${path}/*`)));
+    return diffs.some((row) => row.includes(undefined)) ? undefined : diffs[0][0];
   }
   for (const key of Object.keys(recorded)) if (!(key in replayed)) return `${path}/${key}: missing`;
   for (const key of Object.keys(replayed)) if (!(key in recorded)) return `${path}/${key}: not in the recording`;

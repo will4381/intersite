@@ -76,3 +76,11 @@ test("Ctrl-C while the test command runs stops it and removes the worktree", asy
   assert.ok(state === "" || state.startsWith("Z"), `the test command was left running (${state})`);
   assert.equal(r.worktrees(), 1);
 });
+
+test("a test command that hangs on the base commit is stopped and counts as failing there", async () => {
+  const r = fixed("assert.equal(add(2, 2), 4);");
+  const { code, out } = await run(r.cwd, ["fails-on-base", "--cmd", `node -e "setInterval(() => {}, 1000)"`, "--paths", "test/**", "--timeout", "1"]);
+  assert.equal(code, 0);
+  assert.match(out.join("\n"), /^ok gate fails-on-base: .* does not finish within 1s on base, so it does not pass without the change$/);
+  assert.equal(r.worktrees(), 1);
+});

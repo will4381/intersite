@@ -84,6 +84,10 @@ export async function startNodeCollector({ port = 0, dbPath = ":memory:", ingest
       res.writeHead(500, { "content-type": "application/json" }).end(JSON.stringify({ error: String(/** @type {Error} */ (error).message) }));
     }
   });
+  // The server never closes an idle connection itself: the client closes its own, and stop() the rest. Otherwise a
+  // command that serves the collector in its own process and then blocks the event loop past the timeout (the gates run
+  // git synchronously) fires both sides' timers at once, and its next request reuses a socket being closed: ECONNRESET.
+  server.keepAliveTimeout = 0;
   const db = d1(sqlite);
   const env = {
     DB: db,

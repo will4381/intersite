@@ -4,15 +4,15 @@
 import { readFileSync } from "node:fs";
 import { join, posix } from "node:path";
 
-import { changes, git, listFiles, matches, resolveBase, show, topLevel } from "./lib.mjs";
+import { changes, git, listFiles, matches, projectSpec, resolveBase, show } from "./lib.mjs";
 
 const BACKUP_EXT = /\.(?:bak|orig|rej|tmp|swp)$|~$/;
 // A copy's name: the plain name plus a suffix. Reported only when a file with the plain name exists or existed and
 // shares most of its lines, so `api-v2.ts` with no `api.ts`, or `campaign-copy.ts` (marketing copy) beside an
 // unrelated `campaign.ts`, is a real file.
 const COPY = /^(.+?)(?:[._ -](?:old|backup|bak|copy|orig|new|final|fixed|v\d+)| copy(?: \d+)?| \(\d+\))$/i;
-// ponytail: scratch names and output dumps count only at the repository top, so one at a monorepo package root is
-// missed; treat every folder holding a package.json as a root if that matters
+// ponytail: scratch names and output dumps count only at the project's top, so one at the root of a package inside
+// the project is missed; treat every folder holding a package.json as a root if that matters
 const SCRATCH = /^(?:scratch|(?:tmp|temp|debug|try)(?![a-z]))|^test-.*\.(?:[cm]?[jt]s|py|sh)$/i;
 const SCRATCH_DIR = /(?:^|\/)(?:tmp|temp|scratch)\//;
 const LOG = /\.(?:log|dump)$/;
@@ -46,14 +46,15 @@ function copies(text, originals) {
  */
 export async function artifacts({ cwd, base, testPaths, artifacts: extra }) {
   const sha = resolveBase(cwd, base);
-  const top = topLevel(cwd);
-  const added = changes(cwd, sha).filter((c) => c.status === "A" || c.status === "R" || c.status === "C");
+  const spec = projectSpec(cwd);
+  const added = changes(cwd, sha, spec).filter((c) => c.status === "A" || c.status === "R" || c.status === "C");
   /** @type {import("./lib.mjs").Finding[]} */
   const findings = [];
   if (!added.length) return { findings, summary: "0 added files checked" };
 
-  const was = git(top, ["ls-tree", "-r", "-z", "--name-only", sha]).split("\0").filter(Boolean);
-  const now = listFiles(top);
+  // Run from the project folder, ls-tree lists only that folder, relative to it.
+  const was = git(cwd, ["ls-tree", "-r", "-z", "--name-only", sha]).split("\0").filter(Boolean);
+  const now = listFiles(cwd, spec);
   const current = new Set(now);
   const existed = new Set(was);
   /** @type {Map<string, string>} plain path without extension to a file with that name, now or on base */
@@ -68,9 +69,9 @@ export async function artifacts({ cwd, base, testPaths, artifacts: extra }) {
     const sibling = same && (current.has(same) || existed.has(same) ? same : plainNames.get(posix.join(dir, /** @type {string} */ (plain))));
     const copy = () => {
       if (sibling === undefined) return false;
-      const original = current.has(sibling) ? readFileSync(join(top, sibling), "utf8") : "";
+      const original = current.has(sibling) ? readFileSync(join(cwd, sibling), "utf8") : "";
       // Code split out of a file and imported back by it is a new module, not a copy.
-      return !original.includes(noExt(name)) && copies(readFileSync(join(top, path), "utf8"), [original, show(cwd, sha, sibling)]);
+      return !original.includes(noExt(name)) && copies(readFileSync(join(cwd, path), "utf8"), [original, show(cwd, sha, sibling)]);
     };
     // ponytail: any folder named like docs counts, even one the change created, because projects keep plans there
     // on purpose; require it on base if agents start hiding notes in new docs folders

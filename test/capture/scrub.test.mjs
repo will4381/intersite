@@ -46,6 +46,20 @@ test("keeps IDs, numbers and booleans under any key, ISO dates under date keys a
   assert.deepEqual(await scrubber.scrub({ kinds: ["a", "b"] }), { kinds: ["a", "b"] }, "array items inherit the array's key");
 });
 
+test("a random-looking code under a structural key is replaced; an enum with digits is kept", async () => {
+  for (const [key, value] of [["code", "fb25c0"], ["code", "ab12cd3"], ["accessCode", "x9k2m7"]]) assert.notEqual(await scrubber.scrub(value, key), value, `${key}: ${value}`);
+  for (const [key, value] of [["format", "h264"], ["format", "mp4"], ["version", "v2"]]) assert.equal(await scrubber.scrub(value, key), value, `${key}: ${value}`);
+});
+
+test("a media type, a comma-separated list of codes and a group-by under structural keys are kept", async () => {
+  for (const [key, value] of [["contentType", "image/png"], ["content_type", "application/vnd.api+json"], ["group", "creator,platform"], ["statuses", "active,paused"]]) {
+    assert.equal(await scrubber.scrub(value, key), value, `${key}: ${value}`);
+  }
+  for (const [key, value] of [["group", "creator,Maria"], ["contentType", "image/png; name=alice.png"], ["note", "image/png"], ["status", "a,b,fb25c0"]]) {
+    assert.notEqual(await scrubber.scrub(value, key), value, `${key}: ${value}`);
+  }
+});
+
 test("a short word or a date under a key not known to hold one is replaced", async () => {
   /** @type {[string, string, RegExp][]} */
   const cases = [

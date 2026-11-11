@@ -4,8 +4,8 @@
 /** @typedef {Record<string, Record<string, number>>} Metrics caseId -> counter name -> count */
 
 /**
- * The counters in a `Server-Timing` header: each entry whose `desc` is a number. Entries with only `dur` are left out,
- * since durations vary from run to run and counts do not.
+ * The counters in a `Server-Timing` header: each entry whose `desc` is a number, alone or followed by a unit word
+ * (`queries;desc=7`, `db;desc="7 trips"`). Entries with only `dur` are left out, since durations vary and counts do not.
  * @param {string | null} header @returns {Record<string, number>}
  */
 export function countersOf(header) {
@@ -15,7 +15,8 @@ export function countersOf(header) {
   for (const entry of (header ?? "").split(",")) {
     const [name, ...params] = entry.split(";").map((part) => part.trim());
     const desc = params.find((param) => /^desc\s*=/i.test(param))?.replace(/^desc\s*=\s*/i, "").replace(/^"(.*)"$/, "$1");
-    if (name && desc && /^\d+(?:\.\d+)?$/.test(desc)) counters[name] = Number(desc);
+    const count = /^(\d+(?:\.\d+)?)(?: [a-z][a-z -]*)?$/i.exec(desc ?? "")?.[1];
+    if (name && count) counters[name] = Number(count);
   }
   return counters;
 }
