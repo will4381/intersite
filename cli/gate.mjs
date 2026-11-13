@@ -9,7 +9,8 @@ import { loadConfig } from "../shared/config.mjs";
 import { artifacts } from "../gates/artifacts.mjs";
 import { duplicates } from "../gates/duplicates.mjs";
 import { failsOnBase } from "../gates/fails-on-base.mjs";
-import { EMPTY_TREE, GateError } from "../gates/lib.mjs";
+import { EMPTY_TREE, GateError, resolveBase } from "../gates/lib.mjs";
+import { spawnSync } from "node:child_process";
 import { mutation } from "../gates/mutation.mjs";
 import { naming } from "../gates/naming.mjs";
 import { newDeps } from "../gates/new-deps.mjs";
@@ -43,7 +44,22 @@ export async function runGate(name, { cwd, config, flags = {}, all = false, fres
   const result = await gates[name]({ ...options, ...flags, ...(all && { base: EMPTY_TREE }) });
   const recorded = new Set(all && !fresh ? readBaseline(cwd, config)[name] : []);
   const findings = result.findings.filter((f) => !recorded.has(f.target) && !acknowledged.some((a) => a.gate === name && a.target === f.target));
+  const why = findings.length && !all ? acknowledgedInCommits(cwd, flags.base ?? base, name) : "";
+  if (why) return { findings: [], summary: `${result.summary}; ${findings.length} acknowledged for this change: ${why}` };
   return { findings, summary: result.summary };
+}
+
+/**
+ * The reason an `Intersite-Ack: <gate>: <why>` trailer on a commit since the base gives for accepting this gate's
+ * findings in this change only, or "". Unlike `gates.acknowledged`, it never exempts a later change.
+ * @param {string} cwd @param {string} base @param {string} name
+ */
+function acknowledgedInCommits(cwd, base, name) {
+  const from = resolveBase(cwd, base);
+  if (from === EMPTY_TREE) return "";
+  const log = spawnSync("git", ["log", "--format=%(trailers:key=Intersite-Ack,valueonly,separator=%x0A)", `${from}..HEAD`], { cwd, encoding: "utf8" });
+  const line = log.stdout.split("\n").map((l) => l.trim()).find((l) => l.startsWith(`${name}:`) && l.slice(name.length + 1).trim());
+  return line ? line.slice(name.length + 1).trim() : "";
 }
 
 /**
@@ -150,7 +166,7 @@ export default async function gate(argv, { cwd, quiet = false }) {
     if (!quiet) console.log(`ok gate ${name}: ${summary}`);
   } else {
     for (const f of findings) {
-      console.log(`${f.message} | to accept: add { "gate": "${name}", "target": "${f.target}", "why": "…" } to gates.acknowledged in intersite.yml${values.all ? `, or record today's with \`intersite gate ${name} --all --write\`` : ""}`);
+      console.log(`${f.message} | to accept: add { "gate": "${name}", "target": "${f.target}", "why": "…" } to gates.acknowledged in intersite.yml${values.all ? `, or record today's with \`intersite gate ${name} --all --write\`` : `, or for this change only a commit trailer \`Intersite-Ack: ${name}: <why>\``}`);
     }
   }
   return findings.length ? 1 : 0;

@@ -135,7 +135,7 @@ export default async function Page({ params }) {
 }
 `;
 
-const accept = (target) => ` | to accept: add { "gate": "similar", "target": "${target}", "why": "…" } to gates.acknowledged in intersite.yml`;
+const accept = (target) => ` | to accept: add { "gate": "similar", "target": "${target}", "why": "…" } to gates.acknowledged in intersite.yml, or for this change only a commit trailer \`Intersite-Ack: similar: <why>\``;
 
 test("a component copied with every name changed and props reordered is reported with both locations", async () => {
   const r = repo({ "src/components/ProfileCard.jsx": profileCard, "src/components/SignupForm.jsx": signupForm });

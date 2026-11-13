@@ -27,3 +27,18 @@ test("needs names what must change instead of a test", async () => {
   r.write({ "openapi.json": "{ }\n" });
   assert.equal((await run(r.cwd, ["protected"])).code, 0);
 });
+
+test("an Intersite-Ack trailer accepts the findings for this change only", async () => {
+  const r = repo({ "src/money/pay.mjs": "export const fee = 1;\n" }, rules);
+  r.write({ "src/money/pay.mjs": "export const fee = 2;\n" });
+  r.git("add", "-A");
+  r.git("commit", "-qm", "rename the fee", "-m", "Intersite-Ack: protected: a rename the existing test already covers");
+  const passed = await run(r.cwd, ["protected"]);
+  assert.equal(passed.code, 0);
+  assert.match(passed.out[0], /1 acknowledged for this change: a rename the existing test already covers/);
+
+  r.git("tag", "-f", "base");
+  r.write({ "src/money/pay.mjs": "export const fee = 3;\n" });
+  r.commit("change the fee");
+  assert.equal((await run(r.cwd, ["protected"])).code, 1);
+});

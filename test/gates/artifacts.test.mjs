@@ -18,7 +18,7 @@ test("backups, copies, scratch files, logs and working notes added by the change
     "src/handler_old.ts is a copy of src/handler.ts: delete it, git keeps the history",
     "src/utils.bak is a backup file: delete it, git keeps the history",
   ]);
-  assert.match(out[0], / \| to accept: add \{ "gate": "artifacts", "target": ".+", "why": "…" \} to gates\.acknowledged in intersite\.yml$/);
+  assert.match(out[0], / \| to accept: add \{ "gate": "artifacts", "target": ".+", "why": "…" \} to gates\.acknowledged in intersite\.yml, or for this change only a commit trailer `Intersite-Ack: [a-z-]+: <why>`$/);
 });
 
 test("modified notes, notes in an existing docs folder, standard files and names that are not copies are not reported", async () => {

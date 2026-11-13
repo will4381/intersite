@@ -23,7 +23,7 @@ test("a pasted 8-line helper is reported with both locations", async () => {
   const { code, out } = await run(r.cwd, ["duplicates"]);
   assert.equal(code, 1);
   assert.deepEqual(out, [
-    `src/a.mjs:3 repeats src/util.mjs:3 (8 lines): reuse it | to accept: add { "gate": "duplicates", "target": "src/a.mjs", "why": "…" } to gates.acknowledged in intersite.yml`,
+    `src/a.mjs:3 repeats src/util.mjs:3 (8 lines): reuse it | to accept: add { "gate": "duplicates", "target": "src/a.mjs", "why": "…" } to gates.acknowledged in intersite.yml, or for this change only a commit trailer \`Intersite-Ack: duplicates: <why>\``,
   ]);
 });
 

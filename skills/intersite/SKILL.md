@@ -50,7 +50,9 @@ Do not delete, skip or loosen a test, special-case a test's inputs, edit a basel
 sees it:
 
 - For a gate: add `{ gate: <name>, target: <file or dependency>, why: "<reason>" }` to `gates.acknowledged` in
-  `intersite.yml`. The failing line prints the exact entry.
+  `intersite.yml`. The failing line prints the exact entry. When the exception is about this change and not the
+  file forever (a protected path changed by a rename, say), put `Intersite-Ack: <gate>: <why>` in a commit message
+  instead.
 - For a lint rule: `// oxlint-disable-next-line intersite/<rule> -- <why>` on the line above (in Swift:
   `// swiftlint:disable:next <id> -- <why>`).
 - After fixing existing findings, lower the baseline with `npx intersite lint --write`.

@@ -6,7 +6,7 @@ user sessions into tests nobody has to write.
 ## Quickstart
 
 ```bash
-npm i -D github:will4381/intersite#v1.0.0-rc.9 oxlint @oxlint/plugins
+npm i -D github:will4381/intersite#v1.0.0-rc.10 oxlint @oxlint/plugins
 ```
 
 ```bash
@@ -163,7 +163,8 @@ replay:
     - { route: "GET /v1/programs/:id", why: "network programs are public by design" }
 ```
 
-A deliberate exception is always written down where a reviewer sees it: `gates.acknowledged` for a gate, or
+A deliberate exception is always written down where a reviewer sees it: `gates.acknowledged` for a gate, an
+`Intersite-Ack: <gate>: <why>` commit trailer for a gate in one change only, or
 `// oxlint-disable-next-line intersite/<rule> -- <why>` for a lint rule.
 
 ## Lint rules

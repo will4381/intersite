@@ -161,7 +161,9 @@ finish is stopped and counts as failing on the base, like any other failure ther
 | `mutation` | A small deliberate break on a changed source line leaves `gates.testCmd` passing. At most `gates.mutants` tries |
 
 A deliberate exception is an entry in `gates.acknowledged`: `{ "gate", "target", "why" }`, where `target` is the file
-path or dependency name. It silences that one finding and shows up in review. Every gate's failure line ends by
+path or dependency name. It silences that one finding and shows up in review. For one change only, a commit since
+the base carries an `Intersite-Ack: <gate>: <why>` trailer: it accepts that gate's findings in this change and
+never a later one. Every gate's failure line ends by
 saying so, because an agent with no honest way out will find a dishonest one.
 
 ## Replay adapter

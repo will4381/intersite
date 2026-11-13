@@ -26,7 +26,7 @@ test("deleting a test file is reported, even uncommitted", async () => {
   const { code, out } = await run(r.cwd, ["test-integrity"]);
   assert.equal(code, 1);
   assert.equal(out.length, 1);
-  assert.match(out[0], /^test\/b\.test\.mjs: test file deleted \| to accept: add \{ "gate": "test-integrity", "target": "test\/b\.test\.mjs", "why": "…" \} to gates\.acknowledged in intersite\.yml$/);
+  assert.match(out[0], /^test\/b\.test\.mjs: test file deleted \| to accept: add \{ "gate": "test-integrity", "target": "test\/b\.test\.mjs", "why": "…" \} to gates\.acknowledged in intersite\.yml, or for this change only a commit trailer `Intersite-Ack: [a-z-]+: <why>`$/);
 });
 
 test("removing an assertion, removing a test and adding a skip are each reported", async () => {
