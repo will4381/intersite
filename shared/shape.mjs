@@ -55,7 +55,6 @@ export function shapeDiff(recorded, replayed, path = "") {
     return diffs.some((row) => row.includes(undefined)) ? undefined : diffs[0][0];
   }
   for (const key of Object.keys(recorded)) if (!(key in replayed)) return `${path}/${key}: missing`;
-  for (const key of Object.keys(replayed)) if (!(key in recorded)) return `${path}/${key}: not in the recording`;
   for (const key of Object.keys(recorded)) {
     const diff = shapeDiff(recorded[key], replayed[key], `${path}/${key}`);
     if (diff) return diff;

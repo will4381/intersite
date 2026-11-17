@@ -186,7 +186,8 @@ export const invariants = [{ name: "ledger balances", async check({ target, fetc
 UI cases are skipped by every mode except `ui`.
 
 - `baseline`: replay each session in order; a step passes when the status equals the recorded status and
-  `shapeDiff(recorded, replayed)` is undefined. A step recorded with a 5xx is the reverse: it fails
+  `shapeDiff(recorded, replayed)` is undefined: a recorded key missing or retyped fails, a key the replay adds passes (a client
+  built before it ignores it). A step recorded with a 5xx is the reverse: it fails
   (`still fails as production did`) on a 5xx or no answer, and passes once the answer is below 500. A dropped
   connection is status 0 (`got no answer (<code>)`). `--json --verbose` adds the `recorded` request. A redirect is
   compared as answered, never followed; a `text/event-stream` answer is judged on its status and its body is not

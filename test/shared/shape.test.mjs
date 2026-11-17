@@ -19,6 +19,7 @@ test("shapeDiff ignores data-dependent nulls and empty arrays, reports real chan
   assert.equal(shapeDiff(recorded, shapeOf({ name: "b", tags: [], owner: { id: "u" }, items: [{ id: "2", price: 9 }] })), undefined);
   assert.equal(shapeDiff(recorded, shapeOf({ name: 1, tags: [], owner: null, items: [] })), "/name: recorded string, got number");
   assert.equal(shapeDiff(recorded, shapeOf({ tags: [], owner: null, items: [] })), "/name: missing");
+  assert.equal(shapeDiff(recorded, shapeOf({ name: "a", added: true, tags: [], owner: null, items: [{ id: "1", price: 5, added: "x" }] })), undefined);
   assert.equal(shapeDiff(recorded, shapeOf({ name: "a", tags: [], owner: null, items: [{ id: "1", price: "5" }] })), "/items/*/price: recorded number, got string");
   // A row shape the recording had not seen is new data while another row still matches; a change to every row is not.
   const accounts = shapeOf({ accounts: [{ id: "a", managedBy: null }] });
