@@ -1,11 +1,14 @@
 // @ts-check
 // Fails when the change adds a function, component, hook, class or type that already exists under another name:
 // the same structure after local names and literals are replaced by placeholders, so renamed and reformatted copies
-// match while code that merely looks alike does not. Exact pasted blocks are left to the duplicates gate.
-import { readFileSync, statSync } from "node:fs";
+// match while code that merely looks alike does not. It also fails when added code holds most of an existing
+// function's body (a helper pasted inside a new function instead of called), found with structural features
+// (features.mjs) when oxc-parser is installed. Exact pasted blocks are left to the duplicates gate.
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { addedLines, listFiles, matches, resolveBase, workingDiff } from "./lib.mjs";
+import { JS_FILE, SKIP, counts, indexUnits, optionalParser, prune, readSource, span, units as featureUnits } from "./features.mjs";
+import { EMPTY_TREE, addedLines, listFiles, matches, resolveBase, workingDiff } from "./lib.mjs";
 import { units as jsUnits } from "./units.mjs";
 
 /** @typedef {import("./units.mjs").Unit} Unit */
@@ -13,12 +16,10 @@ import { units as jsUnits } from "./units.mjs";
 
 /** Unit extractors by file extension; another language adds an entry. */
 const LANGUAGES = [{ test: /\.[cm]?[jt]sx?$/, units: jsUnits }];
-const SKIP = /(?:^|\/)(?:node_modules|dist|build|out|vendor|coverage|generated|__generated__)\/|\.min\.|\.d\.[cm]?ts$|\.generated\./;
 // Never one side of a pair: tests, fixtures and stories, configs, and route files whose shape the framework dictates.
 const NOT_SOURCE = /(?:^|\/)(?:__tests__|__mocks__|__fixtures__|(?:[\w-]*[-_])?(?:fixtures?|mocks?|e2e|tests?|testing)|stories|seeds?|migrations)\/|\.(?:test|spec|stories|story|e2e|config)\.[^/]+$|[-_.]fixtures?\.[^/]+$|(?:^|\/)(?:page|layout|loading|error|global-error|not-found|template|default|route|middleware)\.[cm]?[jt]sx?$/;
 // Kit primitives (shadcn-style) are deliberately uniform wrappers: two of them are never reported as a pair.
 const KIT = /(?:^|\/)(?:components\/ui|ui\/components|packages\/ui)\//;
-const MAX_BYTES = 256 * 1024;
 const K = 7;
 // Jaccard over 7-gram sets. Tuned on 21 agent-built repositories: real regenerated helpers scored 60-100%, and below
 // 60% or 32 normalised tokens the matches were mostly shared idioms a reviewer would keep.
@@ -87,10 +88,8 @@ function collect(cwd, files, added) {
   const fresh = [];
   for (const file of files) {
     const lang = LANGUAGES.find((l) => l.test.test(file));
-    if (!lang || statSync(join(cwd, file), { throwIfNoEntry: false })?.isFile() !== true) continue;
-    const text = readFileSync(join(cwd, file), "utf8");
-    // ponytail: files over MAX_BYTES are skipped, as in duplicates; chunk them if large hand-written files matter
-    if (text.length > MAX_BYTES || text.includes("\0") || /@generated|DO NOT EDIT/.test(text.slice(0, 500))) continue;
+    const text = lang && readSource(cwd, file);
+    if (!lang || text === undefined) continue;
     const lines = added.get(file);
     for (const unit of lang.units(text, file)) {
       const entry = { file, unit, prints: undefined };
@@ -336,6 +335,133 @@ function similarPairs(cwd, files, added, n) {
   return { pairs, units: all.length, fresh: fresh.length };
 }
 
+// A partial copy holds at least this share of an existing function's features, pruned as in Aroma, and the original
+// has at least this many names and literals. Tuned on nine agent-built repositories judged whole: from 80% of an
+// original of 30 or more, the findings were copies a reviewer would merge (a notification context pasted into eight
+// services, a workspace read inlined beside the helper that does it); from 60%, or originals of 20, they were mostly
+// one-statement query idioms and siblings sharing a shape.
+const CONTAINED = 0.8;
+const MIN_LEAVES = 30;
+// The function holding the copy is this much bigger than the original; closer in size, they are two similar
+// functions, which the whole-unit check judges.
+const BIGGER = 1.5;
+// The copy sits in a run of lines at most twice the original's length, plus a little: scattered matches in a big
+// component are shared idioms, not a pasted helper.
+const SPREAD = 2;
+const SPREAD_LINES = 10;
+// From this share the whole original is there, so the copy can call it; below it, the two share a part.
+const WHOLE_COPY = 0.95;
+// Candidates first by shared features; a feature in more than this many changed functions is too common to say much.
+const MAX_POSTING = 64;
+const PER_FUNCTION = 5;
+
+/** @typedef {import("./features.mjs").Indexed} Indexed */
+
+/**
+ * Aroma's first phase for partial copies: for each changed function, the existing functions most of whose features
+ * it shares, found through an index of the changed functions' features.
+ * @param {Indexed[]} all @param {Map<string, Set<number>>} added @param {boolean} whole every line is new
+ */
+function copyCandidates(all, added, whole) {
+  const addedIn = (/** @type {Indexed} */ u) => {
+    const lines = added.get(u.file);
+    let count = 0;
+    for (let l = u.line; lines && l <= u.endLine; l++) if (lines.has(l)) count++;
+    return count;
+  };
+  const containers = all.filter((u) => u.size >= MIN_LEAVES && addedIn(u) > 0);
+  /** @type {Map<number, number[]>} */
+  const postings = new Map();
+  containers.forEach((u, i) => {
+    for (const f of u.set) {
+      const list = postings.get(f);
+      if (list) list.push(i);
+      else postings.set(f, [i]);
+    }
+  });
+  const shared = new Int32Array(containers.length);
+  /** @type {{ a: Indexed, e: Indexed, share: number }[][]} */
+  const candidates = containers.map(() => []);
+  for (const e of all) {
+    // The original existed before the change: a function mostly made of added lines is new, or moved.
+    if (e.size < MIN_LEAVES || (!whole && addedIn(e) * 2 > e.endLine - e.line + 1)) continue;
+    let common = 0;
+    /** @type {number[]} */
+    const hit = [];
+    for (const f of e.set) {
+      const list = postings.get(f) ?? [];
+      if (list.length > MAX_POSTING) {
+        common++;
+        continue;
+      }
+      for (const i of list) if (shared[i]++ === 0) hit.push(i);
+    }
+    for (const i of hit) {
+      const a = containers[i];
+      const share = shared[i] / Math.max(1, e.set.length - common);
+      shared[i] = 0;
+      const nested = a.file === e.file && a.line <= e.endLine && e.line <= a.endLine;
+      if (share >= CONTAINED && !nested && e.size * BIGGER <= a.size && !(KIT.test(a.file) && KIT.test(e.file))) candidates[i].push({ a, e, share });
+    }
+  }
+  return candidates;
+}
+
+/** @typedef {{ file: string, from: number, to: number }} Region */
+/** @param {Region} a @param {Region} b */
+const overlaps = (a, b) => a.file === b.file && a.from <= b.to && b.from <= a.to;
+
+/**
+ * Added code holding most of an existing function's body: a helper pasted inside a function instead of called.
+ * Undefined when oxc-parser is not installed.
+ * @param {{ cwd: string, files: string[], added: Map<string, Set<number>>, whole: boolean, n: number, reported: Set<string> }} options
+ *   `whole`: every line is new; `n`: duplicates' block size; `reported`: `file:name file:name` pairs the whole-unit check found
+ */
+async function partialCopies({ cwd, files, added, whole, n, reported }) {
+  const oxc = await optionalParser();
+  if (!oxc) return undefined;
+  const candidates = copyCandidates(await indexUnits(cwd, files.filter((f) => JS_FILE.test(f))), added, whole);
+  /** @type {Map<string, import("./features.mjs").Unit[]>} */
+  const parsed = new Map();
+  const unitOf = (/** @type {Indexed} */ u) => {
+    if (!parsed.has(u.file)) parsed.set(u.file, featureUnits(oxc, u.file, readSource(cwd, u.file) ?? ""));
+    return parsed.get(u.file)?.find((x) => x.line === u.line && x.name === u.name);
+  };
+  /** @type {{ a: Indexed, e: Indexed, share: number, from: number, to: number }[]} */
+  const hits = [];
+  for (const list of candidates) {
+    for (const { a, e } of list.sort((x, y) => y.share - x.share).slice(0, PER_FUNCTION)) {
+      const container = unitOf(a);
+      const original = unitOf(e);
+      if (!container || !original || reported.has(`${a.file}:${a.name} ${e.file}:${e.name}`)) continue;
+      const { score, kept } = prune(counts(original.bag), container.leaves);
+      const share = score / original.bag.length;
+      const lines = kept.map((i) => container.leaves[i].line);
+      const fresh = added.get(a.file);
+      // Most of what matches must be added lines: an old function that already held the code is not this change's.
+      if (share < CONTAINED || (!whole && lines.filter((l) => fresh?.has(l)).length * 2 < lines.length)) continue;
+      const { from, to } = span(lines);
+      if (to - from > (e.endLine - e.line + 1) * SPREAD + SPREAD_LINES) continue;
+      if (pasted(cwd, /** @type {Entry} */ ({ file: a.file, unit: { line: from, endLine: to } }), /** @type {Entry} */ ({ file: e.file, unit: e }), n)) continue;
+      hits.push({ a, e, share, from, to });
+      break;
+    }
+  }
+  const copy = (/** @type {typeof hits[number]} */ h) => ({ file: h.a.file, from: h.from, to: h.to });
+  const original = (/** @type {typeof hits[number]} */ h) => ({ file: h.e.file, from: h.e.line, to: h.e.endLine });
+  const kept = hits.filter((h) => {
+    // A copy inside a nested function is reported there, not again for every function around it.
+    if (hits.some((o) => o !== h && o.e === h.e && o.a.file === h.a.file && h.a.line <= o.a.line && o.a.endLine <= h.a.endLine)) return false;
+    // Judging the whole repository, two copies of each other are one finding, at the later file.
+    const mutual = hits.find((o) => o !== h && overlaps(copy(o), original(h)) && overlaps(copy(h), original(o)));
+    return !mutual || `${h.a.file}:${h.from}` > `${mutual.a.file}:${mutual.from}`;
+  });
+  return kept.map(({ a, e, share, from, to }) => ({
+    target: `${a.file}:${a.name}`,
+    message: `${a.file}:${from}-${to} in ${a.name} repeats ${e.file}:${e.line} ${e.name} (${Math.floor(share * 100)}% of it): ${share >= WHOLE_COPY ? "call it instead" : "call it, or extract what they share"}`,
+  }));
+}
+
 /**
  * @param {import("./lib.mjs").GateOptions} options
  * @returns {Promise<import("./lib.mjs").GateResult>}
@@ -350,5 +476,8 @@ export async function similar({ cwd, base, testPaths, duplicateLines }) {
   if (![...added.keys()].some((f) => sources.has(f))) return { findings: [], summary: `0 added units checked` };
   const { pairs, units, fresh } = similarPairs(cwd, files, added, duplicateLines);
   const findings = pairs.map(([e, other, sim]) => ({ target: `${e.file}:${e.unit.name}`, message: message(e, other, sim) }));
-  return { findings, summary: `${fresh} added units checked against ${units} units` };
+  const reported = new Set(pairs.map(([e, other]) => `${e.file}:${e.unit.name} ${other.file}:${other.unit.name}`));
+  const copies = await partialCopies({ cwd, files, added, whole: sha === EMPTY_TREE, n: duplicateLines, reported });
+  findings.push(...(copies ?? []));
+  return { findings, summary: `${fresh} added units checked against ${units} units${copies ? "" : "; partial copies not checked: add oxc-parser as a dev dependency"}` };
 }

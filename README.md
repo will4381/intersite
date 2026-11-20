@@ -6,7 +6,7 @@ user sessions into tests nobody has to write.
 ## Quickstart
 
 ```bash
-npm i -D github:will4381/intersite#v1.0.0-rc.10 oxlint @oxlint/plugins
+npm i -D github:will4381/intersite#v1.0.0-rc.10 oxlint @oxlint/plugins oxc-parser
 ```
 
 ```bash
@@ -36,7 +36,7 @@ In a monorepo, install `intersite`, `oxlint` and `@oxlint/plugins` once at the r
 | `test-integrity` | A test deleted, weakened or skipped to get green | git |
 | `duplicates` | A pasted block that already exists in the repository | git |
 | `new-deps` | A dependency added without saying why | git |
-| `similar` | A new function, component, hook or type that already exists under another name; when two differ only in a few literals it says to make one with a variant | git |
+| `similar` | A new function, component, hook or type that already exists under another name; when two differ only in a few literals it says to make one with a variant. With `oxc-parser` installed, also a helper's body pasted inside a new function | git |
 | `naming` | A file or folder named against the casing, suffix or test pattern its siblings keep, or unlike its main export | git |
 | `style-drift` | A colour, size or token that is almost one the project already has, or off a scale it keeps closed | git |
 | `artifacts` | Leftovers: backup and `_v2` copies, scratch scripts, logs, stray `PLAN.md` and `SUMMARY.md` files | git |
@@ -109,6 +109,7 @@ finding, exit code 0, 1 or 2.
 | `intersite check [--base <ref>] [--skip <stage>] [--full] [--all]` | Runs every stage that applies; one line on success. `--full` adds slow checks, `--all` covers the whole repository |
 | `intersite lint [paths] [--write] [--rules]` | Lints; `--write` lowers the baseline; `--rules` lists what applies |
 | `intersite gate <name> [--base <ref>] [--all [--write]]` | Runs one gate against the diff, or with `--all` the whole repository; `--write` records today's findings |
+| `intersite search <file>[:<line>[-<line>]] \| - [--max <n>]` | Finds the functions that already contain this code, renamed or reordered; needs `oxc-parser` |
 | `intersite collector` | Runs the local collector (SQLite file in `.intersite/`) |
 | `intersite replay [--id] [--tag] [--action] [--sample] [--mode] [--verbose] [--metrics-out] [--metrics-base] [--snapshot-out] [--snapshot-base] [--openapi]` | Replays recorded sessions against a local server |
 | `intersite actions` | Lists named user actions seen, with error counts |

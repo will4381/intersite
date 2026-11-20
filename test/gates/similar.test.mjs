@@ -238,3 +238,61 @@ test("checks a change against 4,000 files and reports its CPU time", async (t) =
   assert.equal(code, 1);
   assert.match(out[0], /^src\/new\.ts:3 copied is 100% the same as src\/m12\/f1234\.ts:3 f1234: reuse it/);
 });
+
+const fetchAllPages = `export async function fetchAllPages(client, path, pageSize) {
+  const items = [];
+  let cursor = null;
+  for (;;) {
+    const response = await client.get(path, { params: { cursor, limit: pageSize } });
+    if (!response.ok) throw new Error(\`request failed: \${response.status}\`);
+    items.push(...response.data.items);
+    cursor = response.data.nextCursor;
+    if (!cursor) break;
+  }
+  return items;
+}
+`;
+// fetchAllPages pasted inside a bigger function, every name changed.
+const syncInvoices = `import { notify } from "./notify";
+
+export async function syncInvoices(api, account, path) {
+  const started = Date.now();
+  const rows = [];
+  let next = null;
+  for (;;) {
+    const page = await api.get(path, { params: { cursor: next, limit: 100 } });
+    if (!page.ok) throw new Error(\`request failed: \${page.status}\`);
+    rows.push(...page.data.items);
+    next = page.data.nextCursor;
+    if (!next) break;
+  }
+  const unpaid = rows.filter((row) => !row.paidAt);
+  for (const invoice of unpaid) await notify(account.ownerId, \`Invoice \${invoice.number} is unpaid\`);
+  await api.post(\`/accounts/\${account.id}/sync-log\`, { count: rows.length, unpaid: unpaid.length, took: Date.now() - started });
+  return { total: rows.length, unpaid: unpaid.length };
+}
+`;
+
+test("a helper's body pasted inside a new function is reported with its lines and the helper to call", async () => {
+  const r = repo({ "src/lib/http.js": fetchAllPages, "src/lib/notify.js": "export const notify = async () => {};\n" });
+  r.write({ "src/billing/sync.js": syncInvoices });
+  const { code, out } = await run(r.cwd, ["similar"]);
+  assert.equal(code, 1);
+  assert.equal(out.length, 1, out.join("\n"));
+  assert.match(out[0], /^src\/billing\/sync\.js:3-12 in syncInvoices repeats src\/lib\/http\.js:1 fetchAllPages \(\d+% of it\): call it/);
+  assert.match(out[0], /\| to accept: add \{ "gate": "similar", "target": "src\/billing\/sync\.js:syncInvoices"/);
+});
+
+test("a function that already held the copy is not reported when the change touches it", async () => {
+  const r = repo({ "src/lib/http.js": fetchAllPages, "src/billing/sync.js": syncInvoices });
+  r.write({ "src/billing/sync.js": syncInvoices.replace("limit: 100", "limit: 200") });
+  const { code, out } = await run(r.cwd, ["similar"]);
+  assert.equal(code, 0, out.join("\n"));
+});
+
+test("a helper moved inside the function that used it is not a copy", async () => {
+  const r = repo({ "src/lib/http.js": fetchAllPages });
+  r.rm("src/lib/http.js");
+  r.write({ "src/billing/sync.js": syncInvoices });
+  assert.equal((await run(r.cwd, ["similar"])).code, 0);
+});

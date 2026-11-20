@@ -4,7 +4,7 @@ import { relative, resolve } from "node:path";
 
 import { projectRoot } from "../shared/config.mjs";
 
-const commands = ["init", "check", "lint", "gate", "replay", "actions", "audit", "pin", "collector", "deploy"];
+const commands = ["init", "check", "lint", "gate", "search", "replay", "actions", "audit", "pin", "collector", "deploy"];
 const readsCases = ["check", "replay", "actions", "audit", "pin"];
 const [command, ...argv] = process.argv.slice(2);
 
@@ -15,7 +15,8 @@ if (!command || !commands.includes(command)) {
 
 // Every command but init runs where the project's intersite.yml is, so lint paths given from a subfolder are rebased.
 const cwd = command === "init" ? process.cwd() : projectRoot(process.cwd());
-const args = command === "lint" ? argv.map((arg) => (arg.startsWith("-") ? arg : relative(cwd, resolve(arg)) || ".")) : argv;
+const rebase = (/** @type {string} */ arg, /** @type {number} */ i) => (arg.startsWith("-") || argv[i - 1] === "--max" ? arg : relative(cwd, resolve(arg)) || ".");
+const args = command === "lint" || command === "search" ? argv.map(rebase) : argv;
 /** @type {(() => Promise<void>) | undefined} */
 let stopCollector;
 let code = 2;

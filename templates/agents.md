@@ -13,8 +13,9 @@ It prints one line per finding, with the command that reruns just that finding.
   fail without the fix: `npx intersite gate fails-on-base --cmd "<the project's test command>"`.
 - **Test through the API, not through mocks.** Do not mock this project's own modules. A test whose assertions
   could not fail is worse than no test.
-- **Reuse before writing.** Search for an existing helper first; `duplicates` reports pasted blocks. Do not add a
-  dependency for what a few lines do; `new-deps` reports every new one.
+- **Reuse before writing.** Search for an existing helper first: `npx intersite search <file>:<line>` (or code on
+  stdin with `-`) lists the functions that already do what those lines do. `duplicates` and `similar` report pasted
+  and rewritten copies. Do not add a dependency for what a few lines do; `new-deps` reports every new one.
 - **Name user actions.** A new button, form or clickable element gets `data-intersite="<area>.<verb>"`, such as
   `data-intersite="program.save"`. Keep an existing name when the markup changes: tests find the element by it.
 - **Useful commands:** `npx intersite lint --rules` (which rules apply), `npx intersite actions` (user actions seen,

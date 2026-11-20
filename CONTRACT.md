@@ -8,6 +8,7 @@ What every part of this package agrees on. Change it here first, then in code.
 | --- | --- | --- |
 | `lint/`, `cli/lint.mjs` | Node, inside oxlint | Slop rules, mostly declared in JSON; baseline that only shrinks |
 | `gates/`, `cli/gate.mjs` | Node, local or CI | Checks on a change: test integrity, duplicates, new dependencies, fails-on-base, mutation |
+| `gates/features.mjs`, `cli/search.mjs` | Node | Structural features of JavaScript and TypeScript (after Aroma): `search`, and the `similar` gate's partial copies |
 | `track/` | The browser | Names user actions and stamps them on the requests they cause |
 | `capture/` | The project's server or browser (any `fetch` runtime) | Samples, scrubs and sends cases to the collector |
 | `collector/`, `cli/collector.mjs`, `cli/deploy.mjs` | Node with SQLite locally; a Cloudflare Worker with D1 when deployed | Stores cases, answers queries, deletes expired ones |
@@ -23,7 +24,8 @@ What every part of this package agrees on. Change it here first, then in code.
 - One runtime dependency, `yaml`, used only where config and rule files are read (never in `capture/` or `track/`).
   `oxlint` and `@oxlint/plugins` are optional peers that `lint` needs (a package that only imports
   `intersite/capture` or `intersite/track` installs neither); `playwright-core` is an optional peer used only
-  by the `ui` replay mode; `wrangler` is a dev dependency.
+  by the `ui` replay mode; `oxc-parser` is an optional peer that `search` and the `similar` gate's partial copies need
+  (without it `search` is a setup error and `similar` says in its summary that it skipped them); `wrangler` is a dev dependency.
 - `capture/`, `track/`, `shared/case.mjs` and `shared/shape.mjs` use only web-standard APIs.
 - Tests are `node --test` files under `test/<part>/`. Test behavior through the part's public entry, not its internals.
 - A deliberate shortcut gets a `// ponytail: <ceiling>, <upgrade path>` comment.
@@ -151,7 +153,7 @@ finish is stopped and counts as failing on the base, like any other failure ther
 | --- | --- |
 | `test-integrity` | A test file was deleted, or has fewer tests or fewer assertions than on base, or gained a skip |
 | `duplicates` | An added block of `gates.duplicateLines` or more lines already exists elsewhere in the repository |
-| `similar` | An added function, component, hook, class or type already exists under another name: the same structure once local names and literals are set aside. Exact pasted blocks are left to `duplicates`. Target is `file:Name` |
+| `similar` | An added function, component, hook, class or type already exists under another name: the same structure once local names and literals are set aside. Or, with `oxc-parser`, added lines hold 80% or more of an existing function's structural features (one of 30 or more names and literals) inside a function at least half again its size: a helper pasted instead of called. Exact pasted blocks are left to `duplicates`. Target is `file:Name` |
 | `naming` | The change adds a file or folder whose casing, shared suffix (`*.service.ts`) or test pattern differs from what a clear majority of its siblings keep, or whose main export is named unlike the file where its siblings match theirs. Conventions are inferred per folder and file kind, never configured |
 | `style-drift` | The change adds a styling value that is nearly one the project already has (a colour within the just-noticeable difference, a size a pixel off its scale), a literal equal to a token's value, a value off a closed font-size, weight or radius scale, or a token that nearly duplicates another in its family |
 | `new-deps` | A `package.json` gained a dependency |
@@ -165,6 +167,19 @@ path or dependency name. It silences that one finding and shows up in review. Fo
 the base carries an `Intersite-Ack: <gate>: <why>` trailer: it accepts that gate's findings in this change and
 never a later one. Every gate's failure line ends by
 saying so, because an agent with no honest way out will find a dishonest one.
+
+## Search
+
+`intersite search <file>[:<line>[-<line>]] | - [--max <n>] [--json]` finds the functions in the repository that contain
+a piece of code: the function around a line, a range of lines, a whole file read as a snippet, or code on stdin. It
+follows Aroma (Luan et al., OOPSLA 2019): each file is parsed into a simplified tree, every name and literal yields
+features (itself, its place in up to three ancestors, the next name or literal, and a local variable's consecutive
+uses), local names become `#VAR`, and a named function's features are its leaves'. Candidates are the 100 functions
+sharing the most features with the query; each is pruned to the part that matches and ranked by the share of the
+query's features that part holds. A match holds at least half; the query's own lines never match. Each match is one
+line, `path:line name: N% of the query, at lines A-B`; with none, one `ok search:` line. Feature sets are cached per
+file content in `node_modules/.cache/intersite/features.bin`. Test files (`gates.testPaths`) and generated code are
+left out.
 
 ## Replay adapter
 
