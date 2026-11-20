@@ -7,7 +7,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { JS_FILE, SKIP, counts, indexUnits, optionalParser, prune, readSource, span, units as featureUnits } from "./features.mjs";
+import { JS_FILE, SKIP, counts, indexUnits, optionalParser, prune, readSource, scattered, span, units as featureUnits } from "./features.mjs";
 import { EMPTY_TREE, addedLines, listFiles, matches, resolveBase, workingDiff } from "./lib.mjs";
 import { units as jsUnits } from "./units.mjs";
 
@@ -345,10 +345,6 @@ const MIN_LEAVES = 30;
 // The function holding the copy is this much bigger than the original; closer in size, they are two similar
 // functions, which the whole-unit check judges.
 const BIGGER = 1.5;
-// The copy sits in a run of lines at most twice the original's length, plus a little: scattered matches in a big
-// component are shared idioms, not a pasted helper.
-const SPREAD = 2;
-const SPREAD_LINES = 10;
 // From this share the whole original is there, so the copy can call it; below it, the two share a part.
 const WHOLE_COPY = 0.95;
 // Candidates first by shared features; a feature in more than this many changed functions is too common to say much.
@@ -441,7 +437,7 @@ async function partialCopies({ cwd, files, added, whole, n, reported }) {
       // Most of what matches must be added lines: an old function that already held the code is not this change's.
       if (share < CONTAINED || (!whole && lines.filter((l) => fresh?.has(l)).length * 2 < lines.length)) continue;
       const { from, to } = span(lines);
-      if (to - from > (e.endLine - e.line + 1) * SPREAD + SPREAD_LINES) continue;
+      if (scattered({ from, to }, e.endLine - e.line + 1)) continue;
       if (pasted(cwd, /** @type {Entry} */ ({ file: a.file, unit: { line: from, endLine: to } }), /** @type {Entry} */ ({ file: e.file, unit: e }), n)) continue;
       hits.push({ a, e, share, from, to });
       break;

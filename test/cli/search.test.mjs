@@ -106,6 +106,27 @@ test("code nothing resembles gets one ok line, and an unreadable query is a setu
   assert.match(missing.err[0], /^search: cannot read src\/nope\.js/);
 });
 
+test("a match scattered over a long function is not shown: its lines are far apart, so they are shared idioms", async () => {
+  const filler = (/** @type {number} */ i) => Array.from({ length: 30 }, (_, j) => `  audit.push({ step: ${i * 100 + j}, note: "n${j}" });`).join("\n");
+  const checkout = `export function checkout(cart, rate, audit) {
+  const total = cart.items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+${filler(1)}
+  const tax = Math.round(total * rate * 100) / 100;
+${filler(2)}
+  const shipping = total > 100 ? 0 : cart.express ? 25 : 9;
+${filler(3)}
+  return { total, tax, shipping, due: total + tax + shipping };
+}
+`;
+  const query = queryFile(`const total = cart.items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+const tax = Math.round(total * rate * 100) / 100;
+const shipping = total > 100 ? 0 : cart.express ? 25 : 9;
+return { total, tax, shipping, due: total + tax + shipping };
+`);
+  const r = repo({ "src/checkout.js": checkout, "src/lib/collections.js": groupBy });
+  assert.deepEqual((await run(r.cwd, [query])).out, ["ok search: none of 3 functions holds 50% of the query"]);
+});
+
 test("half of a function's statements finds that function first, across Intersite's own source", async (t) => {
   const root = fileURLToPath(new URL("../..", import.meta.url));
   const files = ["gates", "cli", "replay"].flatMap((dir) => readdirSync(join(root, dir)).filter((f) => f.endsWith(".mjs")).map((f) => `${dir}/${f}`));

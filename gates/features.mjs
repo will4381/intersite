@@ -468,6 +468,16 @@ export function span(at) {
   return { from: best[0], to: best[1] };
 }
 
+// A match sits in a run of lines at most twice the length of what it matches, plus a little: matches scattered over
+// a big function are shared idioms, not a copy.
+const SPREAD = 2;
+const SPREAD_LINES = 10;
+
+/** Whether a match at `from`-`to` is scattered, for code `length` lines long. @param {{ from: number, to: number }} at @param {number} length */
+export function scattered({ from, to }, length) {
+  return to - from > length * SPREAD + SPREAD_LINES;
+}
+
 /**
  * The named functions of `files` with their feature sets, cached by file content in `cacheDir`, so only files
  * changed since the last run are parsed.

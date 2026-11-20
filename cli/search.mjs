@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { extname, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
-import { JS_FILE, SKIP, counts, indexUnits, lines, overlap, parser, prune, snippet, span, units } from "../gates/features.mjs";
+import { JS_FILE, SKIP, counts, indexUnits, lines, overlap, parser, prune, scattered, snippet, span, units } from "../gates/features.mjs";
 import { GateError, inGit, listFiles, matches } from "../gates/lib.mjs";
 import { loadConfig } from "../shared/config.mjs";
 
@@ -76,6 +76,8 @@ export default async function search(argv, { cwd }) {
       .sort((a, b) => b.shared - a.shared)
       .slice(0, CANDIDATES);
     const want = counts(query.bag);
+    const queryLines = query.leaves.map((l) => l.line);
+    const length = Math.max(...queryLines) - Math.min(...queryLines) + 1;
     /** @type {Map<string, Unit[]>} */
     const parsedFiles = new Map();
     const ranked = candidates.flatMap(({ u }) => {
@@ -84,7 +86,9 @@ export default async function search(argv, { cwd }) {
       if (!unit) return [];
       const { score, kept } = prune(want, unit.leaves);
       if (!kept.length) return [];
-      return [{ file: u.file, name: u.name, line: u.line, endLine: u.endLine, size: u.size, share: score / query.bag.length, ...span(kept.map((i) => unit.leaves[i].line)) }];
+      const at = span(kept.map((i) => unit.leaves[i].line));
+      if (scattered(at, length)) return [];
+      return [{ file: u.file, name: u.name, line: u.line, endLine: u.endLine, size: u.size, share: score / query.bag.length, ...at }];
     });
     ranked.sort((a, b) => b.share - a.share || a.size - b.size);
     /** @type {typeof ranked} */
