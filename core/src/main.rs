@@ -6,6 +6,7 @@
 #![allow(clippy::needless_range_loop, clippy::nonminimal_bool)]
 
 mod aroma;
+mod decisions;
 mod drift;
 mod globals;
 mod hygiene;
@@ -15,6 +16,8 @@ mod naming;
 mod search;
 mod similar;
 mod regex;
+mod renames;
+mod schemas;
 mod sql;
 mod style;
 mod text;
@@ -124,6 +127,9 @@ fn main() {
         "mutants" => hygiene::mutants(&request),
         "trace-report" => trace::run(&request),
         "twins" => twins::run(&request),
+        "decisions" => decisions::run(&request),
+        "renames" => renames::run(&request),
+        "schema-drift" => schemas::run(&request),
         other => Err(format!("unknown command {other}")),
     };
     match answer {

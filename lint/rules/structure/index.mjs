@@ -16,7 +16,9 @@ import * as noPassThrough from "./no-pass-through.mjs";
 import * as noPropForwardingWrapper from "./no-prop-forwarding-wrapper.mjs";
 import * as noRepeatedStanza from "./no-repeated-stanza.mjs";
 import * as noRestatingComment from "./no-restating-comment.mjs";
+import * as noShallowModule from "./no-shallow-module.mjs";
 import * as noSingleImplementation from "./no-single-implementation.mjs";
+import * as noSingleUseHelper from "./no-single-use-helper.mjs";
 import * as noStatementWall from "./no-statement-wall.mjs";
 import * as noThrowawayName from "./no-throwaway-name.mjs";
 
@@ -38,7 +40,9 @@ export default [
   noPropForwardingWrapper,
   noRepeatedStanza,
   noRestatingComment,
+  noShallowModule,
   noSingleImplementation,
+  noSingleUseHelper,
   noStatementWall,
   noThrowawayName,
 ];

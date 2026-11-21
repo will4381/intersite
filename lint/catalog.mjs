@@ -25,8 +25,9 @@ const packFiles = readdirSync(new URL("./packs/", import.meta.url)).filter((name
 export const jsonRules = packFiles.flatMap((file) => file.rules ?? []);
 
 /**
- * Rules oxlint ships that a pack turns on, named as oxlint names them (`react/no-array-index-key`).
- * @type {{ rule: string, pack: string }[]}
+ * Rules oxlint ships that a pack turns on, named as oxlint names them (`react/no-array-index-key`), with the rule's
+ * options when it takes any.
+ * @type {{ rule: string, pack: string, options?: unknown[] }[]}
  */
 export const builtinRules = packFiles.flatMap((file) => file.builtin ?? []);
 

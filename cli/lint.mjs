@@ -189,20 +189,33 @@ export default async function lint(argv, { cwd, quiet = false }) {
   return failed.length ? 1 : 0;
 }
 
-/** What `lint.typeAware` turns on: promise mistakes only the type checker can see. */
-const TYPE_AWARE = ["typescript/no-floating-promises", "typescript/no-misused-promises", "typescript/await-thenable"];
+/**
+ * What `lint.typeAware` turns on: mistakes only the type checker can see. Promises nobody awaits; a switch over a union
+ * that misses a member; a cast to the type the value already has; a check of a value whose type says it cannot fail
+ * the check (data validated where it came in, then checked again inside); a missing `await` that skips the catch.
+ * @type {Record<string, string | unknown[]>}
+ */
+const TYPE_AWARE = {
+  "typescript/no-floating-promises": "error",
+  "typescript/no-misused-promises": "error",
+  "typescript/await-thenable": "error",
+  "typescript/switch-exhaustiveness-check": ["error", { considerDefaultExhaustiveForUnions: true }],
+  "typescript/no-unnecessary-type-assertion": "error",
+  "typescript/no-unnecessary-condition": "error",
+  "typescript/return-await": ["error", "error-handling-correctness-only"],
+};
 
 /**
  * The oxlint rule levels the configured packs, custom rules and overrides switch on, and whether the bare-suppression check runs.
  * @param {ReturnType<typeof loadConfig>["lint"]} config
  */
 function ruleSet(config) {
-  /** @type {Record<string, string>} */
+  /** @type {Record<string, string | unknown[]>} */
   const rules = {};
   for (const r of packageRules) if (r.pack && config.packs.includes(r.pack)) rules[`intersite/${r.id}`] = "error";
   for (const r of config.custom) rules[`intersite/${r.id}`] = "error";
-  for (const b of builtinRules) if (config.packs.includes(b.pack)) rules[b.rule] = "error";
-  if (config.typeAware) for (const rule of TYPE_AWARE) rules[rule] = "error";
+  for (const b of builtinRules) if (config.packs.includes(b.pack)) rules[b.rule] = b.options ? ["error", ...b.options] : "error";
+  if (config.typeAware) Object.assign(rules, TYPE_AWARE);
   // An override names an intersite rule by its bare id, or a built-in rule by oxlint's full name.
   for (const [id, level] of Object.entries(config.rules)) rules[id.includes("/") ? id : `intersite/${id}`] = level;
   // Not an oxlint rule (see bareSuppressions), but switched on and off like one in the slop pack.

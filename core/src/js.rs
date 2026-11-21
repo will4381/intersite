@@ -309,6 +309,13 @@ impl<'a, 's> Visit<'a> for Walker<'s> {
 }
 
 /// The facts of one file, or None when it does not parse.
+/// Parses a JavaScript or TypeScript file and hands its program to `f`; None when the parser gave up on it.
+pub fn parse<R>(path: &str, src: &str, f: impl FnOnce(&Program<'_>) -> R) -> Option<R> {
+    let allocator = Allocator::default();
+    let parsed = Parser::new(&allocator, src, SourceType::from_path(path).unwrap_or_default()).parse();
+    (!parsed.panicked).then(|| f(&parsed.program))
+}
+
 pub fn facts(path: &str, src: &str) -> Option<Facts> {
     let allocator = Allocator::default();
     let source_type = SourceType::from_path(path).unwrap_or_default();

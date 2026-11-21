@@ -14,12 +14,18 @@ const TAGGED = new RegExp(
     "|@(?:type|typedef|param|returns?|template|import|satisfies|callback|property|overload|this|enum)\\b|[#@] source(?:Mapping)?URL=|@license\\b|@preserve\\b|!)",
 );
 
+/**
+ * Comments that hold a contract or a pointer, kept without a tag: a doc block naming what a public function throws,
+ * an example call, a deprecation or a reference; a link to the issue, pull request or RFC behind the code.
+ */
+const CONTRACT = /@(?:throws|example|deprecated|see)\b|https?:\/\/\S*\/(?:issues|pull|rfcs?)\/|\bRFC ?\d{3,}/;
+
 export const id = "require-comment-tag";
 export const pack = "comments";
 
 export const rule = commentRule(
   "This comment has no tag. Say it with a clearer name, a smaller function or a test instead. If it truly cannot be said in code, start it with SAFETY: (an invariant the code relies on), PROVIDER: (how an outside service behaves) or ponytail: (a known limit and its upgrade path).",
-  (first) => !TAGGED.test(first),
+  (first, whole) => !TAGGED.test(first) && !CONTRACT.test(whole),
   (context) => !isGenerated(context),
 );
 
@@ -38,6 +44,8 @@ export const good = [
   "// @ts-expect-error the old signature is still exported for one release\nlegacy(1);",
   "/// <reference types=\"vite/client\" />\nexport const mode = import.meta.env.MODE;",
   "/** @type {import('./types').Config} */\nexport const config = { port: 3000 };",
+  "/**\n * Charges the order once.\n * @throws {CardDeclined} when the issuer refuses the charge\n */\nexport declare function charge(order: Order): Promise<void>;",
+  "// https://github.com/acme/api/issues/412: the provider sends duplicates on retry\nexport const seen = new Set<string>();",
   "export const lazy = () => import(/* @vite-ignore */ url);",
   "#!/usr/bin/env node\nexport const run = () => main(process.argv);",
 ];

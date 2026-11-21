@@ -103,6 +103,30 @@ struct Inventory {
     indexes: HashMap<String, Vec<Vec<String>>>,
     /// Expression indexes per table, as text: `lower(email)`.
     expressions: HashMap<String, HashSet<String>>,
+    /// Each column's type, as `kind` names it, latest declaration winning.
+    types: HashMap<(String, String), String>,
+    /// Each table's single-column primary key, which a bare `REFERENCES parent` points at.
+    primary: HashMap<String, String>,
+}
+
+/// A column type reduced to what a comparison sees: `varchar(36)` and `text` are both text, `serial` is integer.
+fn kind(data_type: &str) -> String {
+    let t = data_type.to_lowercase();
+    let base = t.split('(').next().unwrap_or("").trim();
+    match base {
+        "int" | "integer" | "int4" | "serial" | "serial4" => "integer",
+        "bigint" | "int8" | "bigserial" | "serial8" => "bigint",
+        "smallint" | "int2" | "smallserial" | "serial2" => "smallint",
+        "text" | "varchar" | "character varying" | "char" | "character" | "citext" | "string" => "text",
+        other => other,
+    }
+    .to_string()
+}
+
+/// A default that makes a UUID: `gen_random_uuid()`, `uuid_generate_v4()`, `uuidv7()`.
+fn makes_uuid(options: &str) -> bool {
+    let o = options.to_lowercase();
+    o.contains("default") && (o.contains("gen_random_uuid") || o.contains("uuid_generate_v") || o.contains("uuidv"))
 }
 
 impl Inventory {
@@ -129,6 +153,8 @@ struct ForeignKey {
     table: String,
     columns: Vec<String>,
     parent: String,
+    /// The parent columns named after `REFERENCES parent`; empty means its primary key.
+    parent_columns: Vec<String>,
 }
 
 /// What the migrations declare: indexes, and foreign keys.
@@ -136,8 +162,10 @@ fn inventory(all: &[Stmt]) -> (Inventory, Vec<ForeignKey>) {
     let mut inv = Inventory::default();
     let mut fks = Vec::new();
     let mut fk = |s: &Stmt, table: &str, columns: Vec<String>, text: &str| {
-        let parent = text.split("REFERENCES").nth(1).map(|r| bare(r.trim().split(|c: char| c == '(' || c.is_whitespace()).next().unwrap_or(""))).unwrap_or_default();
-        fks.push(ForeignKey { file: s.file.clone(), line: s.line, table: table.to_string(), columns, parent });
+        let after = text.split("REFERENCES").nth(1).unwrap_or("").trim();
+        let parent = bare(after.split(|c: char| c == '(' || c.is_whitespace()).next().unwrap_or(""));
+        let named = after.split_once('(').filter(|(l, _)| !l.trim().contains(' ')).map(|_| column_list(after)).unwrap_or_default();
+        fks.push(ForeignKey { file: s.file.clone(), line: s.line, table: table.to_string(), columns, parent, parent_columns: named });
     };
     for s in all {
         match &s.statement {
@@ -153,8 +181,12 @@ fn inventory(all: &[Stmt]) -> (Inventory, Vec<ForeignKey>) {
                 let table = bare(&ct.name.to_string());
                 for col in &ct.columns {
                     let name = bare(&col.name.to_string());
+                    inv.types.insert((table.clone(), name.clone()), kind(&col.data_type.to_string()));
                     for opt in &col.options {
                         let text = opt.option.to_string().to_uppercase();
+                        if text.contains("PRIMARY KEY") {
+                            inv.primary.insert(table.clone(), name.clone());
+                        }
                         if text.contains("PRIMARY KEY") || text.starts_with("UNIQUE") {
                             inv.add(&table, vec![name.clone()]);
                         }
@@ -169,7 +201,11 @@ fn inventory(all: &[Stmt]) -> (Inventory, Vec<ForeignKey>) {
                     if upper.contains("FOREIGN KEY") {
                         fk(s, &table, column_list(&text[upper.find("FOREIGN KEY").unwrap_or(0)..]), &text);
                     } else if upper.contains("PRIMARY KEY") || upper.contains("UNIQUE") {
-                        inv.add(&table, column_list(&text));
+                        let cols = column_list(&text);
+                        if upper.contains("PRIMARY KEY") && cols.len() == 1 {
+                            inv.primary.insert(table.clone(), cols[0].clone());
+                        }
+                        inv.add(&table, cols);
                     }
                 }
             }
@@ -178,6 +214,15 @@ fn inventory(all: &[Stmt]) -> (Inventory, Vec<ForeignKey>) {
                 for op in &at.operations {
                     let text = op.to_string();
                     let upper = text.to_uppercase();
+                    match op {
+                        AlterTableOperation::AddColumn { column_def, .. } => {
+                            inv.types.insert((table.clone(), bare(&column_def.name.to_string())), kind(&column_def.data_type.to_string()));
+                        }
+                        AlterTableOperation::AlterColumn { column_name, op: AlterColumnOperation::SetDataType { data_type, .. } } => {
+                            inv.types.insert((table.clone(), bare(&column_name.to_string())), kind(&data_type.to_string()));
+                        }
+                        _ => {}
+                    }
                     if upper.contains("FOREIGN KEY") {
                         fk(s, &table, column_list(&text[upper.find("FOREIGN KEY").unwrap_or(0)..]), &text);
                     } else if upper.starts_with("ADD") && upper.contains("REFERENCES") {
@@ -247,6 +292,64 @@ fn migration(s: &Stmt, created_here: &HashSet<(String, String)>, out: &mut Vec<F
         }
         _ => {}
     }
+}
+
+/// A column that holds UUIDs as text: 36 characters where the uuid type stores 16 bytes, compared and indexed as
+/// strings, and never checked to be a UUID. Applies to new tables too: the type is cheapest to fix before rows exist.
+fn uuid_as_text(s: &Stmt, out: &mut Vec<Finding>) {
+    let mut check = |table: &str, col: &sqlparser::ast::ColumnDef| {
+        let options = col.options.iter().map(|o| o.option.to_string()).collect::<Vec<_>>().join(" ");
+        if kind(&col.data_type.to_string()) == "text" && makes_uuid(&options) {
+            let name = bare(&col.name.to_string());
+            out.push(finding(s, "uuid-as-text", &format!("{table}.{name}"), format!("{table}.{name} is {} filled with generated UUIDs: store them as uuid (16 bytes, compared as numbers, rejected when malformed) instead of text", col.data_type)));
+        }
+    };
+    match &s.statement {
+        Statement::CreateTable(ct) => {
+            let table = bare(&ct.name.to_string());
+            for col in &ct.columns {
+                check(&table, col);
+            }
+        }
+        Statement::AlterTable(at) => {
+            let table = bare(&at.name.to_string());
+            for op in &at.operations {
+                if let AlterTableOperation::AddColumn { column_def, .. } = op {
+                    check(&table, column_def);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Prisma models: an `@id` or relation field generated by `uuid()` but stored as text, because `String` maps to text
+/// on Postgres unless the field says `@db.Uuid`.
+fn prisma(file: &str, src: &str, request: &Request) -> Vec<Finding> {
+    if !src.contains("postgresql") && !src.contains("postgres") {
+        return vec![];
+    }
+    let mut out = Vec::new();
+    let mut model = String::new();
+    for (i, line) in src.lines().enumerate() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("model ") {
+            model = rest.split_whitespace().next().unwrap_or("").to_string();
+            continue;
+        }
+        let mut words = trimmed.split_whitespace();
+        let (Some(field), Some(ty)) = (words.next(), words.next()) else { continue };
+        let n = i as u32 + 1;
+        if ty == "String" && trimmed.contains("@default(uuid(") && !trimmed.contains("@db.Uuid") && request.changed(file, n) {
+            out.push(Finding {
+                file: file.to_string(),
+                line: n,
+                target: format!("{file}:uuid-as-text:{model}.{field}"),
+                message: format!("{file}:{n} {model}.{field} is generated by uuid() but String is text on Postgres: add @db.Uuid (and to the fields that reference it) so it is stored in 16 bytes and checked to be a UUID"),
+            });
+        }
+    }
+    out
 }
 
 /// The identifier a function in a comparison wraps: `lower(email)` wraps email.
@@ -321,11 +424,15 @@ fn query(s: &Stmt, inv: &Inventory, out: &mut Vec<Finding>) {
 type FileScan = (Vec<Stmt>, Vec<(String, js::DbInLoop)>);
 
 fn read_all(request: &Request) -> (Vec<Stmt>, Vec<(String, js::DbInLoop)>) {
+    // Prisma schemas are read in run(); here only SQL and code.
     let per_file: Vec<FileScan> = request
         .files
         .par_iter()
         .filter_map(|file| {
             let src = text::read(&request.root, file)?;
+            if file.ends_with(".prisma") {
+                return None;
+            }
             if file.ends_with(".sql") {
                 return Some((statements(file, 1, &src, false), vec![]));
             }
@@ -367,9 +474,31 @@ pub fn run(request: &Request) -> Result<Answer, String> {
     let mut findings = Vec::new();
     for s in stmts.iter().filter(|s| changed(s)) {
         migration(s, &created_here, &mut findings);
+        uuid_as_text(s, &mut findings);
         query(s, &inv, &mut findings);
     }
+    for file in request.files.iter().filter(|f| f.ends_with(".prisma")) {
+        if let Some(src) = text::read(&request.root, file) {
+            findings.extend(prisma(file, &src, request));
+        }
+    }
     for fk in fks.iter().filter(|f| request.changed(&f.file, f.line)) {
+        // A key compared with a column of another type casts on every join, so neither side's index is used; an
+        // integer key pointing at a bigint one also overflows once the parent passes 2^31 rows.
+        let parents: Vec<String> = if fk.parent_columns.is_empty() { inv.primary.get(&fk.parent).cloned().into_iter().collect() } else { fk.parent_columns.clone() };
+        if parents.len() == fk.columns.len() {
+            for (child, parent) in fk.columns.iter().zip(&parents) {
+                let (Some(a), Some(b)) = (inv.types.get(&(fk.table.clone(), child.clone())), inv.types.get(&(fk.parent.clone(), parent.clone()))) else { continue };
+                if a != b {
+                    findings.push(Finding {
+                        file: fk.file.clone(),
+                        line: fk.line,
+                        target: format!("{}:fk-type:{}.{child}", fk.file, fk.table),
+                        message: format!("{}:{} {}.{child} is {a} but references {}.{parent}, which is {b}: every join casts one side, so its index goes unused{}; make {child} {b}", fk.file, fk.line, fk.table, fk.parent, if b == "uuid" { ", and the column accepts strings that are not UUIDs" } else { "" }),
+                    });
+                }
+            }
+        }
         if !inv.covers(&fk.table, &fk.columns) {
             let cols = fk.columns.join(", ");
             findings.push(Finding {
@@ -586,6 +715,20 @@ mod tests {
             "src/q.ts:not-in-subquery:not-in",
             "src/q.ts:offset:offset",
             "src/q.ts:select-star:select",
+        ]);
+    }
+
+    #[test]
+    fn flags_uuids_stored_as_text_and_keys_of_another_type() {
+        let got = check(&[
+            ("db/001.sql", "CREATE TABLE users (id uuid PRIMARY KEY DEFAULT gen_random_uuid());\nCREATE TABLE teams (id text PRIMARY KEY DEFAULT gen_random_uuid()::text);\nCREATE TABLE posts (id bigserial PRIMARY KEY, author_id text REFERENCES users(id), team_id text REFERENCES teams);\nCREATE INDEX posts_author ON posts (author_id);\nCREATE INDEX posts_team ON posts (team_id);\nCREATE TABLE likes (post_id integer REFERENCES posts, user_id uuid REFERENCES users);\nCREATE INDEX likes_post ON likes (post_id, user_id);\nCREATE INDEX likes_user ON likes (user_id);"),
+            ("prisma/schema.prisma", "datasource db {\n  provider = \"postgresql\"\n}\nmodel User {\n  id    String @id @default(uuid())\n  orgId String @db.Uuid\n}\nmodel Org {\n  id String @id @default(uuid()) @db.Uuid\n}\n"),
+        ]);
+        assert_eq!(got, vec![
+            "db/001.sql:fk-type:likes.post_id",
+            "db/001.sql:fk-type:posts.author_id",
+            "db/001.sql:uuid-as-text:teams.id",
+            "prisma/schema.prisma:uuid-as-text:User.id",
         ]);
     }
 }

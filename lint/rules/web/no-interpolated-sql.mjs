@@ -102,8 +102,6 @@ export function firstDynamic(parts, sourceCode, quotedOnly) {
   return undefined;
 }
 
-/** The static text of a built string. @param {({ text: string } | { expr: any })[]} parts */
-const staticText = (parts) => parts.map((p) => ("text" in p ? p.text : " ? ")).join("");
 
 export const id = "no-interpolated-sql";
 export const pack = "security";
@@ -124,7 +122,7 @@ export const rule = defineRule({
       const options = unwrap(arg)?.type === "ConditionalExpression" ? [unwrap(arg).consequent, unwrap(arg).alternate] : [arg];
       for (const option of options) {
         const parts = option && pieces(option, context.sourceCode);
-        if (!parts || !looksRight(staticText(parts))) continue;
+        if (!parts || !looksRight(parts.map((p) => ("text" in p ? p.text : " ? ")).join(""))) continue;
         const value = firstDynamic(parts, context.sourceCode, quotedOnly);
         if (value) return context.report({ node: value, messageId: "sql", data: { value: context.sourceCode.getText(value).slice(0, 40) } });
       }

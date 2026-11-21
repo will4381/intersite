@@ -176,7 +176,8 @@ test("wrapFetch records one case and hands the caller the response untouched", a
   assert.equal((await throwing("https://db.example.test/x")).status, 201);
   const failing = instance.wrapFetch(async () => { throw new TypeError("offline"); }, () => ({ route: "/x" }));
   await assert.rejects(failing("https://db.example.test/x"), { message: "offline" });
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  // The case is sent in the background: wait for it to arrive, up to a second.
+  for (let waited = 0; cases.length < 1 && waited < 1000; waited += 5) await new Promise((resolve) => setTimeout(resolve, 5));
   assert.equal(cases.length, 1);
 });
 

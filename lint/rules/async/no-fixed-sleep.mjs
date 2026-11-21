@@ -19,6 +19,34 @@ const isTestWait = (/** @type {any} */ node) =>
   (node.callee.property.name === "waitForTimeout" || (node.callee.property.name === "wait" && node.callee.object.name === "cy"));
 
 /**
+ * The test callback a node runs in directly (`it`, `test`, `beforeEach`…), or undefined. A wait inside a nested
+ * callback (a transaction body, a mock's implementation) or a loop simulates latency or polls, on purpose.
+ * @param {any} node
+ */
+function testCallback(node) {
+  for (let up = node.parent; up; up = up.parent) {
+    if (loops.has(up.type)) return undefined;
+    if (!up.type.endsWith("FunctionExpression") && up.type !== "FunctionDeclaration") continue;
+    if (up.parent?.type !== "CallExpression") return undefined;
+    const callee = up.parent.callee;
+    const name = callee.type === "Identifier" ? callee.name : callee.type === "MemberExpression" ? callee.object.name ?? callee.object.property?.name : undefined;
+    return /^(it|test|specify|beforeEach|afterEach|beforeAll|afterAll|before|after)$/.test(name ?? "") ? up : undefined;
+  }
+  return undefined;
+}
+
+/** Whether a node is anywhere inside a test or hook callback, however deeply nested. @param {any} node */
+function insideTest(node) {
+  for (let up = node.parent; up; up = up.parent) {
+    const callee = up.type === "CallExpression" ? up.callee : undefined;
+    const name = callee?.type === "Identifier" ? callee.name : callee?.type === "MemberExpression" ? callee.object.name : undefined;
+    if (/^(it|test|specify|beforeEach|afterEach|beforeAll|afterAll|describe)$/.test(name ?? "")) return true;
+  }
+  return false;
+}
+
+
+/**
  * `sleep(500)`, `delay(500)`, `setTimeout(500)` from timers/promises, or `new Promise((r) => setTimeout(r, 500))`.
  * @param {any} node
  */
@@ -42,6 +70,7 @@ export const rule = defineRule({
   meta: {
     type: "problem",
     messages: {
+      test: "A fixed wait in a test guesses how long the code takes: on a slow CI machine it races and flakes, and everywhere it adds its time to every run. Use fake timers (vi.useFakeTimers() / jest.useFakeTimers() / mock.timers, then advance them), or await the real event, promise or condition.",
       sleep: "A fixed sleep guesses how long something takes: too short and it races, too long and it wastes time. Wait for the real condition instead: await the event or promise, or poll the condition with a timeout.",
     },
   },
@@ -51,10 +80,11 @@ export const rule = defineRule({
      * (`await page.waitForTimeout(500); await expect(toast).not.toBeVisible();`), where a pause is the only way to tell.
      * @param {any} node @param {any} statement @param {any} block
      */
-    function checkTestWait(node, statement, block) {
+    function checkTestWait(node, statement, block, messageId = "sleep") {
+      // Unless the next statement asserts that something did not happen, where a pause is the only way to tell.
       const next = block.body?.[block.body.indexOf(statement) + 1];
-      if (next && /\.not\.|toHaveBeenCalledTimes\(0\)|toHaveLength\(0\)/.test(context.sourceCode.getText(next))) return;
-      context.report({ node, messageId: "sleep" });
+      if (next && /\.not\.|toHaveBeenCalledTimes\(0\)|toHaveLength\(0\)|\.equal\([^,]+, 0\)/.test(context.sourceCode.getText(next))) return;
+      context.report({ node, messageId });
     }
 
     return {
@@ -62,8 +92,11 @@ export const rule = defineRule({
         const statement = node.parent;
         const block = statement.parent;
         if (isTestWait(node.argument)) return checkTestWait(node, statement, block);
-        // In tests, smoke scripts and fixtures a short wait often proves something did not happen.
-        if (!isFixedSleep(node.argument) || isTestNamed(context)) return;
+        if (!isFixedSleep(node.argument)) return;
+        // Inside a test the wait is a guess at how long the code under test takes, unless it proves an absence.
+        if (testCallback(node)) return checkTestWait(node, statement, block, "test");
+        // Smoke scripts and fixtures outside a test callback pace or hold on purpose, as do waits nested inside a test.
+        if (isTestNamed(context) || insideTest(node)) return;
         // Only a sleep with more work after it is waiting for something. As the last statement it holds or paces.
         if (statement.type !== "ExpressionStatement" || block.type !== "BlockStatement" || block.body.at(-1) === statement) return;
         // A grace period that is then checked, `kill(pid); await sleep(1000); if (alive(pid)) ...`, is not a guess.
@@ -76,6 +109,11 @@ export const rule = defineRule({
         const fn = block.parent;
         if (fn.parent?.type === "CallExpression" && fn.parent.callee.property?.name === "catch") return;
         context.report({ node, messageId: "sleep" });
+      },
+      // `setTimeout(() => { expect(...) }, 500)` in a test: the assertion runs after a guessed delay, or after the test ended.
+      CallExpression(node) {
+        if (node.callee.type !== "Identifier" || node.callee.name !== "setTimeout" || !isDelay(node.arguments[1]) || node.parent.type !== "ExpressionStatement") return;
+        if (testCallback(node)) context.report({ node, messageId: "test" });
       },
     };
   },
@@ -90,6 +128,10 @@ export const bad = [
   "async function start() { spawn('server'); await sleep(2 * 1000); return connect(); }",
   "async function start() { spawn('server'); await Bun.sleep(1000); return connect(); }",
   "test('saves', async ({ page }) => { await page.click('text=Save'); await page.waitForTimeout(2000); await expect(page.getByText('Saved')).toBeVisible(); });",
+  "it('debounces', async () => { search('a'); await sleep(350); expect(fetch).toHaveBeenCalledTimes(1); });",
+  "test('retries', async () => { start(); await new Promise((r) => setTimeout(r, 100)); assert.equal(calls, 2); });",
+  "it('emits', (done) => { emitter.start(); setTimeout(() => { expect(seen).toBe(true); done(); }, 50); });",
+  "beforeEach(async () => { server.listen(); await delay(200); });",
 ];
 
 export const good = [
@@ -107,4 +149,9 @@ export const good = [
   "async function start() { await waitForPort(3000); }",
   "test('no toast', async ({ page }) => { await page.click('text=Save'); await page.waitForTimeout(500); await expect(page.getByText('Error')).not.toBeVisible(); });",
   "async function copy() { await navigator.clipboard.writeText(url); setTimeout(() => setCopied(false), 2000); }",
+  "it('debounces', async () => { vi.useFakeTimers(); search('a'); await vi.advanceTimersByTimeAsync(350); expect(fetch).toHaveBeenCalledTimes(1); });",
+  "test('stays quiet', async () => { start(); await sleep(100); expect(onError).not.toHaveBeenCalled(); });",
+  "it('saves', async () => { const saved = once(emitter, 'saved'); save(); await saved; });",
+  "it('serialises redemptions', async () => { await Promise.all([db.$transaction(async (tx) => { await sleep(300); await tx.redeem(); }), redeem()]); expect(points()).toBe(0); });",
+  "it('relays', async () => { for (let i = 0; i < 20 && !seen; i++) { await new Promise((r) => setTimeout(r, 100)); } expect(seen).toBe(true); });",
 ];

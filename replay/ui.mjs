@@ -142,7 +142,7 @@ export async function launchChrome(chromium, headed) {
     const browser = shell ?? (await chromium.launch({ channel: "chrome", headless: !headed }));
     return { browser, stop: () => browser.close() };
   } catch (error) {
-    throw new Error(`ui mode could not start Google Chrome; install it from https://www.google.com/chrome/ (${firstLine(error)})`);
+    throw new Error(`ui mode could not start Google Chrome; install it from https://www.google.com/chrome/ (${firstLine(error)})`, { cause: error });
   }
 }
 
@@ -155,7 +155,7 @@ async function connect(chromium, url) {
     const browser = await chromium.connectOverCDP(url, { timeout: 10_000 });
     return { browser, stop: () => browser.close() };
   } catch (error) {
-    throw new Error(`ui mode could not connect to replay.browserUrl ${url} (${firstLine(error)})`);
+    throw new Error(`ui mode could not connect to replay.browserUrl ${url} (${firstLine(error)})`, { cause: error });
   }
 }
 
@@ -187,7 +187,7 @@ async function startLightpanda(chromium) {
     } catch (error) {
       if (gone || Date.now() > end) {
         await stop();
-        throw new Error(gone ?? `ui mode could not connect to lightpanda on port ${port} (${firstLine(error)})`);
+        throw new Error(gone ?? `ui mode could not connect to lightpanda on port ${port} (${firstLine(error)})`, { cause: error });
       }
       await new Promise((done) => setTimeout(done, 100));
     }

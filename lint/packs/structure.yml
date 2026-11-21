@@ -21,3 +21,11 @@ rules:
 builtin:
   - { rule: unicorn/no-static-only-class, pack: design }
   - { rule: import/no-cycle, pack: design }
+  - { rule: eslint/eqeqeq, pack: slop, options: [always, { "null": ignore }] }
+  - { rule: eslint/no-fallthrough, pack: slop }
+  - { rule: eslint/no-self-compare, pack: slop }
+  - { rule: eslint/array-callback-return, pack: slop }
+  - { rule: eslint/no-case-declarations, pack: slop }
+  - { rule: unicorn/no-array-fill-with-reference-type, pack: slop }
+  - { rule: oxc/no-accumulating-spread, pack: perf }
+  - { rule: import/no-self-import, pack: design }

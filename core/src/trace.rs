@@ -269,6 +269,31 @@ fn combined(runs: &[Run], root: &Path) -> Timings {
     (per_fn, per_pkg)
 }
 
+/// The fastest and slowest self time of each function (by file and name) across runs, a run that missed it counting
+/// as zero, and the fastest and slowest wall time.
+type Spread = (HashMap<(String, String), (f64, f64)>, (f64, f64));
+
+fn spread(runs: &[Run], root: &Path) -> Spread {
+    // Per run, self time by file and name: lines move, and one name may have several frames.
+    let all: Vec<HashMap<(String, String), f64>> = runs
+        .par_iter()
+        .map(|r| {
+            let mut by_name: HashMap<(String, String), f64> = HashMap::new();
+            for ((file, name, _), (self_ms, _)) in timings(r, root).0 {
+                *by_name.entry((file, name)).or_default() += self_ms;
+            }
+            by_name
+        })
+        .collect();
+    let mut out: HashMap<(String, String), (f64, f64)> = HashMap::new();
+    for key in all.iter().flat_map(|m| m.keys()).cloned().collect::<std::collections::HashSet<_>>() {
+        let range = all.iter().map(|m| m.get(&key).copied().unwrap_or(0.0)).fold((f64::INFINITY, 0.0), |(lo, hi): (f64, f64), v| (lo.min(v), hi.max(v)));
+        out.insert(key, range);
+    }
+    let walls = runs.iter().map(|r| r.wall_ms).fold((f64::INFINITY, 0.0), |(lo, hi): (f64, f64), v| (lo.min(v), hi.max(v)));
+    (out, walls)
+}
+
 pub fn run(request: &Request) -> Result<Answer, String> {
     let options: Options = serde_json::from_value(request.options.clone()).map_err(|e| format!("trace options: {e}"))?;
     if options.runs.is_empty() {
@@ -298,9 +323,17 @@ pub fn run(request: &Request) -> Result<Answer, String> {
     let mut findings = Vec::new();
     let mut slower = Vec::new();
     let mut wall_base = 0.0;
+    let mut inconclusive = Vec::new();
+    let (now_spread, wall_range) = spread(&options.runs, &root);
+    let mut base_wall_range = (0.0, 0.0);
     if !options.base_runs.is_empty() {
         let base_root = options.base_root.as_ref().map(PathBuf::from).unwrap_or_else(|| root.clone());
         let (base, _) = combined(&options.base_runs, &base_root);
+        let (base_spread, base_walls) = spread(&options.base_runs, &base_root);
+        base_wall_range = base_walls;
+        // With two or more runs a side, a difference counts only when the ranges do not overlap: the fastest run now
+        // is slower than the slowest run on the base. Otherwise the medians differ by noise as often as by code.
+        let ranged = options.runs.len() >= 2 && options.base_runs.len() >= 2;
         wall_base = median(options.base_runs.iter().map(|r| r.wall_ms).collect());
         // Lines move between commits; a function is the same function by file and name.
         let base_by_name: HashMap<(&str, &str), f64> = base.iter().map(|((f, n, _), (s, _))| ((f.as_str(), n.as_str()), *s)).collect();
@@ -310,6 +343,13 @@ pub fn run(request: &Request) -> Result<Answer, String> {
                 continue;
             }
             if s - before >= options.min_ms && (before == 0.0 || (s - before) / before >= options.min_share) {
+                let key = (file.clone(), name.clone());
+                let fastest_now = now_spread.get(&key).map_or(*s, |r| r.0);
+                let slowest_base = base_spread.get(&key).map_or(before, |r| r.1);
+                if ranged && fastest_now <= slowest_base {
+                    inconclusive.push(serde_json::json!({ "file": file, "name": name, "line": line, "baseMs": round(before), "nowMs": round(*s), "nowFastestMs": round(fastest_now), "baseSlowestMs": round(slowest_base) }));
+                    continue;
+                }
                 slower.push(serde_json::json!({ "file": file, "name": name, "line": line, "baseMs": round(before), "nowMs": round(*s) }));
                 let was = if before >= 1.0 { format!("{before:.0}ms on the base (+{:.0}%)", (s - before) / before * 100.0) } else { "under 1ms on the base".into() };
                 findings.push(Finding {
@@ -327,8 +367,11 @@ pub fn run(request: &Request) -> Result<Answer, String> {
         "hot": hot,
         "dependencies": deps.iter().map(|(n, ms)| serde_json::json!({ "name": n, "selfMs": ms })).collect::<Vec<_>>(),
         "slower": slower,
+        "inconclusive": inconclusive,
         "wallMs": round(wall_now),
+        "wallRange": [round(wall_range.0), round(wall_range.1)],
         "baseWallMs": round(wall_base),
+        "baseWallRange": [round(base_wall_range.0), round(base_wall_range.1)],
     });
     let summary = format!("{} project functions touched; {} runs", data["touched"].as_array().map_or(0, |a| a.len()), options.runs.len());
     Ok(Answer { findings, summary, data: Some(data) })

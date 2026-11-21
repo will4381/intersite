@@ -18,8 +18,6 @@ function hasPassword(node) {
   return found;
 }
 
-/** `createHash('sha256').update(x)`: the hash object `update` is called on. @param {any} callee */
-const onCreateHash = (callee) => calleeName(unwrap(callee.object)) === "createHash";
 
 export const id = "no-fast-password-hash";
 export const pack = "security";
@@ -38,7 +36,7 @@ export const rule = defineRule({
         const [first, second] = /** @type {any[]} */ (node.arguments);
         const member = node.callee.type === "MemberExpression";
         const hashed =
-          (member && name === "update" && onCreateHash(node.callee) && first) ||
+          (member && name === "update" && calleeName(unwrap(node.callee.object)) === "createHash" && first) ||
           (member && name === "digest" && receiverName(node) === "subtle" && second) ||
           (HASH_FN.test(name) && (!member || /^(CryptoJS|crypto_js|hash)$/i.test(receiverName(node))) && first);
         if (hashed && hasPassword(hashed)) context.report({ node, messageId: "fast" });

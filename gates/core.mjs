@@ -3,10 +3,10 @@
 // then called with one JSON request per check. Paths in requests and answers are relative to the repository top.
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { GateError } from "./lib.mjs";
+import { GateError, JS_FILE, NOT_PRODUCT, SKIP, changeOf, listFiles, matches } from "./lib.mjs";
 
 const crate = fileURLToPath(new URL("../core/", import.meta.url));
 const binary = join(crate, "target", "release", process.platform === "win32" ? "intersite-core.exe" : "intersite-core");
@@ -38,4 +38,19 @@ export function runCore(request) {
   const run = spawnSync(ensureCore(), [], { input: JSON.stringify(request), encoding: "utf8", maxBuffer: 1 << 30 });
   if (run.status !== 0) throw new GateError((run.stderr || `intersite-core exited with ${run.status}`).trim().replace(/^intersite-core: /, ""));
   return JSON.parse(run.stdout);
+}
+
+/**
+ * A gate the engine answers by reading every product source file in the repository, reporting only on the lines the
+ * change added (or on everything without a base): `regex`, `decisions`. Paths come back relative to the project.
+ * @param {string} command @param {import("./lib.mjs").GateOptions} options
+ * @returns {import("./lib.mjs").GateResult}
+ */
+export function productCodeGate(command, { cwd, base, testPaths }) {
+  const { whole, top, prefix, added } = changeOf(cwd, base);
+  if (!whole && ![...added.keys()].some((f) => JS_FILE.test(f))) return { findings: [], summary: "no added code" };
+  const files = listFiles(top).filter((f) => JS_FILE.test(f) && !SKIP.test(f) && !NOT_PRODUCT.test(f) && !matches(f, testPaths));
+  const answer = runCore({ command, root: top, files, added: whole ? undefined : Object.fromEntries(added), prefix });
+  const name = (/** @type {string} */ file) => posix.relative(prefix || ".", file);
+  return { findings: answer.findings.map((f) => ({ target: f.target.replace(f.file, name(f.file)), message: f.message.replaceAll(f.file, name(f.file)) })), summary: answer.summary };
 }

@@ -197,6 +197,18 @@ export function patchPath(line) {
 }
 
 /**
+ * The change a gate judges, read once: the base commit, whether there is no base (judge everything), the repository
+ * top, the project's folder within it, and the lines added per file, keyed by repository path.
+ * @param {string} cwd @param {string} base
+ */
+export function changeOf(cwd, base) {
+  const sha = resolveBase(cwd, base);
+  const prefix = projectPrefix(cwd);
+  const [patch] = workingDiff(cwd, [["-U0", "-M", sha]]);
+  return { sha, whole: sha === EMPTY_TREE, top: topLevel(cwd), prefix, patch, added: new Map([...addedLines(patch)].map(([file, lines]) => [prefix + file, [...lines]])) };
+}
+
+/**
  * New-file line numbers of the lines added in a `-U0` patch, per path.
  * @param {string} patch
  */

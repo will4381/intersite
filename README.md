@@ -43,8 +43,11 @@ In a monorepo, install `intersite`, `oxlint` and `@oxlint/plugins` once at the r
 | `naming` | A file or folder named against the casing, suffix or test pattern its siblings keep, or unlike its main export | git |
 | `style-drift` | A colour, size or token that is almost one the project already has, or off a scale it keeps closed | git |
 | `value-drift` | Copy, an API description or a comment that states a fee, rate or price ("1.5% + $0.30 per payment") the constant of the same name no longer holds, or one money rate set to two values in two files | git |
-| `sql` | SQL that locks or breaks a live table (`NOT NULL` with no default, an index built without `CONCURRENTLY`, a dropped column), a foreign key with no index, slow or wrong queries (`LIKE '%x'`, `OFFSET` paging, `NOT IN` a subquery, `UPDATE` with no `WHERE`), and queries run once per loop item. With `INTERSITE_DATABASE_URL`, new queries are planned against that database and a scan of a big table names the index to add | git |
+| `sql` | SQL that locks or breaks a live table (`NOT NULL` with no default, an index built without `CONCURRENTLY`, a dropped column), a foreign key with no index or of a different type than the key it points at, UUIDs stored as text (SQL and Prisma), slow or wrong queries (`LIKE '%x'`, `OFFSET` paging, `NOT IN` a subquery, `UPDATE` with no `WHERE`), and queries run once per loop item. With `INTERSITE_DATABASE_URL`, new queries are planned against that database and a scan of a big table names the index to add | git |
 | `regex` | A regular expression whose backtracking can hang the process on a crafted input, and an email, phone, UUID or URL validator written differently in two places | git |
+| `decisions` | One decision made in several files: an environment variable read in three or more files outside the env module, a feature flag checked in three or more, or a dispatch over the same `kind`/`type` values repeated in three or more (per package) | git |
+| `renames` | An identifier renamed in code whose old name is still written in strings, comments or docs | git |
+| `schema-drift` | An interface or object type that restates the keys of a zod, valibot, yup or TypeBox schema or a Drizzle table by hand, with the derived type to write instead | git |
 | `artifacts` | Leftovers: backup and `_v2` copies, scratch scripts, logs, stray `PLAN.md` and `SUMMARY.md` files | git |
 | `unused` | A file or export this change added that nothing uses, or a file it orphaned | git |
 | `protected` | A change to paths you marked as protected (money, access) with no test changed alongside | git and a `gates.protected` rule |
@@ -59,7 +62,9 @@ relative to it, and still reports a copy of code that lives in a shared package.
 have their own.
 
 Two more gates run the tests and are opt-in through `gates.run`: `fails-on-base` (a bug fix's new test must fail
-without the fix) and `mutation` (a deliberate break on a changed line must make a test fail).
+without the fix) and `mutation` (a deliberate break on a changed line must make a test fail). With `gates.testCmd`
+set, `check --full` adds `fails-on-base` on its own when the branch name or a commit message since the base says
+fix, bug, hotfix or regression.
 
 ### Your own checks in the same run
 
@@ -95,7 +100,7 @@ A change that touches `paths` fails unless it also changes a file under `needs` 
 
 ### The whole repository, not only the change
 
-`duplicates`, `similar`, `unused`, `naming`, `style-drift`, `value-drift`, `sql`, `regex` and `artifacts` judge a change. `--all` points them at
+`duplicates`, `similar`, `unused`, `naming`, `style-drift`, `value-drift`, `sql`, `regex`, `decisions`, `schema-drift` and `artifacts` judge a change. `--all` points them at
 every file; record what is there today and only new findings fail, as with lint:
 
 ```bash
@@ -181,8 +186,12 @@ A deliberate exception is always written down where a reviewer sees it: `gates.a
 A rule is one YAML entry: a syntax-tree `selector` (or a `comment` pattern, for rules about comments), a message
 that says what to do instead, and examples.
 
-**Type-aware rules.** `lint.typeAware: true` also runs oxlint's type-aware rules for promises nobody awaits
-(`typescript/no-floating-promises`, `no-misused-promises`, `await-thenable`), which replace ESLint's. It needs the
+**Type-aware rules.** `lint.typeAware: true` also runs oxlint's type-aware rules: promises nobody awaits
+(`typescript/no-floating-promises`, `no-misused-promises`, `await-thenable`), a `switch` over a union that misses a
+member (`switch-exhaustiveness-check`), a cast to the type a value already has (`no-unnecessary-type-assertion`), a
+check that can never fail because the type already rules it out, such as data checked where it came in and checked
+again inside (`no-unnecessary-condition`), and a returned promise not awaited inside `try`, which skips the `catch`
+(`return-await`). It needs the
 `oxlint-tsgolint` package and a `tsconfig.json`, and it is slower than plain lint, so it is off by default.
 
 **Different rules per folder.** Keep one `.oxlintrc.json` and scope rules with `overrides`. An override takes
@@ -201,21 +210,21 @@ that says what to do instead, and examples.
 
 | Pack | Default | Catches |
 | --- | --- | --- |
-| `tests` | on | Tests that cannot fail: no assertion, constant or mock-only assertions, skips, module mocking |
-| `slop` | on | Swallowed errors, fake fallback values, `any` and double casts, commented-out code, elision and placeholder comments, comments that restate the next line or narrate an edit, emoji and "here" debug logs, throwaway names (`data2`, `fetchUserV2` beside `fetchUser`), mock data and placeholder copy in source |
-| `design` | on | Over-engineering and tangles: import cycles, nesting past 4 levels, functions over 80 statements, more than 5 parameters, `if` chains that are a lookup table written as code, the same few statements repeated with new names a few lines apart, runs of 20+ statements over 40+ lines with no blank line, boolean-flag arguments, tangled ternaries, pass-through functions and components, one-implementation interfaces, classes that should be functions |
-| `async` | on | Async callbacks nobody awaits, `fetch` without a status check, rethrows that drop the original error, fixed sleeps, success returned from a catch, exponential backoff (`2 ** attempt`) written outside the project's retry helper |
-| `perf` | on | In files named `*.hot.ts` or `*.hot.tsx` (code that runs on every request): regular expressions built inside functions, dynamic `import()`, deep copies (`structuredClone`, JSON round trips), work at module scope. A project with no `.hot.` files is unaffected |
-| `react` | on | Effects that only derive state, racy fetches in effects, pointless memoisation, components defined inside components, twelve or more states in one component, needless `"use client"`, hook dependency mistakes, impure render (random values or the clock read in render, refs read during render, mutated props or state) |
+| `tests` | on | Tests that cannot fail: no assertion, constant or mock-only assertions, skips, module mocking; an expected value computed by the function under test; tests that only check something did not happen, with no test beside them showing it does; assertions on an error's exact wording; fixed waits (`sleep`, `setTimeout`) inside a test instead of fake timers or the real event; an `expect.poll` nobody awaits |
+| `slop` | on | Swallowed errors, a try around code that cannot throw or around a whole function only to rethrow "Failed", alibi comments (`do not remove`, `fine for now`), suppressions of security or test rules (a comment cannot waive those), `==` (but `== null`), switch fallthrough, self-comparison, fake fallback values, `any` and double casts, commented-out code, elision and placeholder comments, comments that restate the next line or narrate an edit, emoji and "here" debug logs, throwaway names (`data2`, `fetchUserV2` beside `fetchUser`), mock data and placeholder copy in source |
+| `design` | on | Over-engineering and tangles: a short helper called once (write it where it is used), a module exporting eight or more functions that average under two statements (a wide interface over little work), import cycles, a module importing itself, nesting past 4 levels, functions over 80 statements, more than 5 parameters, `if` chains that are a lookup table written as code, the same few statements repeated with new names a few lines apart, runs of 20+ statements over 40+ lines with no blank line, boolean-flag arguments, tangled ternaries, pass-through functions and components, one-implementation interfaces, classes that should be functions |
+| `async` | on | Async callbacks nobody awaits, `fetch` without a status check, rethrows that drop the original error (or its `cause`), a promise that resolves twice, fixed sleeps, success returned from a catch, exponential backoff (`2 ** attempt`) written outside the project's retry helper |
+| `perf` | on | Everywhere: spreading the accumulator in `reduce` (quadratic). In files named `*.hot.ts` or `*.hot.tsx` (code that runs on every request): regular expressions built inside functions, dynamic `import()`, deep copies (`structuredClone`, JSON round trips), work at module scope. A project with no `.hot.` files is unaffected |
+| `react` | on | `target="_blank"` links without `rel`, `javascript:` URLs, effects that only derive state, racy fetches in effects, pointless memoisation, components defined inside components, twelve or more states in one component, needless `"use client"`, hook dependency mistakes, impure render (random values or the clock read in render, refs read during render, mutated props or state) |
 | `security` | on | Live credentials, default secrets, secrets behind public env prefixes or in logs, SQL and shell commands built from strings, request bodies written straight to the database, `Math.random` tokens, disabled TLS checks, open redirects, unverified Stripe webhooks |
 | `next` | on | Server-only env read in a client file, server actions that write with no auth check |
 | `state` | on | Implicit state machines: three or more boolean flags doing one state's job |
-| `types` | on | Casts on outside data (`JSON.parse(x) as T`, `res.json() as T`, `req.body as T`, `process.env.X as string`), `!` on env, URL, header and storage values and on `find()`, type guards that check nothing, `{...} as T` where `satisfies` would check it, `as never`, `T extends any` |
+| `types` | on | Two casts in a row, exported functions returning `unknown` or taking `Record<string, unknown>` past the parse, `Reflect.get`/`apply` dodging types, brands stamped on with `as`, `throw new Error("should never happen")` where a type should rule the case out, casts on outside data (`JSON.parse(x) as T`, `res.json() as T`, `req.body as T`, `process.env.X as string`), `!` on env, URL, header and storage values and on `find()`, type guards that check nothing, `{...} as T` where `satisfies` would check it, `as never`, `T extends any` |
 | `validation` | on | Request input reaching a write, query or mail call unchecked, a parsed result thrown away while the raw value is used, `Number()`/`parseInt` on input with no NaN check, page sizes with no maximum, unguarded `JSON.parse(localStorage…)`, raw env reads beside a validated env module |
 | `naming` | on | Hook names that lie, lowercase components and types, type words in names (`isLoadingBoolean`), one word cased two ways (`userId` with `userID`), snake_case pasted into camelCase files, abbreviation soup, names over 56 characters, reassigned `UPPER_SNAKE` constants |
 | `globals` | on | State on `window`/`globalThis`, exported `let` and exported empty Map/Set/array stores, hand-rolled `getInstance()` singletons |
 | `ui` | on | Where the project has tokens or a Tailwind theme: hardcoded colours, type values (size, weight, line height, family), spacing, radius and z-index; raw palette classes; static inline styles; raw controls hand-styled beside the project's own `Button`/`Input`; images without `alt`, clickable `div`s, invalid ARIA, empty links and headings, untitled iframes, positive `tabIndex` |
-| `orm` | on | Drizzle and Prisma: queries on the outer client inside a transaction, update or delete with no `where`, find-then-create races, one lookup per loop item, a `status` or `state` update whose `where` does not check the current state |
+| `orm` | on | Drizzle and Prisma: a Postgres `text` column filled with generated UUIDs (use `uuid()`), queries on the outer client inside a transaction, update or delete with no `where`, find-then-create races, one lookup per loop item, a `status` or `state` update whose `where` does not check the current state |
 | `query` | on | TanStack Query: a `queryKey` missing values the `queryFn` reads, a `queryFn` asserting `id!` with no `enabled` |
 | `workers` | on | Cloudflare Workers: promises neither awaited nor passed to `waitUntil`, destructured `ctx.waitUntil` |
 | `supabase` | on | Supabase results whose `error` is never read, `auth.getSession()` trusted on the server |
@@ -226,7 +235,7 @@ that says what to do instead, and examples.
 | `swift` | on | Swift through SwiftLint (`brew install swiftlint`): force `try` and force unwraps, empty `catch` and discarded `try?`, `print` logging, stub `fatalError`s, fixed `asyncAfter` delays, `Task` in `onAppear`, `AnyView`, flag clusters, deprecated SwiftUI APIs, fixed font sizes and raw colours outside design-system files, secrets in source or `UserDefaults`, type and identifier casing, view builders over 100 lines or nested past 7 levels, more than 12 `@State` properties, notification event buses and discarded observers, settable singletons, strong `self` in subscriptions and timers, redundant main-queue hops, generic `MARK`s, restating comments |
 | `runtime` | opt-in | Module-level mutable state, which leaks between requests on serverless |
 | `actions` | opt-in | Clickable elements with no `data-intersite` name |
-| `comments` | opt-in | Comments without a tag: a comment must open with `SAFETY:` (an invariant the code relies on), `PROVIDER:` (how an outside service behaves) or `ponytail:` (a known limit), or be a tool directive (a reasoned suppression, a JSDoc type, a bundler hint); and every type cast but `as const` needs a `SAFETY:` comment |
+| `comments` | opt-in | Comments without a tag: a comment must open with `SAFETY:` (an invariant the code relies on), `PROVIDER:` (how an outside service behaves) or `ponytail:` (a known limit), or be a tool directive (a reasoned suppression, a JSDoc type, a bundler hint), a contract (a doc block with `@throws`, `@example`, `@deprecated` or `@see`) or a link to the issue, pull request or RFC behind the code; and every type cast but `as const` needs a `SAFETY:` comment |
 
 A pack can also switch on rules oxlint already ships (`builtin:` in a pack file), and `lint.rules` turns any single
 rule off, or on, by name: `lint.rules: { require-comment-tag: error }` turns on one opt-in rule without restating

@@ -68,3 +68,6 @@ rules:
 builtin:
   - { rule: eslint/no-async-promise-executor, pack: async }
   - { rule: eslint/no-useless-catch, pack: async }
+  - { rule: eslint/preserve-caught-error, pack: async }
+  - { rule: promise/no-multiple-resolved, pack: async }
+  - { rule: unicorn/no-useless-promise-resolve-reject, pack: async }

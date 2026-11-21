@@ -1,11 +1,15 @@
 // @ts-check
 // Rules a selector cannot express. Add a rule here after writing lint/rules/<id>.mjs.
+import * as noAbsenceOnlyTest from "./no-absence-only-test.mjs";
 import * as noBooleanStateCluster from "./no-boolean-state-cluster.mjs";
 import * as noChangeNarration from "./no-change-narration.mjs";
 import * as noCommentedOutCode from "./no-commented-out-code.mjs";
 import * as noConditionalAssertion from "./no-conditional-assertion.mjs";
+import * as noDefensiveTry from "./no-defensive-try.mjs";
+import * as noDerivedExpectation from "./no-derived-expectation.mjs";
 import * as noElidedCode from "./no-elided-code.mjs";
 import * as noEmptyCatch from "./no-empty-catch.mjs";
+import * as noGuardSuppression from "./no-guard-suppression.mjs";
 import * as noHotPathOverhead from "./no-hot-path-overhead.mjs";
 import * as noLintSuppression from "./no-lint-suppression.mjs";
 import * as noMockOnlyAssertions from "./no-mock-only-assertions.mjs";
@@ -26,12 +30,16 @@ import validationRules from "./validation/index.mjs";
 import webRules from "./web/index.mjs";
 
 export default [
+  noAbsenceOnlyTest,
   noBooleanStateCluster,
   noChangeNarration,
   noCommentedOutCode,
   noConditionalAssertion,
+  noDefensiveTry,
+  noDerivedExpectation,
   noElidedCode,
   noEmptyCatch,
+  noGuardSuppression,
   noHotPathOverhead,
   noLintSuppression,
   noMockOnlyAssertions,

@@ -6,8 +6,6 @@ import { calleeName, constInit, enclosingFunction, mentions, resolveVariable, un
 /** What a file must spell for this rule to have anything to report (see `mentions`). */
 const NEEDS = /credentials/i;
 
-/** @param {any} property */
-const key = (property) => String(property.key?.name ?? property.key?.value ?? "").toLowerCase();
 
 /** `req.headers.origin`, `request.headers.get('origin')`, `req.get('origin')`, `c.req.header('origin')`. */
 const ORIGIN_READ = /headers\s*(\.\s*origin\b|\[\s*['"]origin['"]\s*\]|\.get\(\s*['"]origin['"])|\b(get|header)\(\s*['"]origin['"]\s*\)/i;
@@ -63,7 +61,7 @@ export const rule = defineRule({
       ObjectExpression(node) {
         /** @type {Map<string, any>} */
         const props = new Map();
-        for (const p of /** @type {any[]} */ (node.properties)) if (p.type === "Property") props.set(key(p), p.value);
+        for (const p of /** @type {any[]} */ (node.properties)) if (p.type === "Property") props.set(String(p.key?.name ?? p.key?.value ?? "").toLowerCase(), p.value);
         // cors({ origin: true, credentials: true }) and Fastify's @fastify/cors
         if (props.get("credentials")?.value === true && allowsAll(props.get("origin"))) return context.report({ node, messageId: "open" });
         // Hand-written headers that echo whatever Origin the request sent.

@@ -16,7 +16,86 @@ rules:
       - const users = rows.map((r) => r.user).filter(isUser);
       - const names = list.filter(isActive).map((x) => x.name) as string[];
       - const kind = z.enum(KINDS.filter((k) => k !== 'draft') as [Kind, ...Kind[]]);
+  - id: no-chained-cast
+    pack: types
+    skip: [tests, generated]
+    selector: ":matches(TSAsExpression, TSTypeAssertion)[expression.type=/^(TSAsExpression|TSTypeAssertion)$/]:not([expression.typeAnnotation.type=/^TS(Unknown|Any)Keyword$/]):not([expression.typeAnnotation.typeName.name='const']):not([typeAnnotation.typeName.name='const'])"
+    message: "Two casts in a row: the first widens the value so the second can claim a type the compiler would refuse, and nothing checks either claim. Parse or check the value into the type you need, or fix the type at its source."
+    bad:
+      - "const user = (row as Record<string, string>) as User;"
+      - "const id = (input as string as UserId);"
+      - "const n = <number>(<object>value);"
+    good:
+      - "const user = row as User;"
+      - "const user = (row as unknown) as User;"
+      - "const tags = ['a', 'b'] as const;"
+      - "const user = parseUser(row);"
+  - id: no-unknown-return
+    pack: types
+    skip: [tests, generated]
+    selector: ":matches(ExportNamedDeclaration > FunctionDeclaration, ExportNamedDeclaration > VariableDeclaration > VariableDeclarator > :matches(ArrowFunctionExpression, FunctionExpression)) > TSTypeAnnotation > :matches(TSUnknownKeyword, TSTypeReference[typeName.name=/^Promise(Like)?$/]:has(TSUnknownKeyword))"
+    message: "This exported function returns unknown, so every caller has to check or cast the result itself, and each does it differently. Parse the value here, once, and return its real type (a schema's output, a union with an error case)."
+    bad:
+      - "export function readConfig(path: string): unknown { return JSON.parse(readFileSync(path, 'utf8')); }"
+      - "export const fetchUser = async (id: string): Promise<unknown> => (await fetch(`/users/${id}`)).json();"
+    good:
+      - "export function readConfig(path: string): Config { return ConfigSchema.parse(JSON.parse(readFileSync(path, 'utf8'))); }"
+      - "function raw(path: string): unknown { return JSON.parse(readFileSync(path, 'utf8')); }"
+      - "export function isUser(value: unknown): value is User { return UserSchema.safeParse(value).success; }"
+  - id: no-loose-record-in-signature
+    pack: types
+    skip: [tests, generated]
+    selector: ":matches(ExportNamedDeclaration > FunctionDeclaration[id.name!=/^(parse|validate|decode|sanitize|is|assert|log|serialize|stringify)/], ExportNamedDeclaration > VariableDeclaration > VariableDeclarator[id.name!=/^(parse|validate|decode|sanitize|is|assert|log|serialize|stringify)/] > :matches(ArrowFunctionExpression, FunctionExpression)) > Identifier > TSTypeAnnotation > TSTypeReference[typeName.name='Record'][typeArguments.params.0.type='TSStringKeyword'][typeArguments.params.1.type=/^TS(Unknown|Any|Object)Keyword$/], :matches(ExportNamedDeclaration > FunctionDeclaration[id.name!=/^(parse|validate|decode|sanitize|is|assert|log|serialize|stringify)/], ExportNamedDeclaration > VariableDeclaration > VariableDeclarator[id.name!=/^(parse|validate|decode|sanitize|is|assert|log|serialize|stringify)/] > :matches(ArrowFunctionExpression, FunctionExpression)) > AssignmentPattern > Identifier > TSTypeAnnotation > TSTypeReference[typeName.name='Record'][typeArguments.params.0.type='TSStringKeyword'][typeArguments.params.1.type=/^TS(Unknown|Any|Object)Keyword$/], :matches(ExportNamedDeclaration > FunctionDeclaration[id.name!=/^(parse|validate|decode|sanitize|is|assert|log|serialize|stringify)/], ExportNamedDeclaration > VariableDeclaration > VariableDeclarator[id.name!=/^(parse|validate|decode|sanitize|is|assert|log|serialize|stringify)/] > :matches(ArrowFunctionExpression, FunctionExpression)) > TSTypeAnnotation > TSTypeReference[typeName.name='Record'][typeArguments.params.0.type='TSStringKeyword'][typeArguments.params.1.type=/^TS(Unknown|Any|Object)Keyword$/]"
+    message: "Record<string, unknown> in an exported signature passes unparsed data past the boundary: every caller and callee reads keys the compiler cannot check. Parse it where it comes in and pass the parsed type; a loose record belongs only in the parse function."
+    bad:
+      - "export function createUser(input: Record<string, unknown>) { return db.user.create({ data: input }); }"
+      - "export const render = (props: Record<string, any>): Record<string, unknown> => ({ ...props });"
+    good:
+      - "export function createUser(input: NewUser) { return db.user.create({ data: input }); }"
+      - "export function parseUser(input: Record<string, unknown>): User { return UserSchema.parse(input); }"
+      - "export const counts: Record<string, number> = {};"
+      - "export function tally(words: string[]): Record<string, number> { return {}; }"
+      - "export function fail(code: string, opts?: { details?: Record<string, unknown> }) { throw new AppError({ code, ...opts }); }"
+      - "export const Editor = () => { const onInvalid = (errors: Record<string, unknown>) => Object.keys(errors); return onInvalid; };"
+  - id: no-reflect-escape
+    needs: 'Reflect'
+    pack: types
+    skip: [generated]
+    selector: "CallExpression[callee.object.name='Reflect'][callee.property.name=/^(get|apply|set)$/]:not(:matches(Property, MethodDefinition)[key.name=/^(get|set|apply|has|construct|deleteProperty|defineProperty|ownKeys)$/] *)"
+    message: "Reflect.get / apply / set reaches a property or calls a function the type system cannot follow, so a renamed field or a changed signature still compiles. Read the property or call the function directly; if its name is dynamic, keep the possible names in a union type."
+    bad:
+      - "const value = Reflect.get(config, key);"
+      - "Reflect.apply(handler, undefined, [event]);"
+    good:
+      - "const value = config[key as keyof Config];"
+      - "const proxy = new Proxy(target, { get(t, prop, receiver) { track(prop); return Reflect.get(t, prop, receiver); } });"
+  - id: no-brand-cast
+    needs: 'brand|__type'
+    pack: types
+    skip: [tests, generated]
+    selector: ":matches(TSAsExpression, TSTypeAssertion) > TSIntersectionType TSPropertySignature[key.name=/^_+(brand|type)$/]"
+    message: "A brand written into a cast stamps the value as checked without checking it, and each cast site repeats the brand by hand. Declare the branded type once, and create it in one function that validates the value (a schema's .brand(), or a parse function that throws)."
+    bad:
+      - "const id = raw as string & { __brand: 'UserId' };"
+      - "const cents = <number & { readonly _brand: 'Cents' }>amount;"
+    good:
+      - "type UserId = string & { readonly __brand: 'UserId' };\nexport const toUserId = (raw: string): UserId => { if (!UUID.test(raw)) throw new Error(`not a user id: ${raw}`); return raw as UserId; };"
+      - "const UserId = z.string().uuid().brand<'UserId'>();"
+  - id: no-unreachable-throw
+    needs: '[Nn]ever|[Uu]nreachable|UNREACHABLE|[Ii]mpossible|[Ss]hould not|[Ss]houldn|happen|reachable'
+    pack: types
+    skip: [tests, generated]
+    selector: "ThrowStatement:not(SwitchCase[test=null] > ThrowStatement):not(SwitchCase[test=null] > BlockStatement > ThrowStatement) > NewExpression[arguments.0.value=/^([Tt]his )?([Ss]hould never happen|[Ss]hould not happen|[Ss]houldn'?t happen|[Cc]an'?t happen|[Cc]annot happen|[Uu]nreachable|UNREACHABLE|[Ii]mpossible|[Nn]ot reachable)/]"
+    message: "A throw for a case that \"cannot happen\" is a type that allows it. Tighten the type so the case does not exist: narrow the input (a non-empty tuple, a discriminated union), parse at the boundary, or end an exhaustive switch with `const unreachable: never = value`."
+    bad:
+      - "export function first(items: string[]) { if (items.length === 0) throw new Error('should never happen'); return items[0]; }"
+      - "if (!user) throw new Error('Unreachable');"
+    good:
+      - "switch (shape.kind) { case 'circle': return area(shape); default: throw new Error('unreachable'); }"
+      - "export function first(items: [string, ...string[]]) { return items[0]; }"
+      - "if (!user) throw new Error(`user ${id} not found`);"
 builtin:
   - { rule: typescript/no-unsafe-function-type, pack: types }
   - { rule: typescript/no-wrapper-object-types, pack: types }
   - { rule: typescript/no-unnecessary-type-constraint, pack: types }
+  - { rule: typescript/no-confusing-non-null-assertion, pack: types }

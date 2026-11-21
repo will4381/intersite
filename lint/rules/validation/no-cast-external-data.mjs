@@ -67,8 +67,6 @@ function claimed(type) {
   return HONEST.test(name ?? "") ? "" : name ?? "type";
 }
 
-/** A function's declared return type when its returns would carry outside data through it. @param {any} fn */
-const returnType = (fn) => fn?.returnType?.typeAnnotation;
 
 export const id = "no-cast-external-data";
 export const pack = "types";
@@ -123,7 +121,7 @@ export const rule = defineRule({
       // async function getUser(): Promise<User> { return res.json(); }
       ReturnStatement(node) {
         if (!node.argument || node.argument.type === "TSAsExpression") return;
-        check(node, node.argument, returnType(enclosingFunction(node)), true);
+        check(node, node.argument, enclosingFunction(node)?.returnType?.typeAnnotation, true);
       },
     };
   },

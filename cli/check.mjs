@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 
-import { GateError, changes, inGit, matches, resolveBase } from "../gates/lib.mjs";
+import { EMPTY_TREE, GateError, changes, git, inGit, matches, resolveBase } from "../gates/lib.mjs";
 import { answers } from "../replay/run.mjs";
 import { loadConfig } from "../shared/config.mjs";
 import { WHOLE } from "./gate.mjs";
@@ -87,9 +87,14 @@ export default async function check(argv, { cwd }) {
       if (!(error instanceof GateError)) throw error;
     }
   }
+  // A bug fix must come with a test that fails without it. When the change says it is a fix and the project has a test
+  // command, fails-on-base joins the slow stages, so `--full` proves the new test catches the bug.
+  const proveFix = git && config.gates.testCmd && !config.gates.run.includes("fails-on-base") && !skip.has("fails-on-base") && isFix(cwd, flags.base ?? config.gates.base);
+  if (proveFix && (flags.full || flags.all)) stages.push({ name: "fails-on-base", command: "gate", argv: ["fails-on-base", ...base] });
   const applies = config.checks.filter((check) => !skip.has(check.name) && (!changed || !check.when.length || changed.some((path) => matches(path, check.when))));
   const waiting = applies.filter((check) => check.slow && !flags.full && !flags.all);
-  if (waiting.length) console.log(`skip ${waiting.map((check) => check.name).join(", ")}: slow, run with \`intersite check --full\``);
+  const slowNames = [...waiting.map((check) => check.name), ...(proveFix && !flags.full && !flags.all ? ["fails-on-base"] : [])];
+  if (slowNames.length) console.log(`skip ${slowNames.join(", ")}: slow, run with \`intersite check --full\``);
   stages.push(...applies.filter((check) => !waiting.includes(check)).map((check) => ({ name: check.name, command: "check", argv: [], check })));
   if (config.replay.enabled && !skip.has("replay")) {
     if (!existsSync(resolve(cwd, config.replay.adapter))) console.log(`skip replay: no adapter at ${config.replay.adapter}`);
@@ -116,4 +121,21 @@ export default async function check(argv, { cwd }) {
   const ran = stages.filter((stage) => !skip.has(stage.name)).map((stage) => stage.name);
   console.log(failed.length > 0 ? `FAIL check: ${failed.join(", ")}` : `ok check: ${ran.join(", ") || "no stages ran"}`);
   return worst;
+}
+
+/**
+ * Whether the change calls itself a bug fix: its branch name or a commit message since the base says fix, bug,
+ * hotfix or regression. Any failure to read git counts as no.
+ * @param {string} cwd @param {string} base
+ */
+function isFix(cwd, base) {
+  try {
+    const sha = resolveBase(cwd, base);
+    if (sha === EMPTY_TREE) return false;
+    const said = `${git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"])}\n${git(cwd, ["log", "--format=%s%n%b", `${sha}..HEAD`])}`;
+    return /(^|[^a-z])(fix(es|ed)?|bug(fix)?|hotfix|regression)([^a-z]|$)/i.test(said);
+  } catch (error) {
+    if (error instanceof GateError) return false;
+    throw error;
+  }
 }

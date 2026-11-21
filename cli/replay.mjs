@@ -174,7 +174,7 @@ function lintOpenapi({ cwd, file, modes, idPattern, ignore, json, quiet }) {
   try {
     doc = JSON.parse(readFileSync(resolve(cwd, file), "utf8"));
   } catch (error) {
-    throw new Error(`cannot read --openapi ${file} as JSON; export the document as JSON (${error instanceof Error ? error.message : error})`);
+    throw new Error(`cannot read --openapi ${file} as JSON; export the document as JSON (${error instanceof Error ? error.message : error})`, { cause: error });
   }
   const evidence = openapiEvidence(doc);
   const findings = lintContract(evidence, { idPattern, ignore });
@@ -333,7 +333,7 @@ function readBase(cwd, file, kind) {
   try {
     base = JSON.parse(readFileSync(resolve(cwd, file), "utf8"));
   } catch (error) {
-    throw new Error(`cannot read --${kind}-base ${file}; write it first with --${kind}-out (${error instanceof Error ? error.message : error})`);
+    throw new Error(`cannot read --${kind}-base ${file}; write it first with --${kind}-out (${error instanceof Error ? error.message : error})`, { cause: error });
   }
   if (!Array.isArray(base?._meta?.sessions)) throw new Error(`--${kind}-base ${file} has no _meta; write it with --${kind}-out`);
   return base;

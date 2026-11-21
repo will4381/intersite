@@ -80,8 +80,6 @@ const isObject = (value) => value !== null && typeof value === "object" && !Arra
 const kindOf = (shape) => (Array.isArray(shape) ? "array" : isObject(shape) ? "object" : /** @type {string} */ (shape));
 /** @param {string} kind */
 const article = (kind) => `${/^[aeiou]/.test(kind) ? "an" : "a"} ${kind}`;
-/** @param {number} status */
-const success = (status) => status >= 200 && status < 300;
 /** @param {string[]} list */
 const some = (list) => list.slice(0, SHOWN).join(", ") + (list.length > SHOWN ? ` and ${list.length - SHOWN} more` : "");
 
@@ -143,7 +141,7 @@ function routesOf(evidence) {
     route.answers.push({ caseId: item.caseId, status: item.status, shape: item.shape, live: undefined });
     if (item.live && item.live.status !== 0) route.answers.push({ caseId: item.caseId, status: item.live.status, shape: shapeOf(item.live.json), live: item.live });
   }
-  for (const route of routes.values()) route.ok = route.answers.filter((answer) => success(answer.status));
+  for (const route of routes.values()) route.ok = route.answers.filter((answer) => answer.status >= 200 && answer.status < 300);
   return [...routes.values()];
 }
 

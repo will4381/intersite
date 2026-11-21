@@ -252,3 +252,27 @@ rules:
       - |-
         // Replaced with the signed URL once the upload finishes.
         let src = preview;
+  - id: no-error-message-assertion
+    needs: 'toThrow|message'
+    pack: tests
+    selector: "CallExpression[callee.property.name=/^(toThrow|toThrowError)$/][arguments.0.type='Literal'][arguments.0.regex=undefined], CallExpression[callee.property.name=/^(toBe|toEqual|toStrictEqual)$/][arguments.0.type=/^(Literal|TemplateLiteral)$/][callee.object.callee.name='expect'][callee.object.arguments.0.property.name='message'][callee.object.arguments.0.object.name=/^(error|err|e|caught|thrown|failure)$/]"
+    message: "This asserts an error's exact wording, so rewording the message breaks the test while a wrong error with the right words passes. Assert what callers depend on: the error class (toThrow(NotFoundError)) or its code (toMatchObject({ code: 'not_found' })); a regular expression on one key word is fine when the message is the contract."
+    bad:
+      - "it('rejects', () => { expect(() => parse('')).toThrow('Expected a non-empty string but received an empty one'); });"
+      - "it('rejects', async () => { const error = await load().catch((e) => e); expect(error.message).toBe('User not found'); });"
+    good:
+      - "it('rejects', () => { expect(() => parse('')).toThrow(ParseError); });"
+      - "it('rejects', () => { expect(() => parse('')).toThrow(/empty/); });"
+      - "it('rejects', async () => { await expect(load()).rejects.toMatchObject({ code: 'not_found' }); });"
+  - id: no-alibi-comment
+    comment: "\\b(do not remove|don'?t remove|do not touch|don'?t touch|do not change|don'?t change|fine for now|good enough for now|ok for now|too risky|leave (this|it) alone|here be dragons|works,? don'?t ask)\\b"
+    pack: slop
+    message: "This comment asks the next person to trust it instead of the code. Make the code say it: a test that fails when the line is removed or changed, a type that rules out the change, or a ponytail: comment naming the limit and when to fix it."
+    bad:
+      - "// DO NOT REMOVE: the dashboard breaks without this\nexport const retries = 3;"
+      - "/* fine for now, too risky to change before launch */\nexport const timeout = 30_000;"
+    good:
+      - "// ponytail: one retry, add backoff once the queue is shared\nexport const retries = 1;"
+      - "// PROVIDER: Stripe retries webhooks for 3 days, so handlers must be idempotent\nexport const window = 3;"
+builtin:
+  - { rule: vitest/require-awaited-expect-poll, pack: tests }

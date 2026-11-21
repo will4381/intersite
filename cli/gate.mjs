@@ -11,12 +11,15 @@ import { duplicates } from "../gates/duplicates.mjs";
 import { failsOnBase } from "../gates/fails-on-base.mjs";
 import { EMPTY_TREE, GateError, resolveBase } from "../gates/lib.mjs";
 import { spawnSync } from "node:child_process";
+import { decisions } from "../gates/decisions.mjs";
 import { mutation } from "../gates/mutation.mjs";
 import { naming } from "../gates/naming.mjs";
 import { newDeps } from "../gates/new-deps.mjs";
 import { protectedPaths } from "../gates/protected.mjs";
 import { regex } from "../gates/regex.mjs";
 import { similar } from "../gates/similar.mjs";
+import { renames } from "../gates/renames.mjs";
+import { schemaDrift } from "../gates/schema-drift.mjs";
 import { sql } from "../gates/sql.mjs";
 import { styleDrift } from "../gates/style-drift.mjs";
 import { testIntegrity } from "../gates/test-integrity.mjs";
@@ -24,10 +27,10 @@ import { unused } from "../gates/unused.mjs";
 import { valueDrift } from "../gates/value-drift.mjs";
 
 /** @type {Record<string, (options: import("../gates/lib.mjs").GateOptions) => Promise<import("../gates/lib.mjs").GateResult>>} */
-export const gates = { "test-integrity": testIntegrity, duplicates, "new-deps": newDeps, artifacts, unused, similar, naming, "style-drift": styleDrift, "value-drift": valueDrift, sql, regex, "fails-on-base": failsOnBase, mutation, protected: protectedPaths };
+export const gates = { "test-integrity": testIntegrity, duplicates, "new-deps": newDeps, artifacts, unused, similar, naming, "style-drift": styleDrift, "value-drift": valueDrift, sql, regex, decisions, renames, "schema-drift": schemaDrift, "fails-on-base": failsOnBase, mutation, protected: protectedPaths };
 
 /** Gates that can judge the whole repository (`--all`): the rest only mean something for a change. */
-export const WHOLE = new Set(["duplicates", "similar", "unused", "naming", "style-drift", "value-drift", "sql", "regex", "artifacts"]);
+export const WHOLE = new Set(["duplicates", "similar", "unused", "naming", "style-drift", "value-drift", "sql", "regex", "decisions", "schema-drift", "artifacts"]);
 
 const usage = `usage: intersite gate <${Object.keys(gates).join("|")}> [--base <ref>] [--json] [--cmd "<test command>"] [--paths <glob>]... [--setup "<command>"] [--max <n>] [--timeout <seconds>] [--all [--write]]`;
 

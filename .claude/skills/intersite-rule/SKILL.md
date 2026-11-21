@@ -5,6 +5,14 @@ description: Add an Intersite lint rule so a mistake can never be written again.
 
 # Adding a lint rule
 
+First pick the strongest place to encode the lesson, in this order, and stop at the first that works:
+
+1. **Architecture**: make the mistake impossible to write (one module owns the decision; the wrong call has no export).
+2. **Types**: make it fail to compile (a branded ID, a union instead of optional fields, a non-empty tuple).
+3. **Lint**: a rule, below, when the shape of the code is the mistake.
+4. **Test**: when only running the code shows it.
+5. **Docs**: last, when none of the above can say it.
+
 A rule is one YAML entry: a syntax-tree selector, a message, and examples. No code.
 
 ## 1. Add it to `lint.custom` in `intersite.yml`
@@ -37,6 +45,10 @@ lint:
 ```bash
 npx intersite lint
 ```
+
+Prove the rule catches the real mistake, not just your example: if the bug came from a commit, check that commit's
+version of the file out into a scratch file (`git show <sha>:<path> > /tmp/before.ts`) and lint it; the rule must
+report it. Then add that code, trimmed, as a `bad` example.
 
 A new rule usually matches existing code. Fix those places if there are few. If there are many, and the new rule's
 are the only findings listed, record them so only new ones fail (this records every current finding), and say so in

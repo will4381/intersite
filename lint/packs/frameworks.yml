@@ -19,5 +19,20 @@ rules:
       - "async function track(url: string) {\n  const { waitUntil } = await import('cloudflare:workers');\n  waitUntil(fetch(url));\n}"
       - "import { waitUntil } from 'cloudflare:workers';\nexport default { async fetch() { waitUntil(flush()); return new Response('ok'); } };"
       - "export function schedule({ waitUntil }: { waitUntil: (p: Promise<unknown>) => void }) {\n  waitUntil(flush());\n}"
+  - id: no-uuid-in-text-column
+    needs: 'pgTable'
+    pack: orm
+    selector: "CallExpression[callee.name='pgTable'] CallExpression[callee.property.name=/^(\\$defaultFn|\\$default|default)$/]:matches([callee.object.callee.name=/^(text|varchar|char)$/], [callee.object.callee.property.name=/^(text|varchar|char)$/], [callee.object.callee.object.callee.name=/^(text|varchar|char)$/], [callee.object.callee.object.callee.property.name=/^(text|varchar|char)$/]):matches(:has(Identifier[name=/^(randomUUID|uuidv4|uuidv7|v4|v7)$/]), :has(TemplateElement[value.raw=/uuid/i]))"
+    message: "This Postgres column stores generated UUIDs as text: 36 characters instead of 16 bytes, compared and indexed as strings, and never checked to be a UUID. Use Drizzle's uuid() column (uuid('id').defaultRandom()), and make the columns that reference it uuid() too."
+    bad:
+      - "export const users = pgTable('users', { id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()) });"
+      - "import { v4 } from 'uuid';\nexport const teams = pgTable('teams', { id: varchar('id', { length: 36 }).$defaultFn(v4).primaryKey() });"
+      - "export const posts = pgTable('posts', { id: text('id').default(sql`gen_random_uuid()`) });"
+      - "export const posts = pgTable('posts', (t) => ({ id: t.text().primaryKey().$defaultFn(() => randomUUID()) }));"
+    good:
+      - "export const users = pgTable('users', { id: uuid('id').primaryKey().defaultRandom() });"
+      - "export const users = sqliteTable('users', { name: text('name').default('anonymous') });"
+      - "export const keys = pgTable('keys', { id: text('id').$defaultFn(() => createId()) });"
+      - "export const users = sqliteTable('users', { id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()) });"
 builtin:
   - { rule: nextjs/no-async-client-component, pack: next }

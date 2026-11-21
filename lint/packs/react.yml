@@ -54,3 +54,5 @@ builtin:
   - { rule: react/globals, pack: react }
   - { rule: react/error-boundaries, pack: react }
   - { rule: react/use-memo, pack: react }
+  - { rule: react/jsx-no-target-blank, pack: react }
+  - { rule: react/jsx-no-script-url, pack: react }

@@ -37,7 +37,7 @@ test("check runs every gate, names the ones that failed, and passes once the cha
 
   rmSync(join(r.cwd, "PLAN.md"));
   const clean = await check(r.cwd);
-  assert.deepEqual(clean.lines, ["ok check: test-integrity, duplicates, similar, new-deps, artifacts, unused, naming, style-drift, value-drift, sql, regex, replay"], "success is one line");
+  assert.deepEqual(clean.lines, ["ok check: test-integrity, duplicates, similar, new-deps, artifacts, unused, naming, style-drift, value-drift, sql, regex, decisions, renames, schema-drift, replay"], "success is one line");
   assert.equal(clean.code, 0, clean.stderr);
 });
 
@@ -53,7 +53,7 @@ test("check skips replay with one line when nothing answers at replay.target", a
   r.write({ "intersite.json": JSON.stringify({ project: "t", gates: { base: "base" }, replay: { target: "http://127.0.0.1:9" } }), "intersite.adapter.mjs": "export async function signIn() { return {}; }\n" });
   r.commit("adapter");
   const { code, lines } = await check(r.cwd);
-  assert.deepEqual(lines, ["skip replay: nothing answers at http://127.0.0.1:9 (start the server to replay recorded sessions)", "ok check: test-integrity, duplicates, similar, new-deps, artifacts, unused, naming, style-drift, value-drift, sql, regex"]);
+  assert.deepEqual(lines, ["skip replay: nothing answers at http://127.0.0.1:9 (start the server to replay recorded sessions)", "ok check: test-integrity, duplicates, similar, new-deps, artifacts, unused, naming, style-drift, value-drift, sql, regex, decisions, renames, schema-drift"]);
   assert.equal(code, 0);
 });
 
@@ -91,4 +91,14 @@ test("a check named like a built-in stage is refused with one line", async () =>
   const { code, stderr } = await check(cwd);
   assert.equal(code, 2);
   assert.equal(stderr.trim(), 'check: intersite.yml: check name "lint" is already taken; pick another');
+});
+
+test("a change that says it fixes a bug runs fails-on-base with --full, and names it among the slow stages without", async () => {
+  const r = repo({ "src/sum.mjs": "export const sum = (a, b) => a - b;\n", "test/sum.test.mjs": "export {};\n" }, { testCmd: "node --test test/" });
+  r.write({ "src/sum.mjs": "export const sum = (a, b) => a + b;\n", "test/sum.test.mjs": "import assert from 'node:assert/strict';\nimport { test } from 'node:test';\nimport { sum } from '../src/sum.mjs';\ntest('adds', () => assert.equal(sum(2, 2), 4));\n" });
+  r.commit("fix: sum subtracted");
+  const quick = await check(r.cwd);
+  assert.equal(quick.lines[0], "skip fails-on-base: slow, run with `intersite check --full`");
+  const full = await new Promise((done) => execFile(process.execPath, [bin, "check", "--skip", "lint", "--full"], { cwd: r.cwd }, (error, stdout) => done({ code: error ? Number(error.code) : 0, lines: stdout.trim().split("\n") })));
+  assert.match(/** @type {any} */ (full).lines.at(-1), /^ok check: .*fails-on-base/);
 });

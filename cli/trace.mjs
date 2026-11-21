@@ -29,7 +29,7 @@ const options = /** @type {const} */ ({
 
 /**
  * @typedef {{ coverageDir?: string, profileDir?: string, profiles?: unknown[], coverage?: unknown[], wallMs: number }} Run
- * @typedef {{ touched: { file: string, name: string, line: number, count: number }[], hot: { file: string, name: string, line: number, selfMs: number, totalMs: number }[], dependencies: { name: string, selfMs: number }[], slower: { file: string, name: string, line: number, baseMs: number, nowMs: number }[], wallMs: number, baseWallMs: number }} Report
+ * @typedef {{ touched: { file: string, name: string, line: number, count: number }[], hot: { file: string, name: string, line: number, selfMs: number, totalMs: number }[], dependencies: { name: string, selfMs: number }[], slower: { file: string, name: string, line: number, baseMs: number, nowMs: number }[], inconclusive?: { file: string, name: string, line: number, baseMs: number, nowMs: number }[], wallMs: number, wallRange?: number[], baseWallMs: number, baseWallRange?: number[] }} Report
  */
 
 /** @param {string[]} argv @param {{ cwd: string }} context @returns {Promise<number>} */
@@ -78,24 +78,31 @@ function profiled(command, dir, verbose) {
 async function commandMode(command, { cwd, flags, runs }) {
   const top = topLevel(cwd);
   const prefix = projectPrefix(cwd);
-  const stats = await sqlSnapshot();
   /** @type {(Run & { code: number, tail: string })[]} */
   const now = [];
-  for (let i = 0; i < runs; i++) now.push(profiled(command, cwd, flags.verbose));
-  const queries = await sqlSince(stats);
-  const failed = now.find((r) => r.code !== 0);
-  if (failed) console.error(`note: \`${command}\` exited with ${failed.code}; the trace covers what ran\n${failed.tail}`);
   /** @type {Run[]} */
-  let baseRuns = [];
+  const baseRuns = [];
   let baseRoot = "";
+  // The database is read around the first run only: later base runs would mix their queries in.
+  const stats = await sqlSnapshot();
+  now.push(profiled(command, cwd, flags.verbose));
+  const queries = await sqlSince(stats);
   if (flags.base) {
     const config = loadConfig(cwd);
     const sha = resolveBase(cwd, flags.base);
+    // Base and change alternate, so a machine that warms up, throttles or gets busy halfway weighs on both alike.
     await withWorktree({ cwd, ref: sha, setup: flags.setup ?? config.gates.setup, overlay: [] }, async (tree) => {
       baseRoot = tree;
-      for (let i = 0; i < runs; i++) baseRuns.push(profiled(command, join(tree, prefix), flags.verbose));
+      for (let i = 0; i < runs; i++) {
+        baseRuns.push(profiled(command, join(tree, prefix), flags.verbose));
+        if (i > 0) now.push(profiled(command, cwd, flags.verbose));
+      }
     });
+  } else {
+    for (let i = 1; i < runs; i++) now.push(profiled(command, cwd, flags.verbose));
   }
+  const failed = now.find((r) => r.code !== 0);
+  if (failed) console.error(`note: \`${command}\` exited with ${failed.code}; the trace covers what ran\n${failed.tail}`);
   const report = crunch({ top, prefix, now, baseRuns, baseRoot, minMs: flags["min-ms"] });
   print({ title: `\`${command}\``, report: report.data, findings: report.findings, runs, queries, flags });
   for (const r of [...now, ...baseRuns]) rmSync(join(String(r.coverageDir), ".."), { recursive: true, force: true });
@@ -113,7 +120,7 @@ function crunch({ top, prefix, now, baseRuns, baseRoot, minMs }) {
   const rel = (/** @type {string} */ file) => (prefix && file.startsWith(prefix) ? file.slice(prefix.length) : file);
   /** @type {Report} */
   const data = answer.data;
-  for (const list of [data.touched, data.hot, data.slower]) for (const item of list) item.file = rel(item.file);
+  for (const list of [data.touched, data.hot, data.slower, data.inconclusive ?? []]) for (const item of list) item.file = rel(item.file);
   return { data, findings: answer.findings.map((f) => ({ target: rel(f.target), message: rel(f.message) })) };
 }
 
@@ -128,8 +135,11 @@ function print({ title, report, findings, runs, queries = [], flags, extra = [] 
     console.log(JSON.stringify({ ...report, findings, queries }));
     return;
   }
-  const base = report.baseWallMs ? ` (base ${time(report.baseWallMs)}, ${report.wallMs >= report.baseWallMs ? "+" : ""}${Math.round(((report.wallMs - report.baseWallMs) / report.baseWallMs) * 100)}%)` : "";
-  console.log(`trace ${title}: ${runs > 1 ? `median of ${runs} runs ` : ""}${time(report.wallMs)}${base}`);
+  const range = (/** @type {number[] | undefined} */ r) => (runs > 1 && r && r[1] > r[0] ? ` (${time(r[0])}–${time(r[1])})` : "");
+  // Overlapping ranges: some base run was as slow as some run of the change, so the medians may differ by noise.
+  const overlap = report.baseWallMs && runs > 1 && report.wallRange && report.baseWallRange && report.wallRange[0] <= report.baseWallRange[1] && report.baseWallRange[0] <= report.wallRange[1];
+  const base = report.baseWallMs ? ` (base ${time(report.baseWallMs)}${range(report.baseWallRange)}, ${report.wallMs >= report.baseWallMs ? "+" : ""}${Math.round(((report.wallMs - report.baseWallMs) / report.baseWallMs) * 100)}%${overlap ? ", ranges overlap: within noise" : ""})` : "";
+  console.log(`trace ${title}: ${runs > 1 ? `median of ${runs} runs ` : ""}${time(report.wallMs)}${range(report.wallRange)}${base}`);
   for (const line of extra) console.log(line);
   const files = new Set(report.touched.map((t) => t.file)).size;
   console.log(`touched ${report.touched.length} functions in ${files} project files${flags.touched ? ":" : " (--touched lists them)"}`);
@@ -142,6 +152,8 @@ function print({ title, report, findings, runs, queries = [], flags, extra = [] 
   if (queries.length) console.log("database, slowest first (pg_stat_statements):");
   for (const q of queries) console.log(`  ${time(q.totalMs).padStart(7)}  ${q.calls}× ${q.query.replace(/\s+/g, " ").slice(0, 110)}${q.advice ? `\n           ${q.advice}` : ""}`);
   for (const f of findings) console.log(f.message);
+  const unsure = report.inconclusive ?? [];
+  if (unsure.length) console.log(`inconclusive: ${unsure.slice(0, 3).map((u) => `${u.name} (${time(u.baseMs)} → ${time(u.nowMs)})`).join(", ")}${unsure.length > 3 ? ` and ${unsure.length - 3} more` : ""} slower by median, but a base run was as slow as the fastest run now; rerun with more --runs to tell`);
   if (report.baseWallMs && !findings.length) console.log("ok trace: nothing clearly slower than the base");
 }
 

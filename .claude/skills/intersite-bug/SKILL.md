@@ -45,10 +45,24 @@ npx intersite replay --id <request-id> --json --verbose
 `recorded` holds the session's cases up to that request. Write a test through the API that sets up that state and
 fails. Do not mock this project's own modules.
 
-## 3. Fix the root cause
+## 3. Map the blast radius, then fix the root cause
 
-Find every caller of the code you are about to change. Fix it once, where all callers route through, not only on the
-path the report names.
+Before editing, find what depends on the code you are about to change, including what a text search misses:
+
+```bash
+npx intersite trace --touched -- <the failing test or script>
+```
+
+```bash
+npx intersite search <file>:<line>
+```
+
+`trace --touched` lists every function the reproduction ran; `search` finds code shaped like the function you will
+change, which may carry the same bug. Also check what the compiler cannot see: database columns the code writes, JSON
+fields other services read, environment variables and flags. Name the one fact that makes the fix safe ("every
+caller passes cents") and check it, with a test or a query, instead of assuming it.
+
+Fix it once, where all callers route through, not only on the path the report names.
 
 ## 4. Prove it
 
@@ -61,10 +75,11 @@ npx intersite gate fails-on-base --cmd "npm test"
 ```
 
 `fails-on-base` runs your new or changed tests against the code before your fix; they must fail there. Use the
-project's test command; with `gates.testCmd` set in `intersite.yml`, `--cmd` can be left out. Then:
+project's test command; with `gates.testCmd` set in `intersite.yml`, `--cmd` can be left out, and
+`npx intersite check --full` runs it on its own whenever the branch name or a commit message says fix. Then:
 
 ```bash
-npx intersite check
+npx intersite check --full
 ```
 
 ## 5. Stop it coming back
