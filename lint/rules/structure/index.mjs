@@ -21,6 +21,7 @@ import * as noSingleImplementation from "./no-single-implementation.mjs";
 import * as noSingleUseHelper from "./no-single-use-helper.mjs";
 import * as noStatementWall from "./no-statement-wall.mjs";
 import * as noThrowawayName from "./no-throwaway-name.mjs";
+import * as oneStatementPerLine from "./one-statement-per-line.mjs";
 
 /** @type {{ id: string, pack: string, rule: unknown, bad: string[], good: string[], ext?: string }[]} */
 export default [
@@ -45,4 +46,5 @@ export default [
   noSingleUseHelper,
   noStatementWall,
   noThrowawayName,
+  oneStatementPerLine,
 ];

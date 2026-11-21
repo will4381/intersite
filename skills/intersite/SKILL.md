@@ -40,6 +40,8 @@ instead of changing code to satisfy it.
 | contains `"gate": "fails-on-base"` | Your new test passes without your fix | Make the test exercise the bug |
 | contains `"gate": "mutation"` | A break on a changed line went unnoticed | Add an assertion that would notice it |
 | contains `"gate": "protected"` | You changed protected code (money, access) without changing a test | Add or extend the test that proves the change; do not acknowledge it to get past |
+| `typescript/no-unnecessary-condition` | A check the types say can never fail | Decide which side is wrong, one at a time, never in bulk. If the value came through a cast (`as`), a `!`, `JSON.parse`, an untyped response or a library's loose type, the type may be lying: parse it where it enters and keep the check until then. Otherwise the check is dead: delete it |
+| `intersite/drizzle-nullable-first-column` | A table's first column can be null, so a left join reads real rows as missing | Move the primary key (or another NOT NULL column) first; if a key-sorting rule fights it, exempt table definitions from that rule |
 | `intersite/require-comment-tag`, `intersite/no-alibi-comment` | A comment explains or defends code instead of the code saying it | Reshape first: a clearer name, an extracted function, a type that rules the case out, or a test that fails when the line is removed. Tag it only when none of those can say it |
 | `<name>: failed with exit N \| rerun: <command>` | One of the project's own checks failed; its output is printed above the line | Run the rerun command, fix what it reports |
 | `skip <names>: slow, run with …` | Slow checks this change touches did not run | Run `npx intersite check --full` before calling the change done |

@@ -178,7 +178,12 @@ test("oversized and non-JSON request bodies are omitted with a marker", async ()
   await record({ headers: { "content-type": "text/plain" }, body: "alice@example.com" });
   await record({ headers: { "content-type": "application/json" }, body: "{not json" });
   // A streamed body with no content-length is cut off at the limit too.
-  const stream = new ReadableStream({ start(controller) { for (let i = 0; i < 10; i++) controller.enqueue(new TextEncoder().encode('"xxxxxxxxxxxxxxxxxxxx"')); controller.close(); } });
+  const stream = new ReadableStream({
+    start(controller) {
+      for (let i = 0; i < 10; i++) controller.enqueue(new TextEncoder().encode('"xxxxxxxxxxxxxxxxxxxx"'));
+      controller.close();
+    },
+  });
   await record({ headers: { "content-type": "application/json" }, body: stream, duplex: "half" });
   assert.deepEqual(cases.map((item) => item.request.body), [{ $omitted: "too large" }, { $omitted: "not json" }, { $omitted: "not json" }, { $omitted: "too large" }]);
   assert.ok(!JSON.stringify(cases).includes("alice"));

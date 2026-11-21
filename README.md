@@ -110,7 +110,7 @@ every file; record what is there today and only new findings fail, as with lint:
 npx intersite gate duplicates --all --write
 ```
 
-That writes `intersite-gates-baseline.json`. Fix a recorded finding and run it again to lower the count.
+That writes `intersite-gates-baseline.json`. Fix a recorded finding and run it again to lower the count. With `--all`, `sql` treats migrations already written as history: it judges the schema they leave and the queries in code, not the locks a past migration took.
 
 Output is written for agents: one line on success, one line per finding with the command that reruns only that
 finding, exit code 0, 1 or 2.
@@ -194,7 +194,10 @@ that says what to do instead, and examples.
 member (`switch-exhaustiveness-check`), a cast to the type a value already has (`no-unnecessary-type-assertion`), a
 check that can never fail because the type already rules it out, such as data checked where it came in and checked
 again inside (`no-unnecessary-condition`), and a returned promise not awaited inside `try`, which skips the `catch`
-(`return-await`). It needs the
+(`return-await`). `no-unnecessary-condition` runs only when every `tsconfig.json` in the project sets `strict` and
+`noUncheckedIndexedAccess`: without the second, `rows[0]` and `const [row] = rows` count as always present, so the
+check guarding a missing row would be called unnecessary. Lint prints a note naming the tsconfig when it leaves the
+rule out. It needs the
 `oxlint-tsgolint` package and a `tsconfig.json`, and it is slower than plain lint, so it is off by default.
 
 **Different rules per folder.** Keep one `.oxlintrc.json` and scope rules with `overrides`. An override takes
@@ -215,7 +218,7 @@ again inside (`no-unnecessary-condition`), and a returned promise not awaited in
 | --- | --- | --- |
 | `tests` | on | Tests that cannot fail: no assertion, constant or mock-only assertions, skips, module mocking; an expected value computed by the function under test; tests that only check something did not happen, with no test beside them showing it does; assertions on an error's exact wording; fixed waits (`sleep`, `setTimeout`) inside a test instead of fake timers or the real event; an `expect.poll` nobody awaits |
 | `slop` | on | Swallowed errors, a try around code that cannot throw or around a whole function only to rethrow "Failed", alibi comments (`do not remove`, `fine for now`), suppressions of security or test rules (a comment cannot waive those), `==` (but `== null`), switch fallthrough, self-comparison, fake fallback values, `any` and double casts, commented-out code, elision and placeholder comments, comments that restate the next line or narrate an edit, emoji and "here" debug logs, throwaway names (`data2`, `fetchUserV2` beside `fetchUser`), mock data and placeholder copy in source |
-| `design` | on | Over-engineering and tangles: a short helper called once (write it where it is used), a module exporting eight or more functions that average under two statements (a wide interface over little work), import cycles, a module importing itself, nesting past 4 levels, functions over 80 statements, more than 5 parameters, `if` chains that are a lookup table written as code, the same few statements repeated with new names a few lines apart, runs of 20+ statements over 40+ lines with no blank line, boolean-flag arguments, tangled ternaries, pass-through functions and components, one-implementation interfaces, classes that should be functions |
+| `design` | on | Over-engineering and tangles: two statements on one line (a jump after one is fine), a short helper called once (write it where it is used), a module exporting eight or more functions that average under two statements (a wide interface over little work), import cycles, a module importing itself, nesting past 4 levels, functions over 80 statements, more than 5 parameters, `if` chains that are a lookup table written as code, the same few statements repeated with new names a few lines apart, runs of 20+ statements over 40+ lines with no blank line, boolean-flag arguments, tangled ternaries, pass-through functions and components, one-implementation interfaces, classes that should be functions |
 | `async` | on | Async callbacks nobody awaits, `fetch` without a status check, rethrows that drop the original error (or its `cause`), a promise that resolves twice, fixed sleeps, success returned from a catch, exponential backoff (`2 ** attempt`) written outside the project's retry helper |
 | `perf` | on | Everywhere: spreading the accumulator in `reduce` (quadratic). In files named `*.hot.ts` or `*.hot.tsx` (code that runs on every request): regular expressions built inside functions, dynamic `import()`, deep copies (`structuredClone`, JSON round trips), work at module scope. A project with no `.hot.` files is unaffected |
 | `react` | on | `target="_blank"` links without `rel`, `javascript:` URLs, effects that only derive state, racy fetches in effects, pointless memoisation, components defined inside components, twelve or more states in one component, needless `"use client"`, hook dependency mistakes, impure render (random values or the clock read in render, refs read during render, mutated props or state) |
@@ -227,7 +230,7 @@ again inside (`no-unnecessary-condition`), and a returned promise not awaited in
 | `naming` | on | Hook names that lie, lowercase components and types, type words in names (`isLoadingBoolean`), one word cased two ways (`userId` with `userID`), snake_case pasted into camelCase files, abbreviation soup, names over 56 characters, reassigned `UPPER_SNAKE` constants |
 | `globals` | on | State on `window`/`globalThis`, exported `let` and exported empty Map/Set/array stores, hand-rolled `getInstance()` singletons |
 | `ui` | on | Where the project has tokens or a Tailwind theme: hardcoded colours, type values (size, weight, line height, family), spacing, radius and z-index; raw palette classes; static inline styles; raw controls hand-styled beside the project's own `Button`/`Input`; images without `alt`, clickable `div`s, invalid ARIA, empty links and headings, untitled iframes, positive `tabIndex` |
-| `orm` | on | Drizzle and Prisma: a Postgres `text` column filled with generated UUIDs (use `uuid()`), queries on the outer client inside a transaction, update or delete with no `where`, find-then-create races, one lookup per loop item, a `status` or `state` update whose `where` does not check the current state |
+| `orm` | on | Drizzle and Prisma: a table whose first column can be null (in a left join Drizzle reads the first column to decide a row is missing, so real rows come back null), a Postgres `text` column filled with generated UUIDs (use `uuid()`), queries on the outer client inside a transaction, update or delete with no `where`, find-then-create races, one lookup per loop item, a `status` or `state` update whose `where` does not check the current state |
 | `query` | on | TanStack Query: a `queryKey` missing values the `queryFn` reads, a `queryFn` asserting `id!` with no `enabled` |
 | `workers` | on | Cloudflare Workers: promises neither awaited nor passed to `waitUntil`, destructured `ctx.waitUntil` |
 | `supabase` | on | Supabase results whose `error` is never read, `auth.getSession()` trusted on the server |

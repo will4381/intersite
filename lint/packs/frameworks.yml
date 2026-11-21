@@ -34,5 +34,19 @@ rules:
       - "export const users = sqliteTable('users', { name: text('name').default('anonymous') });"
       - "export const keys = pgTable('keys', { id: text('id').$defaultFn(() => createId()) });"
       - "export const users = sqliteTable('users', { id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()) });"
+  - id: drizzle-nullable-first-column
+    needs: '[Tt]able\('
+    pack: orm
+    selector: ":matches(CallExpression[callee.name=/^(pgTable|sqliteTable|mysqlTable)$/], CallExpression[callee.property.name='table'][arguments.0.type='Literal'][arguments.1.type=/^(ObjectExpression|ArrowFunctionExpression)$/]) > ObjectExpression > Property:first-child:not(:has(Identifier[name=/^(primaryKey|notNull|serial|bigserial|smallserial|generatedAlwaysAsIdentity|generatedByDefaultAsIdentity)$/])), :matches(CallExpression[callee.name=/^(pgTable|sqliteTable|mysqlTable)$/], CallExpression[callee.property.name='table'][arguments.0.type='Literal'][arguments.1.type=/^(ObjectExpression|ArrowFunctionExpression)$/]) > ArrowFunctionExpression > ObjectExpression > Property:first-child:not(:has(Identifier[name=/^(primaryKey|notNull|serial|bigserial|smallserial|generatedAlwaysAsIdentity|generatedByDefaultAsIdentity)$/]))"
+    message: "This table's first column can be null. In a left join Drizzle decides the joined row is missing by looking only at its first selected column, so a real row whose first column is null comes back as null. Put the primary key (or another NOT NULL column) first."
+    bad:
+      - "export const profiles = pgTable('profiles', { bio: text('bio'), id: uuid('id').primaryKey(), userId: uuid('user_id').notNull() });"
+      - "export const notes = sqliteTable('notes', (t) => ({ title: t.text(), id: t.integer().primaryKey() }));"
+      - "const app = pgSchema('app');\nexport const resources = app.table('resources', { configuredState: text('configured_state'), id: uuid('id').primaryKey() });"
+    good:
+      - "export const profiles = pgTable('profiles', { id: uuid('id').primaryKey().defaultRandom(), bio: text('bio') });"
+      - "export const events = pgTable('events', { id: serial('id'), note: text('note') });"
+      - "console.table(rows);"
+      - "export const members = pgTable('members', { orgId: uuid('org_id').notNull(), userId: uuid('user_id').notNull() }, (t) => [primaryKey({ columns: [t.orgId, t.userId] })]);"
 builtin:
   - { rule: nextjs/no-async-client-component, pack: next }

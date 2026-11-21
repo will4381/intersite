@@ -11,6 +11,7 @@ import { promisify } from "node:util";
 import { loadConfig } from "../shared/config.mjs";
 import { builtinRules, declaredRule, packageRules } from "../lint/catalog.mjs";
 import { runSwiftlint, swiftFiles, swiftRules } from "../lint/swift/swiftlint.mjs";
+import { compilerOptions } from "../lint/tsconfig.mjs";
 
 /** @typedef {Record<string, Record<string, number>>} Baseline */
 /** @typedef {{ file: string, line: number, column: number, rule: string, message: string }} Finding */
@@ -104,7 +105,7 @@ export default async function lint(argv, { cwd, quiet = false }) {
     return 2;
   }
 
-  const { rules, bareOn, swift } = ruleSet(config);
+  const { rules, bareOn, swift, note } = ruleSet(config, cwd);
   if (flag === "--rules") {
     console.log(`slop no-bare-suppression ${bareOn ? "on" : "off"}`);
     printRules(config.custom, rules);
@@ -119,6 +120,8 @@ export default async function lint(argv, { cwd, quiet = false }) {
     console.error("intersite lint: lint.typeAware needs oxlint-tsgolint; install it as a dev dependency");
     return 2;
   }
+  // Prose would break --json, which is one object.
+  if (note && tsgolint && flag !== "--json") console.error(note);
   const javascript = existsSync(oxlint)
     ? writeOxlintConfig(cwd, join(cwd, config.extends), oxlint, rules).then((configs) => runOxlint(cwd, oxlint, configs, paths, tsgolint), (/** @type {Error} */ error) => {
       console.error(`intersite lint: ${error.message}`);
@@ -206,16 +209,43 @@ const TYPE_AWARE = {
 };
 
 /**
- * The oxlint rule levels the configured packs, custom rules and overrides switch on, and whether the bare-suppression check runs.
- * @param {ReturnType<typeof loadConfig>["lint"]} config
+ * The project's tsconfig.json files, relative to it: those git knows of, or the one at its top. An empty list means
+ * there is none.
+ * @param {string} cwd
  */
-function ruleSet(config) {
+function tsconfigs(cwd) {
+  const listed = spawnSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "--", ":(glob)**/tsconfig.json"], { cwd, encoding: "utf8" });
+  const files = listed.status === 0 ? listed.stdout.split("\n").filter((f) => f && !f.includes("node_modules/")) : [];
+  return files.length ? files : existsSync(join(cwd, "tsconfig.json")) ? ["tsconfig.json"] : [""];
+}
+
+/**
+ * The oxlint rule levels the configured packs, custom rules and overrides switch on, and whether the bare-suppression check runs.
+ * @param {ReturnType<typeof loadConfig>["lint"]} config @param {string} cwd the project, whose tsconfig.json decides
+ *   whether the type-aware no-unnecessary-condition can be trusted
+ */
+function ruleSet(config, cwd) {
   /** @type {Record<string, string | unknown[]>} */
   const rules = {};
   for (const r of packageRules) if (r.pack && config.packs.includes(r.pack)) rules[`intersite/${r.id}`] = "error";
   for (const r of config.custom) rules[`intersite/${r.id}`] = "error";
   for (const b of builtinRules) if (config.packs.includes(b.pack)) rules[b.rule] = b.options ? ["error", ...b.options] : "error";
-  if (config.typeAware) Object.assign(rules, TYPE_AWARE);
+  /** @type {string | undefined} */
+  let note;
+  if (config.typeAware) {
+    Object.assign(rules, TYPE_AWARE);
+    // Without these, `rows[0]` and `const [row] = rows` are typed as always present, so the rule calls the check that
+    // guards a missing row unnecessary, and deleting that check is a bug. It runs only when every tsconfig.json in the
+    // project (each file is checked against its nearest) has them.
+    const loose = tsconfigs(cwd).find((file) => {
+      const options = compilerOptions(join(cwd, file)) ?? {};
+      return !options.noUncheckedIndexedAccess || !(options.strict || options.strictNullChecks);
+    });
+    if (loose !== undefined) {
+      delete rules["typescript/no-unnecessary-condition"];
+      note = `note: lint.typeAware leaves out typescript/no-unnecessary-condition: ${loose || "no tsconfig.json"} ${loose ? "lacks" : "has"} "strict" and "noUncheckedIndexedAccess", so index reads and destructured rows count as always present and needed checks would be called unnecessary`;
+    }
+  }
   // An override names an intersite rule by its bare id, or a built-in rule by oxlint's full name.
   for (const [id, level] of Object.entries(config.rules)) rules[id.includes("/") ? id : `intersite/${id}`] = level;
   // Not an oxlint rule (see bareSuppressions), but switched on and off like one in the slop pack.
@@ -224,7 +254,7 @@ function ruleSet(config) {
   // Swift rules run in SwiftLint (see lintSwift), and are switched on and off the same way, as `swift/<id>`.
   const swift = swiftRules.filter((r) => (rules[`swift/${r.id}`] ?? (config.packs.includes("swift") ? "error" : "off")) !== "off");
   for (const r of swiftRules) delete rules[`swift/${r.id}`];
-  return { rules, bareOn, swift };
+  return { rules, bareOn, swift, note };
 }
 
 /**
@@ -255,6 +285,7 @@ function printRules(custom, rules) {
     console.log(`${r.pack} ${r.id} ${(rules[`intersite/${r.id}`] ?? "off") === "off" ? "off" : "on"}`);
   }
   for (const b of builtinRules) console.log(`${b.pack} ${b.rule} ${(rules[b.rule] ?? "off") === "off" ? "off" : "on"}`);
+  for (const rule of Object.keys(TYPE_AWARE)) console.log(`typeAware ${rule} ${(rules[rule] ?? "off") === "off" ? "off" : "on"}`);
 }
 
 /**

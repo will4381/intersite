@@ -169,7 +169,10 @@ async function startLightpanda(chromium) {
     stdio: ["ignore", "ignore", "pipe"],
     env: { LIGHTPANDA_DISABLE_TELEMETRY: "true", ...process.env },
   });
-  const exited = new Promise((done) => { child.once("close", done); child.once("error", done); });
+  const exited = new Promise((done) => {
+    child.once("close", done);
+    child.once("error", done);
+  });
   /** @type {string | undefined} why the process is gone, once it is */
   let gone;
   let stderr = "";
@@ -178,12 +181,19 @@ async function startLightpanda(chromium) {
     gone = /** @type {NodeJS.ErrnoException} */ (error).code === "ENOENT" ? LIGHTPANDA_MISSING : `ui mode could not start lightpanda (${firstLine(error)})`;
   });
   child.once("exit", (code) => { gone ??= `lightpanda exited with code ${code} before it accepted a connection (${firstLine(stderr.trim())})`; });
-  const stop = async () => { child.kill(); await exited; };
+  const stop = async () => {
+    child.kill();
+    await exited;
+  };
   // ponytail: polls the port until it answers; read lightpanda's "listening" log line instead if its format is ever documented.
   for (const end = Date.now() + 10_000; ;) {
     try {
       const browser = await chromium.connectOverCDP(`ws://127.0.0.1:${port}`, { timeout: 2000 });
-      return { browser, stop: async () => { await browser.close().catch(alreadyClosed); await stop(); } };
+      const close = async () => {
+        await browser.close().catch(alreadyClosed);
+        await stop();
+      };
+      return { browser, stop: close };
     } catch (error) {
       if (gone || Date.now() > end) {
         await stop();
@@ -239,7 +249,10 @@ async function watchPage(page, origins, signInHeaders) {
     lastActivity = Date.now();
     if (origins.has(new URL(request.url()).origin)) sent.push(request);
   });
-  const finished = () => { inflight--; lastActivity = Date.now(); };
+  const finished = () => {
+    inflight--;
+    lastActivity = Date.now();
+  };
   page.on("requestfinished", finished);
   page.on("requestfailed", finished);
   page.on("response", (response) => {

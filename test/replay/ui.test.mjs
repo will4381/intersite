@@ -105,7 +105,10 @@ before(async () => {
   thirdUrl = `http://localhost:${/** @type {import("node:net").AddressInfo} */ (third.address()).port}`;
 });
 after(() => Promise.all([target.close(), new Promise((done) => app.close(done)), new Promise((done) => third.close(done))]));
-beforeEach(() => { mode = "healthy"; target.log.length = 0; rejected.length = 0; thirdSeen.length = 0; appSignIn.length = 0; appPaths.length = 0; });
+beforeEach(() => {
+  mode = "healthy";
+  for (const list of [target.log, rejected, thirdSeen, appSignIn, appPaths]) list.length = 0;
+});
 
 const page = "/notes/note_prod99";
 const session = [

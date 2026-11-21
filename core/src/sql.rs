@@ -296,11 +296,13 @@ fn migration(s: &Stmt, created_here: &HashSet<(String, String)>, out: &mut Vec<F
 
 /// A column that holds UUIDs as text: 36 characters where the uuid type stores 16 bytes, compared and indexed as
 /// strings, and never checked to be a UUID. Applies to new tables too: the type is cheapest to fix before rows exist.
-fn uuid_as_text(s: &Stmt, out: &mut Vec<Finding>) {
+fn uuid_as_text(s: &Stmt, inv: &Inventory, out: &mut Vec<Finding>) {
     let mut check = |table: &str, col: &sqlparser::ast::ColumnDef| {
         let options = col.options.iter().map(|o| o.option.to_string()).collect::<Vec<_>>().join(" ");
-        if kind(&col.data_type.to_string()) == "text" && makes_uuid(&options) {
-            let name = bare(&col.name.to_string());
+        let name = bare(&col.name.to_string());
+        // A later migration that changed the column to uuid has fixed it.
+        let still_text = inv.types.get(&(table.to_string(), name.clone())).is_none_or(|t| t == "text");
+        if kind(&col.data_type.to_string()) == "text" && makes_uuid(&options) && still_text {
             out.push(finding(s, "uuid-as-text", &format!("{table}.{name}"), format!("{table}.{name} is {} filled with generated UUIDs: store them as uuid (16 bytes, compared as numbers, rejected when malformed) instead of text", col.data_type)));
         }
     };
@@ -472,9 +474,19 @@ pub fn run(request: &Request) -> Result<Answer, String> {
         (s.line..s.line + span.max(1)).any(|l| request.changed(&s.file, l)) || request.changed(&s.file, s.line)
     };
     let mut findings = Vec::new();
+    // Judging the whole repository, a migration already in it has run or will run as written: its locks and breaks are
+    // history. Only the schema it leaves behind is judged (keys, indexes, column types), as the latest migration says.
+    let whole = request.added.is_none();
+    let mut history = 0;
     for s in stmts.iter().filter(|s| changed(s)) {
-        migration(s, &created_here, &mut findings);
-        uuid_as_text(s, &mut findings);
+        if whole && !s.from_code {
+            let mut skipped = Vec::new();
+            migration(s, &created_here, &mut skipped);
+            history += skipped.len();
+        } else {
+            migration(s, &created_here, &mut findings);
+        }
+        uuid_as_text(s, &inv, &mut findings);
         query(s, &inv, &mut findings);
     }
     for file in request.files.iter().filter(|f| f.ends_with(".prisma")) {
@@ -535,7 +547,8 @@ pub fn run(request: &Request) -> Result<Answer, String> {
         findings.extend(more);
         explained = count;
     }
-    let summary = format!("{} SQL statements and {} queries in loops read{}", stmts.len(), loops.len(), if explained > 0 { format!(", {explained} planned against the database") } else { String::new() });
+    let past = if history > 0 { format!("; {history} hazards in migrations already written are history, not judged") } else { String::new() };
+    let summary = format!("{} SQL statements and {} queries in loops read{}{past}", stmts.len(), loops.len(), if explained > 0 { format!(", {explained} planned against the database") } else { String::new() });
     Ok(Answer { findings, summary, data: None })
 }
 
@@ -660,6 +673,11 @@ mod tests {
     use super::*;
 
     fn check(files: &[(&str, &str)]) -> Vec<String> {
+        check_change(files, false)
+    }
+
+    /// With `as_change`, every line of every file counts as added by the change; without, the whole repository is judged.
+    fn check_change(files: &[(&str, &str)], as_change: bool) -> Vec<String> {
         let dir = std::env::temp_dir().join(format!("intersite-sql-{}", std::process::id() as u64 * 1000 + files.len() as u64 + files[0].1.len() as u64));
         for (path, text) in files {
             let p = dir.join(path);
@@ -670,7 +688,7 @@ mod tests {
             command: "sql".into(),
             root: dir.to_string_lossy().into(),
             files: files.iter().map(|(p, _)| p.to_string()).collect(),
-            added: None,
+            added: as_change.then(|| files.iter().map(|(p, text)| (p.to_string(), (1..=text.lines().count() as u32).collect())).collect()),
             prefix: String::new(),
             database_url: None,
             options: serde_json::Value::Null,
@@ -688,10 +706,13 @@ mod tests {
 
     #[test]
     fn flags_migration_hazards_and_missing_foreign_key_indexes() {
-        let got = check(&[
+        let files = [
             ("db/001.sql", "CREATE TABLE users (id uuid PRIMARY KEY, email text);\nCREATE TABLE orders (id uuid PRIMARY KEY, user_id uuid REFERENCES users(id));\nCREATE INDEX orders_id ON orders (id);"),
             ("db/002.sql", "ALTER TABLE users ADD COLUMN plan text NOT NULL;\nCREATE INDEX users_email ON users (email);\nALTER TABLE users DROP COLUMN legacy;\nALTER TABLE users ALTER COLUMN email SET NOT NULL;"),
-        ]);
+        ];
+        // Judging the whole repository, migrations already written are history: only the schema they leave is judged.
+        assert_eq!(check(&files), vec!["db/001.sql:fk-index:orders.user_id"]);
+        let got = check_change(&files, true);
         assert_eq!(got, vec![
             "db/001.sql:fk-index:orders.user_id",
             "db/002.sql:drop-column:users",

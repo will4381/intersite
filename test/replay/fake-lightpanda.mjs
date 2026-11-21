@@ -34,4 +34,7 @@ chrome.stderr.on("data", (chunk) => {
     });
   }).listen(Number(values.port), values.host);
 });
-process.on("SIGTERM", () => { chrome.kill(); chrome.once("close", () => process.exit(0)); });
+process.on("SIGTERM", () => {
+  chrome.kill();
+  chrome.once("close", () => process.exit(0));
+});
