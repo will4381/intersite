@@ -22,7 +22,7 @@ npx intersite check
 The gates' analysis runs in Intersite's Rust engine, which builds itself with cargo the first time a check needs it
 (a minute or two, once), so install Rust first: `curl https://sh.rustup.rs -sSf | sh`.
 `check` is the one command to run before calling a change done. Lint and the gates work from this point with no
-further setup. To add capture and replay, ask your agent to "set up intersite"; the `intersite-setup` skill walks it
+further setup. To add capture and replay (experimental), ask your agent to "set up intersite"; the `intersite-setup` skill walks it
 through the wiring.
 
 For lint and gates only, run `npx intersite init --no-replay`, or put `replay: false` in `intersite.yml`: `check` then
@@ -49,7 +49,7 @@ In a monorepo, install `intersite`, `oxlint` and `@oxlint/plugins` once at the r
 | `unused` | A file or export this change added that nothing uses, or a file it orphaned | git |
 | `protected` | A change to paths you marked as protected (money, access) with no test changed alongside | git and a `gates.protected` rule |
 | your `checks` | Whatever the project already runs: its tests, generated-file checks, a model checker, a bundle budget | a `checks` entry |
-| `replay` | An API that now answers real recorded sessions differently | capture and an adapter |
+| `replay` (experimental) | An API that now answers real recorded sessions differently | capture and an adapter |
 
 `gates.base` defaults to `origin/main` and falls back to `main` or `master`; a repository with no commits compares
 against an empty tree, and outside git `check` skips the gates.
@@ -119,7 +119,7 @@ finding, exit code 0, 1 or 2.
 | `intersite twins [<file>:<line>] [--all]` | Finds functions that do the same job in different code, by the names, calls and fields they use |
 | `intersite trace [--base <ref>] [--runs <n>] -- <command>` | Every function a test or script touched and where its time went; with `--base`, what got slower. `--server "<cmd>" --url <origin> --request "GET /x"` (or `--replay`) measures each request to a server, `--page <url>` a page in Chrome (web vitals, JS run, CPU) |
 | `intersite collector` | Runs the local collector (SQLite file in `.intersite/`) |
-| `intersite replay [--id] [--tag] [--action] [--sample] [--mode] [--verbose] [--metrics-out] [--metrics-base] [--snapshot-out] [--snapshot-base] [--openapi]` | Replays recorded sessions against a local server |
+| `intersite replay [--id] [--tag] [--action] [--sample] [--mode] [--verbose] [--metrics-out] [--metrics-base] [--snapshot-out] [--snapshot-base] [--openapi]` | Replays recorded sessions against a local server (experimental) |
 | `intersite actions` | Lists named user actions seen, with error counts |
 | `intersite audit` | Lists every value capture kept, per key, so personal data that slipped through is easy to spot |
 | `intersite pin <id>` | Keeps a recorded case from expiring |
@@ -241,7 +241,11 @@ examples, and either a SwiftLint rule or a regular expression. Intersite runs Sw
 project's own `.swiftlint.yml` keeps applying to its own SwiftLint runs and every Intersite finding is attributable.
 A deliberate exception in Swift is `// swiftlint:disable:next <id> -- <why>`.
 
-## Capture, actions and replay
+## Capture, actions and replay (experimental)
+
+Replay is experimental: its modes, options and output may change between release candidates, and a failure can be
+replay's own mistake (an ID it did not remap, a record the seed lacks) rather than the change's. Read the failing case
+with `--verbose` before changing code for it.
 
 Capture samples whole user sessions on the project's server, scrubs them, and sends them to the collector. Replay
 sends them again to a local server and compares the answers with what production returned.

@@ -24,7 +24,8 @@ It prints one line per finding, with the command that reruns just that finding.
 
 - **Never make a check pass by weakening it.** Do not delete, skip or loosen a test, special-case a test's inputs,
   or silence a lint rule. If a test, a replayed case or a rule looks wrong, stop and say so. A real exception goes
-  in `intersite.yml` under `gates.acknowledged` with a reason, or on one line as
+  in `intersite.yml` under `gates.acknowledged` with a reason, for one change only as a commit trailer
+  `Intersite-Ack: <gate>: <why>`, or on one line as
   `// oxlint-disable-next-line intersite/<rule> -- <why>`, where a reviewer will see it.
 - **Fix a bug by reproducing it first.** With a reference from a user or a log, run
   `npx intersite replay --id <ref> --verbose`. Otherwise write the failing test, then the fix. The new test must

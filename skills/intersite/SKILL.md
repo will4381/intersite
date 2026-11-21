@@ -13,7 +13,9 @@ This is the definition of done; when it prints `skip …: slow, run with \`inter
 saying a change is finished. It runs lint, the gates on your diff, the project's own checks, and a replay of real recorded sessions when the
 project's server is running. Success is one line starting `ok check:`, after any `skip …:` lines that say what did
 not run and why. Each finding is one line: a gate's carries `| to accept: add { "gate": "<name>", … }`, which names
-the gate; a replay failure ends with `| rerun: <command>`, which reruns only that case.
+the gate; a replay failure ends with `| rerun: <command>`, which reruns only that case. Replay is experimental: rerun a failure
+with `--verbose` first, and if the request it sent or its comparison is what looks wrong, not the server, say so
+instead of changing code to satisfy it.
 
 ## Fixing what it reports
 

@@ -415,7 +415,7 @@
       }
     },
     "replay": {
-      "description": "Replay of recorded traffic. `replay: false` turns it off for a project that only lints and gates: `intersite check` runs no replay stage and `intersite init` writes no adapter.",
+      "description": "Replay of recorded traffic (experimental: may change between release candidates). `replay: false` turns it off for a project that only lints and gates: `intersite check` runs no replay stage and `intersite init` writes no adapter.",
       "oneOf": [
         {
           "const": false

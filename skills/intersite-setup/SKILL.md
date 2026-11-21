@@ -37,7 +37,7 @@ Add a script: `"check": "intersite check"`.
 npx intersite check
 ```
 
-It must end with `ok check:`. Lint and the gates now work. Replay is skipped until the steps below are done.
+It must end with `ok check:`. Lint and the gates now work. Replay (experimental) is skipped until the steps below are done.
 
 ## 2. Capture requests
 

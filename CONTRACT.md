@@ -13,7 +13,7 @@ What every part of this package agrees on. Change it here first, then in code.
 | `track/` | The browser | Names user actions and stamps them on the requests they cause |
 | `capture/` | The project's server or browser (any `fetch` runtime) | Samples, scrubs and sends cases to the collector |
 | `collector/`, `cli/collector.mjs`, `cli/deploy.mjs` | Node with SQLite locally; a Cloudflare Worker with D1 when deployed | Stores cases, answers queries, deletes expired ones |
-| `replay/`, `cli/replay.mjs` | Node, local or CI | Pulls cases, replays them against a target URL, compares |
+| `replay/`, `cli/replay.mjs` | Node, local or CI | Pulls cases, replays them against a target URL, compares (experimental: may change between release candidates) |
 | `cli/check.mjs`, `cli/init.mjs` | Node | `check` runs everything that applies; `init` sets a project up |
 | `shared/` | Everywhere | `case.mjs`, `shape.mjs` (no Node imports), `config.mjs` (Node only) |
 
@@ -228,7 +228,7 @@ Nms of its own time, Mms on the base (+P%)`, exiting 1. With `INTERSITE_DATABASE
 loaded, the queries the run sent are listed slowest first with their calls, each planned for the index it needs.
 `--json` prints the report as one object. The crunching is in `core/src/trace.rs`.
 
-## Replay adapter
+## Replay adapter (experimental)
 
 A project supplies the module named by `replay.adapter`. All exports are optional except `signIn`.
 
@@ -245,7 +245,7 @@ export function headers({ caseId, method, route }) { return {}; }
 export const invariants = [{ name: "ledger balances", async check({ target, fetch }) { return undefined; } }];
 ```
 
-## Replay modes
+## Replay modes (experimental)
 
 UI cases are skipped by every mode except `ui`.
 

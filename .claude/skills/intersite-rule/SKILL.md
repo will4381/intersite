@@ -29,6 +29,7 @@ lint:
   first line of every comment, ignoring case. `unless: <regular expression>` exempts a comment it matches.
 - `message` says what to do instead, not only what is wrong. An agent will read it and act on it.
 - `files` limits the rule to path globs. Leave it out to apply everywhere.
+- `ignore` exempts path globs, such as the one file allowed to do what the rule bans.
 - Make the selector narrow. A rule that fires on reasonable code teaches people to suppress it.
 
 ## 2. Check it
