@@ -54,6 +54,9 @@ In a monorepo, install `intersite`, `oxlint` and `@oxlint/plugins` once at the r
 | your `checks` | Whatever the project already runs: its tests, generated-file checks, a model checker, a bundle budget | a `checks` entry |
 | `replay` (experimental) | An API that now answers real recorded sessions differently | capture and an adapter |
 
+When a newer Intersite release is tagged, `check` says so on one line with the command to upgrade (looked up at most
+once a day, never in CI; `INTERSITE_NO_UPDATE_CHECK=1` turns it off).
+
 `gates.base` defaults to `origin/main` and falls back to `main` or `master`; a repository with no commits compares
 against an empty tree, and outside git `check` skips the gates.
 

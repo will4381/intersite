@@ -45,7 +45,10 @@ Agents read this output, and every line costs them context.
 - Nothing decorative: no banners, colours, progress bars or blank lines. `--json` prints structured data instead.
 - Exit 0 pass, 1 findings, 2 usage or setup error. A setup error is one line on stderr that says what to do. An
   unexpected error is also one line and exit 2; `INTERSITE_DEBUG=1` prints the stack.
-- `check` prints only its stages' findings and its own line; `skip <stage>: <why>` lines may come before it.
+- `check` prints only its stages' findings and its own line; `skip <stage>: <why>` lines may come before it, and so
+  may one `upgrade intersite: <tag> is out and this is v<version>; …` line when a newer release is tagged. The tags
+  are read with `git ls-remote` at most once a day per project (cached in `node_modules/.cache/intersite`), never in
+  CI, never prompting for credentials, and a failure says nothing. `INTERSITE_NO_UPDATE_CHECK=1` turns it off.
 
 ## Config: `intersite.yml`
 

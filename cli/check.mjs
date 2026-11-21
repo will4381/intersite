@@ -8,6 +8,7 @@ import { EMPTY_TREE, GateError, changes, git, inGit, matches, resolveBase } from
 import { answers } from "../replay/run.mjs";
 import { loadConfig } from "../shared/config.mjs";
 import { WHOLE } from "./gate.mjs";
+import { installed, upgradeAvailable } from "./upgrade.mjs";
 
 /** Whether a collector answers at this URL. @param {string} url */
 function reachable(url) {
@@ -66,6 +67,8 @@ export default async function check(argv, { cwd }) {
     console.error(`check: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
   }
+  // Asked now, answered while the stages run: a newer Intersite release to upgrade to.
+  const upgrade = upgradeAvailable(cwd);
   const skip = new Set(flags.skip ?? []);
   const base = flags.base ? ["--base", flags.base] : [];
 
@@ -118,6 +121,8 @@ export default async function check(argv, { cwd }) {
   const linting = lint ? runStage(lint) : undefined;
   for (const stage of rest) await runStage(stage);
   await linting;
+  const tag = await upgrade;
+  if (tag) console.log(`upgrade intersite: ${tag} is out and this is v${installed}; install github:will4381/intersite#${tag} as a dev dependency (npm i -D, or the project's package manager), then run \`npx intersite init\``);
   const ran = stages.filter((stage) => !skip.has(stage.name)).map((stage) => stage.name);
   console.log(failed.length > 0 ? `FAIL check: ${failed.join(", ")}` : `ok check: ${ran.join(", ") || "no stages ran"}`);
   return worst;

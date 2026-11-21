@@ -43,6 +43,7 @@ instead of changing code to satisfy it.
 | `intersite/require-comment-tag`, `intersite/no-alibi-comment` | A comment explains or defends code instead of the code saying it | Reshape first: a clearer name, an extracted function, a type that rules the case out, or a test that fails when the line is removed. Tag it only when none of those can say it |
 | `<name>: failed with exit N \| rerun: <command>` | One of the project's own checks failed; its output is printed above the line | Run the rerun command, fix what it reports |
 | `skip <names>: slow, run with …` | Slow checks this change touches did not run | Run `npx intersite check --full` before calling the change done |
+| `upgrade intersite: <tag> is out …` | A newer Intersite release is tagged than the one installed | Tell the user, with the command the line gives; upgrade only if they agree, then run `npx intersite init` |
 | `skip gates:` / `skip replay:` | That stage could not run here (no git, no adapter, no server answering) | Nothing to fix; say so if the change needed it |
 | `FAIL baseline` | The API answered differently from production, or a server error production recorded still happens | Run the rerun command with `--verbose`, then fix the code |
 | `FAIL twice` | Repeating a write caused a server error | Make the write safe to repeat |
