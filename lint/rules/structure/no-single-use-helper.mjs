@@ -1,7 +1,7 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { FUNCTIONS, isGenerated, isTestFile, walk } from "../shared.mjs";
+import { FUNCTIONS, isGenerated, isTestFile, resolveVariable, walk } from "../shared.mjs";
 
 /** At most this many statements: a longer helper called once is a named step, which max-function-statements asks for. */
 const MAX_STATEMENTS = 1;
@@ -28,15 +28,6 @@ function statements(fn) {
   return count + fn.body.body.filter((/** @type {any} */ s) => s.type === "VariableDeclaration").length;
 }
 
-/** Whether an identifier node is a use of a value: not a property name, a type, or a declaration's own name. @param {any} n @param {any} parent */
-function isValueUse(n, parent) {
-  if (parent.type === "MemberExpression" && parent.property === n && !parent.computed) return false;
-  if (parent.type === "Property" && parent.key === n && !parent.computed && !parent.shorthand) return false;
-  if (parent.type === "Property" && parent.shorthand && parent.key === n && parent.value !== n) return false;
-  if (parent.type.startsWith("TS") && parent.type !== "TSAsExpression" && parent.type !== "TSSatisfiesExpression" && parent.type !== "TSNonNullExpression") return false;
-  return true;
-}
-
 export const id = "no-single-use-helper";
 export const pack = "design";
 
@@ -51,27 +42,21 @@ export const rule = defineRule({
     return {
       before: () => !isTestFile(context) && !isGenerated(context),
       Program(program) {
-        const helpers = program.body.map(helperOf).filter((/** @type {any} */ h) => h &&
-          // Components and hooks are a framework's unit, named for it even when used once.
-          !/^[A-Z]|^use[A-Z]/.test(h.name) && !PREDICATE.test(h.name) && statements(h.fn) <= MAX_STATEMENTS && context.sourceCode.getText(h.fn.body).length <= MAX_CHARS);
-        if (!helpers.length) return;
-        const names = new Map(helpers.map((/** @type {any} */ h) => [h.name, h]));
-        /** @type {Map<string, { node: any, parent: any }[]>} */
-        const uses = new Map();
-        walk(program, (n, parent) => {
-          if (n.type !== "Identifier" || !names.has(n.name) || names.get(n.name).id === n || !parent || !isValueUse(n, parent)) return;
-          uses.set(n.name, [...(uses.get(n.name) ?? []), { node: n, parent }]);
-        });
-        for (const h of helpers) {
-          const found = uses.get(h.name) ?? [];
-          if (found.length !== 1) continue;
-          const [{ node, parent }] = found;
+        const { sourceCode } = context;
+        for (const h of program.body.map(helperOf)) {
+          // Cheap tests first: most functions are exported, named for a framework, or longer than an inline expression.
+          if (!h || /^[A-Z]|^use[A-Z]/.test(h.name) || PREDICATE.test(h.name) || sourceCode.getText(h.fn.body).length > MAX_CHARS || statements(h.fn) > MAX_STATEMENTS) continue;
+          // The scope manager already knows every use; `const f = …` counts its own initialisation, which is no use.
+          const uses = (resolveVariable(h.id, sourceCode)?.references ?? []).filter((/** @type {any} */ r) => !r.init);
+          if (uses.length !== 1) continue;
+          const node = uses[0].identifier;
+          const parent = node.parent;
           // Passed as a value (items.map(format)) it is a named callback; inside itself it recurses.
-          if (parent.type !== "CallExpression" || parent.callee !== node || (node.start >= h.fn.start && node.end <= h.fn.end)) continue;
+          if (parent?.type !== "CallExpression" || parent.callee !== node || (node.start >= h.fn.start && node.end <= h.fn.end)) continue;
           let caller = parent.parent;
           while (caller && !FUNCTIONS.has(caller.type)) caller = caller.parent;
           if (caller && statements(caller) > MAX_CALLER_STATEMENTS) continue;
-          const line = context.sourceCode.getText().slice(0, node.start).split("\n").length;
+          const line = sourceCode.getText().slice(0, node.start).split("\n").length;
           context.report({ node: h.id, messageId: "once", data: { name: h.name, count: String(statements(h.fn)), line: String(line) } });
         }
       },

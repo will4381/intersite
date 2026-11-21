@@ -2,7 +2,7 @@
 import { defineRule } from "@oxlint/plugins";
 
 import { walk } from "./shared.mjs";
-import { isTestCall } from "./require-assertion.mjs";
+import { hasTestCalls, isTestCall } from "./require-assertion.mjs";
 
 /** Matchers whose argument decides: a zero count says something did not happen. */
 const COUNTED = /^(toHaveBeenCalledTimes|toHaveCount)$/;
@@ -51,6 +51,8 @@ export const rule = defineRule({
   },
   createOnce(context) {
     return {
+      // Only a file that calls it() or test() has tests to read.
+      before: () => hasTestCalls(context),
       Program(program) {
         /** @type {Map<any, { node: any, negative: boolean }[]>} tests per parent block (a describe body, or the file) */
         const groups = new Map();

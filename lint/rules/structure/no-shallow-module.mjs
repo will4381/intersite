@@ -50,7 +50,10 @@ export const rule = defineRule({
       // An index file re-exports a package's surface; constants and types files are tables, not behaviour.
       before: () => !isTestFile(context) && !isGenerated(context) && !/(^|\/)(index|constants?|types?)\.[cm]?[jt]sx?$/.test(filePath(context)),
       Program(program) {
-        const fns = program.body.flatMap(exportedFunctions).filter((/** @type {any} */ fn) => !returnsJsx(fn));
+        // Counted before any body is read: most modules export far fewer, and stop here.
+        const all = program.body.flatMap(exportedFunctions);
+        if (all.length < MIN_EXPORTS) return;
+        const fns = all.filter((/** @type {any} */ fn) => !returnsJsx(fn));
         if (fns.length < MIN_EXPORTS) return;
         // Work the module does privately counts too: a deep module has a small interface over a large body.
         const exported = new Set(fns);
