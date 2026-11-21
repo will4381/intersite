@@ -7,8 +7,9 @@ What every part of this package agrees on. Change it here first, then in code.
 | Folder | Runs in | Does |
 | --- | --- | --- |
 | `lint/`, `cli/lint.mjs` | Node, inside oxlint | Slop rules, mostly declared in JSON; baseline that only shrinks |
-| `gates/`, `cli/gate.mjs` | Node, local or CI | Checks on a change: test integrity, duplicates, new dependencies, fails-on-base, mutation |
-| `gates/features.mjs`, `cli/search.mjs` | Node | Structural features of JavaScript and TypeScript (after Aroma): `search`, and the `similar` gate's partial copies |
+| `gates/`, `cli/gate.mjs` | Node, local or CI | Each gate's git work (the diff, the files, the config's globs) and its output; the judging is in `core/` |
+| `core/` | Rust, built by cargo the first time a check needs it (and again when its source changes) | The analysis engine, called with one JSON request per check: similar (lexer, k-grams, Aroma features), duplicates, unused, naming, style-drift, value-drift, sql (with planning against a database), regex, artifacts, test-integrity, new-deps, mutation's choice of mutants, search, twins, trace reports |
+| `cli/search.mjs`, `cli/twins.mjs`, `cli/trace.mjs` | Node | `search`, `twins` and `trace`: arguments, processes (servers, inspectors, Chrome) and output |
 | `track/` | The browser | Names user actions and stamps them on the requests they cause |
 | `capture/` | The project's server or browser (any `fetch` runtime) | Samples, scrubs and sends cases to the collector |
 | `collector/`, `cli/collector.mjs`, `cli/deploy.mjs` | Node with SQLite locally; a Cloudflare Worker with D1 when deployed | Stores cases, answers queries, deletes expired ones |
@@ -18,14 +19,18 @@ What every part of this package agrees on. Change it here first, then in code.
 
 ## Code rules
 
-- Plain ESM `.mjs` with `// @ts-check` and JSDoc types. No TypeScript files, no build step: the package is installed
+- Analysis is Rust in `core/`, with the crates it needs (oxc for JavaScript and TypeScript, sqlparser for SQL,
+  postgres for planning). A machine that runs the gates needs Rust (`rustup`): `gates/core.mjs` builds the engine with
+  cargo the first time and whenever `core/src` is newer than the binary, then sends it one JSON request on stdin and
+  reads one JSON answer: `{ findings: [{ file, line, target, message }], summary, data? }`, paths relative to `root`.
+- Node code is plain ESM `.mjs` with `// @ts-check` and JSDoc types. No TypeScript files: the package is installed
   straight from GitHub (`"intersite": "github:<owner>/intersite#<tag>"`), and Node refuses to strip types under
-  `node_modules`.
+  `node_modules`. Node stays where it must: the CLI entry, git and process orchestration, the oxlint rule plugins,
+  `capture/` and `track/`, the collector, and replay (adapters are the project's JavaScript).
 - One runtime dependency, `yaml`, used only where config and rule files are read (never in `capture/` or `track/`).
   `oxlint` and `@oxlint/plugins` are optional peers that `lint` needs (a package that only imports
   `intersite/capture` or `intersite/track` installs neither); `playwright-core` is an optional peer used only
-  by the `ui` replay mode; `oxc-parser` is an optional peer that `search` and the `similar` gate's partial copies need
-  (without it `search` is a setup error and `similar` says in its summary that it skipped them); `wrangler` is a dev dependency.
+  by the `ui` replay mode and `trace --page`; `wrangler` is a dev dependency, and `oxc-parser` one only for search's recall test.
 - `capture/`, `track/`, `shared/case.mjs` and `shared/shape.mjs` use only web-standard APIs.
 - Tests are `node --test` files under `test/<part>/`. Test behavior through the part's public entry, not its internals.
 - A deliberate shortcut gets a `// ponytail: <ceiling>, <upgrade path>` comment.
@@ -142,8 +147,10 @@ any nested folder whose own config loads (that is another project). Changes outs
 in findings, `--json`, `gates.acknowledged` targets and every `gates` glob are relative to the project folder, as
 lint's are. Gates read wider only where that is the point: `duplicates` and `similar` look for the original in the
 whole repository and name it relative to the project (`../../packages/ui/x.ts`); `unused` counts a mention anywhere
-in the repository as a use; `style-drift` offers tokens from the project's own package, packages above it and
-shared ones; `new-deps` also checks the workspace root's `package.json` for a project in a subfolder.
+in the repository as a use; `sql` reads every migration for the indexes a new foreign key may have; `regex` compares a
+validator with those of the same name anywhere; `style-drift` offers tokens from the project's own package, packages above it and
+shared ones; `value-drift` reads every constant and string in the repository, so an app's copy is checked against a
+shared package's pricing; `new-deps` also checks the workspace root's `package.json` for a project in a subfolder.
 `fails-on-base` and `mutation` use a worktree of the whole repository and run `gates.testCmd` in the project's
 folder inside it, each run limited to `--timeout` seconds (120 by default): for `fails-on-base` a run that does not
 finish is stopped and counts as failing on the base, like any other failure there.
@@ -153,9 +160,12 @@ finish is stopped and counts as failing on the base, like any other failure ther
 | --- | --- |
 | `test-integrity` | A test file was deleted, or has fewer tests or fewer assertions than on base, or gained a skip |
 | `duplicates` | An added block of `gates.duplicateLines` or more lines already exists elsewhere in the repository |
-| `similar` | An added function, component, hook, class or type already exists under another name: the same structure once local names and literals are set aside. Or, with `oxc-parser`, added lines hold 80% or more of an existing function's structural features (one of 30 or more names and literals) inside a function at least half again its size: a helper pasted instead of called. Exact pasted blocks are left to `duplicates`. Target is `file:Name` |
+| `similar` | An added function, component, hook, class or type already exists under another name: the same structure once local names and literals are set aside. Or added lines hold 80% or more of an existing function's structural features (one of 30 or more names and literals) inside a function at least half again its size: a helper pasted instead of called. Exact pasted blocks are left to `duplicates`. Target is `file:Name` |
 | `naming` | The change adds a file or folder whose casing, shared suffix (`*.service.ts`) or test pattern differs from what a clear majority of its siblings keep, or whose main export is named unlike the file where its siblings match theirs. Conventions are inferred per folder and file kind, never configured |
 | `style-drift` | The change adds a styling value that is nearly one the project already has (a colour within the just-noticeable difference, a size a pixel off its scale), a literal equal to a token's value, a value off a closed font-size, weight or radius scale, or a token that nearly duplicates another in its family |
+| `value-drift` | A string, JSX text or comment states a money figure (a percentage, basis points, cents, or dollars under $100) in a sentence with a money word, and the `const` sharing two or more of its words, one of them a money word, holds a different value once its unit word (`Bps`, `Percent`, `Rate`, `Cents`, `Dollars`) is applied; or one money rate is set to two values in two files. Either side being changed counts. Sentences with an example marker (`for example`, `e.g.`, `if`, `say`) or code (`{`, `}`, `=`), input bounds (`between`, 0%, 100%), zeros, `let`s, Markdown, tests, seeds, fixtures and scripts are left out |
+| `sql` | Added SQL (in `.sql` files, or in code: tagged `sql`/`$queryRaw` templates, `pool.query("…")`, and strings that read as statements) that locks or breaks a live table: a column added `NOT NULL` with no default, `CREATE INDEX` without `CONCURRENTLY`, a foreign key added without `NOT VALID`, `SET NOT NULL`, a column type change, a dropped or renamed column or table (a table created in the same file is not live yet); a foreign key no index starts with (indexes, primary keys and unique constraints are read from every migration); in code only, `UPDATE`/`DELETE` with no `WHERE`, `SELECT *`, `ORDER BY random()`, `OFFSET` by parameter or of 50 or more, `LIKE '%…'`, `NOT IN (subquery)`, a function around an indexed column in a comparison; a database call (`prisma.x.findMany`, `db.select`, `pool.query`, `supabase.from`, an awaited `sql\`…\``) inside a loop or a per-item callback, one finding per loop, unless the line above it or the loop says `no-await-in-loop -- <why>`. With `INTERSITE_DATABASE_URL`, each new query in code is prepared and its generic plan explained (never executed, in a read-only transaction rolled back); a sequential scan with a filter over 10,000 rows or more is reported with the `CREATE INDEX CONCURRENTLY` it needs. Statements are parsed one at a time (sqlparser, Postgres dialect), so one it cannot read hides nothing else |
+| `regex` | An added regular expression (a literal or `RegExp("…")`) whose backtracking doubles with each character on a crafted input: an unbounded repeat inside an unbounded repeat where what else the group needs is optional or can be matched by the inner repeat (`(\w+\s?)+`), or a repeated choice whose alternatives can start the same way (`(a\|aa)+`). Linear-run patterns (`\s+$`) are quadratic too but need very long input, and are not reported. Also a full-string validator (`^…$`) for email, phone, UUID, URL or IP, named only for that (`EMAIL_RE`, `isValidPhone`), that another file writes differently in meaning (`\d` and `[0-9]` are one pattern) |
 | `new-deps` | A `package.json` gained a dependency |
 | `artifacts` | The change adds a leftover file: a backup or versioned copy (`*.bak`, `*_old.*`, `*-v2.*`), a scratch or debug script, a log or dump, or a stray planning document (`PLAN.md`, `SUMMARY.md`, `NOTES.md` and the like) |
 | `unused` | The change adds a source file nothing references, adds an export nothing uses, or removes the last reference to a file and leaves the file behind |
@@ -176,10 +186,47 @@ follows Aroma (Luan et al., OOPSLA 2019): each file is parsed into a simplified 
 features (itself, its place in up to three ancestors, the next name or literal, and a local variable's consecutive
 uses), local names become `#VAR`, and a named function's features are its leaves'. Candidates are the 100 functions
 sharing the most features with the query; each is pruned to the part that matches and ranked by the share of the
-query's features that part holds. A match holds at least half; the query's own lines never match. Each match is one
-line, `path:line name: N% of the query, at lines A-B`; with none, one `ok search:` line. Feature sets are cached per
-file content in `node_modules/.cache/intersite/features.bin`. Test files (`gates.testPaths`) and generated code are
-left out.
+query's features that part holds. A match holds at least half and is not scattered (its lines span at most twice the
+query's, plus ten); the query's own lines never match. Each match is one line, `path:line name: N% of the query, at
+lines A-B`; with none, one `ok search:` line. Feature sets are cached per file content in
+`node_modules/.cache/intersite/features-rust.bin`. Test files (`gates.testPaths`) and generated code are left out.
+
+## Twins
+
+`intersite twins [<file>:<line>] [--all] [--base <ref>] [--min <0-1>] [--max <n>] [--json]` finds functions that do
+the same job in different code, which `similar` (same structure) misses. A named function's meaning is the words in it:
+its name (counted twice), and every identifier, property, call and short string inside, split at case and underscores,
+stemmed, and with synonyms folded (fetch, load, read, find and query are all "get"; add, insert and make are "create").
+Words are weighted by TF-IDF across the repository, so words every function has count for little, and two functions
+are alike by the cosine of their weighted words. Candidates come from an index of each function's eight strongest
+words. With a line it lists the functions most like the one around it; otherwise each function the change added or
+edited (or with `--all`, every one) is paired with the most alike function in another file, at 80% or more (`--min`;
+below that, functions in one domain share words without doing one job).
+Each pair is one line naming the words they share most. Functions under ten distinct words or three lines, tests,
+fixtures, scripts and generated code are left out. It is advice, not a gate.
+
+## Trace
+
+`intersite trace` runs something and reports every project function it touched (`--touched` lists them with call
+counts) and where its time went: own time per function, slowest first, time with what each calls, and time inside
+each dependency. It reads V8's own records: the coverage files `NODE_V8_COVERAGE` writes and the `.cpuprofile` files
+`--cpu-prof` writes (both set through `NODE_OPTIONS`, so every Node process a command starts is covered), or, for a
+server, the inspector of every Node process it starts (`--inspect=127.0.0.1:0`): coverage is reset and the profiler
+started before each request and read after it, so each request's trace holds only what it ran.
+
+- `-- <command>`: a test suite, script or job; `--runs <n>` repeats it and takes medians (default 1, or 3 with `--base`).
+- `--server "<command>" --url <origin>` with `--request "<METHOD> <path> [json body]"` (repeatable), `--requests
+  <file>` (one per line), or `--replay [--sample <n>] [--seed <n>]` (recorded sessions through the project's adapter;
+  ids in paths are folded to `:id`). Each request runs once to warm up, then `--runs` times.
+- `--page <url> [--compare <url>]`: a page in Chrome (playwright-core): TTFB, FCP, LCP, CLS, blocking time over long
+  tasks, requests and kilobytes, the JavaScript it ran (a dev server's module paths map to project files) and a CPU
+  profile.
+
+With `--base <ref>` the same run happens on that commit in a worktree (`--setup` or `gates.setup` installs it), and a
+function whose own time grew by at least 20ms (`--min-ms`) and a quarter is reported as one line, `path:line name takes
+Nms of its own time, Mms on the base (+P%)`, exiting 1. With `INTERSITE_DATABASE_URL` set and `pg_stat_statements`
+loaded, the queries the run sent are listed slowest first with their calls, each planned for the index it needs.
+`--json` prints the report as one object. The crunching is in `core/src/trace.rs`.
 
 ## Replay adapter
 

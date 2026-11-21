@@ -303,7 +303,7 @@ function snapshotIgnore(replayConfig) {
  * @param {Record<string, any>} module @param {string} file
  * @returns {import("../replay/run.mjs").Adapter}
  */
-function named(module, file) {
+export function named(module, file) {
   /** @param {(...args: any[]) => any} fn @param {string} name */
   const wrap = (fn, name) => async (/** @type {any[]} */ ...args) => {
     try {
@@ -345,7 +345,7 @@ function readBase(cwd, file, kind) {
  * @param {string} defaultSample @param {Parameters<typeof listSessions>[0]} collector
  * @param {{ _meta: { seed: number | null } } | undefined} base
  */
-async function pickSessions(flags, defaultSample, collector, base) {
+export async function pickSessions(flags, defaultSample, collector, base) {
   if (flags.id) return { seed: undefined, sessions: [await getCase(collector, flags.id)] };
   const seed = flags.seed ?? String(typeof base?._meta.seed === "number" ? base._meta.seed : Math.floor(Math.random() * 2 ** 31));
   const sample = flags.sample ?? defaultSample;

@@ -6,7 +6,7 @@ user sessions into tests nobody has to write.
 ## Quickstart
 
 ```bash
-npm i -D github:will4381/intersite#v1.0.0-rc.11 oxlint @oxlint/plugins oxc-parser
+npm i -D github:will4381/intersite#v1.0.0-rc.11 oxlint @oxlint/plugins
 ```
 
 ```bash
@@ -18,6 +18,9 @@ npx intersite check
 ```
 
 `init` writes the config, the agent rules and skills, and records today's lint findings so only new ones fail.
+
+The gates' analysis runs in Intersite's Rust engine, which builds itself with cargo the first time a check needs it
+(a minute or two, once), so install Rust first: `curl https://sh.rustup.rs -sSf | sh`.
 `check` is the one command to run before calling a change done. Lint and the gates work from this point with no
 further setup. To add capture and replay, ask your agent to "set up intersite"; the `intersite-setup` skill walks it
 through the wiring.
@@ -36,9 +39,12 @@ In a monorepo, install `intersite`, `oxlint` and `@oxlint/plugins` once at the r
 | `test-integrity` | A test deleted, weakened or skipped to get green | git |
 | `duplicates` | A pasted block that already exists in the repository | git |
 | `new-deps` | A dependency added without saying why | git |
-| `similar` | A new function, component, hook or type that already exists under another name; when two differ only in a few literals it says to make one with a variant. With `oxc-parser` installed, also a helper's body pasted inside a new function | git |
+| `similar` | A new function, component, hook or type that already exists under another name; when two differ only in a few literals it says to make one with a variant. Also a helper's body pasted inside a new function | git |
 | `naming` | A file or folder named against the casing, suffix or test pattern its siblings keep, or unlike its main export | git |
 | `style-drift` | A colour, size or token that is almost one the project already has, or off a scale it keeps closed | git |
+| `value-drift` | Copy, an API description or a comment that states a fee, rate or price ("1.5% + $0.30 per payment") the constant of the same name no longer holds, or one money rate set to two values in two files | git |
+| `sql` | SQL that locks or breaks a live table (`NOT NULL` with no default, an index built without `CONCURRENTLY`, a dropped column), a foreign key with no index, slow or wrong queries (`LIKE '%x'`, `OFFSET` paging, `NOT IN` a subquery, `UPDATE` with no `WHERE`), and queries run once per loop item. With `INTERSITE_DATABASE_URL`, new queries are planned against that database and a scan of a big table names the index to add | git |
+| `regex` | A regular expression whose backtracking can hang the process on a crafted input, and an email, phone, UUID or URL validator written differently in two places | git |
 | `artifacts` | Leftovers: backup and `_v2` copies, scratch scripts, logs, stray `PLAN.md` and `SUMMARY.md` files | git |
 | `unused` | A file or export this change added that nothing uses, or a file it orphaned | git |
 | `protected` | A change to paths you marked as protected (money, access) with no test changed alongside | git and a `gates.protected` rule |
@@ -89,7 +95,7 @@ A change that touches `paths` fails unless it also changes a file under `needs` 
 
 ### The whole repository, not only the change
 
-`duplicates`, `similar`, `unused`, `naming`, `style-drift` and `artifacts` judge a change. `--all` points them at
+`duplicates`, `similar`, `unused`, `naming`, `style-drift`, `value-drift`, `sql`, `regex` and `artifacts` judge a change. `--all` points them at
 every file; record what is there today and only new findings fail, as with lint:
 
 ```bash
@@ -109,7 +115,9 @@ finding, exit code 0, 1 or 2.
 | `intersite check [--base <ref>] [--skip <stage>] [--full] [--all]` | Runs every stage that applies; one line on success. `--full` adds slow checks, `--all` covers the whole repository |
 | `intersite lint [paths] [--write] [--rules]` | Lints; `--write` lowers the baseline; `--rules` lists what applies |
 | `intersite gate <name> [--base <ref>] [--all [--write]]` | Runs one gate against the diff, or with `--all` the whole repository; `--write` records today's findings |
-| `intersite search <file>[:<line>[-<line>]] \| - [--max <n>]` | Finds the functions that already contain this code, renamed or reordered; needs `oxc-parser` |
+| `intersite search <file>[:<line>[-<line>]] \| - [--max <n>]` | Finds the functions that already contain this code, renamed or reordered |
+| `intersite twins [<file>:<line>] [--all]` | Finds functions that do the same job in different code, by the names, calls and fields they use |
+| `intersite trace [--base <ref>] [--runs <n>] -- <command>` | Every function a test or script touched and where its time went; with `--base`, what got slower. `--server "<cmd>" --url <origin> --request "GET /x"` (or `--replay`) measures each request to a server, `--page <url>` a page in Chrome (web vitals, JS run, CPU) |
 | `intersite collector` | Runs the local collector (SQLite file in `.intersite/`) |
 | `intersite replay [--id] [--tag] [--action] [--sample] [--mode] [--verbose] [--metrics-out] [--metrics-base] [--snapshot-out] [--snapshot-base] [--openapi]` | Replays recorded sessions against a local server |
 | `intersite actions` | Lists named user actions seen, with error counts |

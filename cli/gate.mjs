@@ -15,16 +15,19 @@ import { mutation } from "../gates/mutation.mjs";
 import { naming } from "../gates/naming.mjs";
 import { newDeps } from "../gates/new-deps.mjs";
 import { protectedPaths } from "../gates/protected.mjs";
+import { regex } from "../gates/regex.mjs";
 import { similar } from "../gates/similar.mjs";
+import { sql } from "../gates/sql.mjs";
 import { styleDrift } from "../gates/style-drift.mjs";
 import { testIntegrity } from "../gates/test-integrity.mjs";
 import { unused } from "../gates/unused.mjs";
+import { valueDrift } from "../gates/value-drift.mjs";
 
 /** @type {Record<string, (options: import("../gates/lib.mjs").GateOptions) => Promise<import("../gates/lib.mjs").GateResult>>} */
-export const gates = { "test-integrity": testIntegrity, duplicates, "new-deps": newDeps, artifacts, unused, similar, naming, "style-drift": styleDrift, "fails-on-base": failsOnBase, mutation, protected: protectedPaths };
+export const gates = { "test-integrity": testIntegrity, duplicates, "new-deps": newDeps, artifacts, unused, similar, naming, "style-drift": styleDrift, "value-drift": valueDrift, sql, regex, "fails-on-base": failsOnBase, mutation, protected: protectedPaths };
 
 /** Gates that can judge the whole repository (`--all`): the rest only mean something for a change. */
-export const WHOLE = new Set(["duplicates", "similar", "unused", "naming", "style-drift", "artifacts"]);
+export const WHOLE = new Set(["duplicates", "similar", "unused", "naming", "style-drift", "value-drift", "sql", "regex", "artifacts"]);
 
 const usage = `usage: intersite gate <${Object.keys(gates).join("|")}> [--base <ref>] [--json] [--cmd "<test command>"] [--paths <glob>]... [--setup "<command>"] [--max <n>] [--timeout <seconds>] [--all [--write]]`;
 

@@ -1,27 +1,13 @@
 // @ts-check
 // Fails when a small deliberate break on a changed source line leaves the tests passing: coverage without checking.
+// The mutants are chosen in core/hygiene.rs; this runs the tests against each.
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { GateError, WORK_TREE, addedLines, matches, parseNameStatus, resolveBase, sh, stripCode, topLevel, withWorktree, workingDiff } from "./lib.mjs";
+import { runCore } from "./core.mjs";
+import { GateError, WORK_TREE, addedLines, matches, parseNameStatus, resolveBase, sh, topLevel, withWorktree, workingDiff } from "./lib.mjs";
 
 const SOURCE = /\.(?:[cm]?js|tsx?|jsx)$/;
-// Longest first. The compound tokens are matched only so their pieces are never mutated on their own.
-const TOKEN = /===|!==|=>|\+\+|--|\+=|-=|>>>?=?|<<=?|\*\*|==|!=|<=|>=|&&|\|\||<|>|\+|-|\btrue\b|\bfalse\b|!(?!=)/g;
-/** @type {Record<string, string>} */
-const SWAP = { "===": "!==", "!==": "===", "==": "!=", "!=": "==", "<": ">=", ">=": "<", ">": "<=", "<=": ">", "&&": "||", "||": "&&", "+": "-", "-": "+", true: "false", false: "true", "!": "" };
-
-/**
- * Takes one item from each list in turn, so the first mutants are spread across every list.
- * @template T
- * @param {T[][]} lists
- */
-function interleave(lists) {
-  /** @type {T[]} */
-  const out = [];
-  for (let i = 0; lists.some((l) => i < l.length); i++) for (const l of lists) if (i < l.length) out.push(l[i]);
-  return out;
-}
 
 /**
  * @param {import("./lib.mjs").GateOptions} options
@@ -32,25 +18,10 @@ export async function mutation({ cwd, base, testCmd, testPaths, setup, mutants: 
   const sha = resolveBase(cwd, base);
   const [patch] = workingDiff(cwd, [["-U0", "-M", sha]]);
 
-  /** @type {{ path: string, line: number, at: number, from: string, to: string }[][]} */
-  const perFile = [];
-  for (const [path, lines] of [...addedLines(patch)].sort(([a], [b]) => a.localeCompare(b))) {
-    if (!SOURCE.test(path) || matches(path, testPaths)) continue;
-    const text = readFileSync(join(cwd, path), "utf8");
-    const code = stripCode(text).split("\n");
-    let offset = 0;
-    /** @type {(typeof perFile)[number][]} */
-    const perLine = [];
-    code.forEach((lineCode, i) => {
-      if (lines.has(i + 1)) {
-        const found = [...lineCode.matchAll(TOKEN)].filter((m) => m[0] in SWAP);
-        perLine.push(found.map((m) => ({ path, line: i + 1, at: offset + (m.index ?? 0), from: m[0], to: SWAP[m[0]] })));
-      }
-      offset += lineCode.length + 1;
-    });
-    perFile.push(interleave(perLine));
-  }
-  const chosen = interleave(perFile).slice(0, max);
+  // Which operators to flip, spread across lines and files, is chosen in core/hygiene.rs.
+  const files = [...addedLines(patch)].sort(([a], [b]) => a.localeCompare(b)).filter(([path]) => SOURCE.test(path) && !matches(path, testPaths)).map(([path, lines]) => [path, [...lines]]);
+  /** @type {{ path: string, line: number, at: number, from: string, to: string }[]} */
+  const chosen = runCore({ command: "mutants", root: cwd, options: { files, max } }).data;
 
   // A worktree of HEAD with the whole repository's uncommitted changes (and deletions) copied over, since the project's
   // tests may use a sibling package edited alongside it. Paths are relative to the repository top, as the overlay wants.

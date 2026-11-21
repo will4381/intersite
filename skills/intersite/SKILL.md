@@ -26,6 +26,9 @@ the gate; a replay failure ends with `| rerun: <command>`, which reruns only tha
 | contains `"gate": "similar"` | You wrote something that already exists under another name, or pasted a helper's body (`repeats … (N% of it)`) | Reuse the one named in the line; if they differ only in a few values, make one with a variant; for a pasted body, call the helper, or extract the part they share |
 | contains `"gate": "naming"` | A new file or folder does not follow its neighbours' naming | Rename it to the form the line gives |
 | contains `"gate": "style-drift"` | A new colour or size is almost an existing one | Use the token or value the line names |
+| contains `"gate": "value-drift"` | Copy states a fee or price the code's constant does not hold | Find out which is right; render the copy from the constant so they cannot drift again |
+| contains `"gate": "sql"` | A migration that locks or breaks a live table, a slow or wrong query, or a query per loop item | Do what the line says (`CONCURRENTLY`, `NOT VALID` then `VALIDATE`, a default, fetch before the loop); if a loop's sequential queries are deliberate, say why with `// oxlint-disable-next-line no-await-in-loop -- <why>` |
+| contains `"gate": "regex"` | A pattern that can hang on a crafted input, or a validator written differently elsewhere | Make the repeat's inside unable to match what follows it; import the one validator both sides use |
 | contains `"gate": "new-deps"` | A dependency was added | Remove it if a few lines of code or the standard library do the job |
 | contains `"gate": "artifacts"` | You left a backup copy, scratch file, log or planning document | Delete it; put anything worth keeping where it belongs |
 | contains `"gate": "unused"` | You added a file or export nothing uses, or orphaned a file | Wire it in or delete it |

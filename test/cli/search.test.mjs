@@ -129,7 +129,7 @@ return { total, tax, shipping, due: total + tax + shipping };
 
 test("half of a function's statements finds that function first, across Intersite's own source", async (t) => {
   const root = fileURLToPath(new URL("../..", import.meta.url));
-  const files = ["gates", "cli", "replay"].flatMap((dir) => readdirSync(join(root, dir)).filter((f) => f.endsWith(".mjs")).map((f) => `${dir}/${f}`));
+  const files = ["gates", "cli", "replay", "shared", "capture"].flatMap((dir) => readdirSync(join(root, dir)).filter((f) => f.endsWith(".mjs")).map((f) => `${dir}/${f}`));
   /** @type {{ file: string, line: number, code: string }[]} */
   const queries = [];
   for (const file of files) {

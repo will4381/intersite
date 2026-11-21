@@ -160,6 +160,9 @@
               "unused",
               "naming",
               "style-drift",
+              "value-drift",
+              "sql",
+              "regex",
               "fails-on-base",
               "mutation"
             ]
@@ -172,7 +175,10 @@
             "artifacts",
             "unused",
             "naming",
-            "style-drift"
+            "style-drift",
+            "value-drift",
+            "sql",
+            "regex"
           ],
           "description": "Gates `intersite check` runs. `fails-on-base` and `mutation` run the tests and need `testCmd`."
         },

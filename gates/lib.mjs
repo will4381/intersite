@@ -31,6 +31,13 @@ export function git(cwd, args, env) {
   return run.stdout;
 }
 
+/** JavaScript and TypeScript source files. */
+export const JS_FILE = /\.[cm]?[jt]sx?$/;
+/** Installed, built and generated code: never written by hand, so never an original or a copy. */
+export const SKIP = /(?:^|\/)(?:node_modules|dist|build|out|vendor|coverage|generated|__generated__)\/|\.min\.|\.d\.[cm]?ts$|\.(?:gen|generated)\./;
+/** Sample data, not the product: seeds, fixtures, mocks, stories, end-to-end suites and repository scripts. */
+export const NOT_PRODUCT = /(?:^|\/)(?:scripts?|seeds?|fixtures?|__fixtures__|mocks?|__mocks__|stories|storybook|e2e|qa|api-testing|__tests__|tests?|load-tests?|bench(?:marks?)?|lint)\/|(?:^|[/.-])(?:seeds?|fixtures?|mocks?|stories|story)\.[cm]?[jt]sx?$|\.d\.[cm]?ts$/;
+
 /** git's empty tree: the base of a repository with no commits yet, against which every file is new. */
 export const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 /** Where the default base `origin/main` is looked for when a repository has no such ref: no remote, or another name. */
@@ -323,7 +330,7 @@ export function sh(cmd, cwd, { timeout = 0, output = "stderr" } = {}) {
 }
 
 /** @param {number | undefined} pid */
-function killGroup(pid) {
+export function killGroup(pid) {
   if (!pid) return;
   try {
     process.kill(-pid, "SIGKILL");
@@ -383,43 +390,4 @@ export async function withWorktree({ cwd, ref, setup, overlay }, fn) {
     forget();
     remove();
   }
-}
-
-/**
- * The same text with the inside of comments and string literals replaced by spaces, keeping every newline and
- * column, so matches map back to the original by position.
- * @param {string} text
- */
-export function stripCode(text) {
-  // ponytail: regex literals and template ${} expressions are not understood, a tokenizer if that bites
-  const blank = (/** @type {string} */ s) => s.replace(/[^\n]/g, " ");
-  let out = "";
-  let i = 0;
-  while (i < text.length) {
-    const c = text[i];
-    const next = text[i + 1];
-    let end = -1;
-    let keep = 0;
-    if (c === "/" && next === "/") {
-      end = text.indexOf("\n", i);
-      if (end < 0) end = text.length;
-    } else if (c === "/" && next === "*") {
-      end = text.indexOf("*/", i + 2);
-      end = end < 0 ? text.length : end + 2;
-    } else if (c === '"' || c === "'" || c === "`") {
-      let j = i + 1;
-      while (j < text.length && text[j] !== c && (c === "`" || text[j] !== "\n")) j += text[j] === "\\" ? 2 : 1;
-      end = Math.min(j + 1, text.length);
-      keep = 1;
-    }
-    if (end < 0) {
-      out += c;
-      i++;
-    } else {
-      const inner = text.slice(i + keep, end - (keep && text[end - 1] === c ? 1 : 0));
-      out += (keep ? c : "") + blank(inner) + (keep && text[end - 1] === c && end - 1 > i ? c : "");
-      i = end;
-    }
-  }
-  return out;
 }

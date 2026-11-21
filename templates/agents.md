@@ -14,8 +14,14 @@ It prints one line per finding, with the command that reruns just that finding.
 - **Test through the API, not through mocks.** Do not mock this project's own modules. A test whose assertions
   could not fail is worse than no test.
 - **Reuse before writing.** Search for an existing helper first: `npx intersite search <file>:<line>` (or code on
-  stdin with `-`) lists the functions that already do what those lines do. `duplicates` and `similar` report pasted
-  and rewritten copies. Do not add a dependency for what a few lines do; `new-deps` reports every new one.
+  stdin with `-`) lists the functions that already contain those lines, and `npx intersite twins <file>:<line>` the
+  ones that do the same job in different code. `duplicates` and `similar` report pasted and rewritten copies. Do not
+  add a dependency for what a few lines do; `new-deps` reports every new one.
+- **Measure before shipping.** `npx intersite trace --base main -- <test command>` shows every function a run touched
+  and where the time went, and fails on what got slower than main. A server's requests:
+  `npx intersite trace --server "<dev command>" --url <origin> --request "GET /path"` (or `--replay` for recorded
+  sessions); a page: `npx intersite trace --page <url>`. With `INTERSITE_DATABASE_URL` set (a dev database, never
+  production) it lists the queries the run sent, slowest first, with the index each needs, and `sql` plans new queries.
 - **Name user actions.** A new button, form or clickable element gets `data-intersite="<area>.<verb>"`, such as
   `data-intersite="program.save"`. Keep an existing name when the markup changes: tests find the element by it.
 - **Useful commands:** `npx intersite lint --rules` (which rules apply), `npx intersite actions` (user actions seen,

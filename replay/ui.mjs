@@ -132,7 +132,7 @@ export async function openBrowser({ uiTarget, headed, cwd, browser: engine = "ch
  * installed Google Chrome. Headed runs always use Chrome: the shell has no window.
  * @param {typeof import("playwright-core").chromium} chromium @param {boolean} headed
  */
-async function launchChrome(chromium, headed) {
+export async function launchChrome(chromium, headed) {
   // No extra switches: Playwright already turns off background networking, updates, sync and throttling, and
   // --disable-gpu measured no better.
   // The headless shell is optional: when Playwright has not installed it, the installed Chrome below is used.

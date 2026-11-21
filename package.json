@@ -20,20 +20,17 @@
   "scripts": {
     "test": "node --test \"test/**/*.test.mjs\"",
     "lint": "node bin/intersite.mjs lint",
-    "check": "node bin/intersite.mjs check"
+    "check": "node bin/intersite.mjs check",
+    "build:core": "cargo build --release --manifest-path core/Cargo.toml"
   },
   "peerDependencies": {
     "@oxlint/plugins": ">=1.93.0",
-    "oxc-parser": ">=0.150.0",
     "oxlint": ">=1.93.0",
     "oxlint-tsgolint": ">=7.0.0",
     "playwright-core": ">=1.40.0"
   },
   "peerDependenciesMeta": {
     "@oxlint/plugins": {
-      "optional": true
-    },
-    "oxc-parser": {
       "optional": true
     },
     "oxlint": {
@@ -59,6 +56,9 @@
   },
   "files": [
     "bin",
+    "core/Cargo.toml",
+    "core/Cargo.lock",
+    "core/src",
     "cli",
     "capture",
     "collector",

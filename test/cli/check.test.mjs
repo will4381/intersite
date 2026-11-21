@@ -37,7 +37,7 @@ test("check runs every gate, names the ones that failed, and passes once the cha
 
   rmSync(join(r.cwd, "PLAN.md"));
   const clean = await check(r.cwd);
-  assert.deepEqual(clean.lines, ["ok check: test-integrity, duplicates, similar, new-deps, artifacts, unused, naming, style-drift, replay"], "success is one line");
+  assert.deepEqual(clean.lines, ["ok check: test-integrity, duplicates, similar, new-deps, artifacts, unused, naming, style-drift, value-drift, sql, regex, replay"], "success is one line");
   assert.equal(clean.code, 0, clean.stderr);
 });
 
@@ -53,7 +53,7 @@ test("check skips replay with one line when nothing answers at replay.target", a
   r.write({ "intersite.json": JSON.stringify({ project: "t", gates: { base: "base" }, replay: { target: "http://127.0.0.1:9" } }), "intersite.adapter.mjs": "export async function signIn() { return {}; }\n" });
   r.commit("adapter");
   const { code, lines } = await check(r.cwd);
-  assert.deepEqual(lines, ["skip replay: nothing answers at http://127.0.0.1:9 (start the server to replay recorded sessions)", "ok check: test-integrity, duplicates, similar, new-deps, artifacts, unused, naming, style-drift"]);
+  assert.deepEqual(lines, ["skip replay: nothing answers at http://127.0.0.1:9 (start the server to replay recorded sessions)", "ok check: test-integrity, duplicates, similar, new-deps, artifacts, unused, naming, style-drift, value-drift, sql, regex"]);
   assert.equal(code, 0);
 });
 

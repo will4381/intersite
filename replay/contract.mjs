@@ -1,9 +1,8 @@
 // @ts-check
 // The API contract lint: what the API's requests carry and what it answers, read across every route for inconsistency
 // and bad shapes. Nothing is configured: a convention is what a clear majority of enough routes or fields already do
-// (as in gates/naming.mjs), and a route that departs from it is a finding. Checks that need no convention (a stack
+// (as in the naming gate), and a route that departs from it is a finding. Checks that need no convention (a stack
 // trace in an error, a password hash in an answer) report on their own. Findings are per route, not per case.
-import { restyle, styleOf } from "../gates/naming.mjs";
 import { UI_METHOD } from "../shared/case.mjs";
 import { shapeOf } from "../shared/shape.mjs";
 
@@ -38,6 +37,30 @@ const GROUP = 3;
 /** How a group of findings is described, per check. */
 const GROUP_PHRASE = { types: "are typed two ways across answers", requests: "arrive in two forms across cases" };
 const STYLE_NAME = { kebab: "kebab-case", snake: "snake_case", camel: "camelCase", Pascal: "PascalCase" };
+
+/**
+ * The casing of a bare name: one lowercase word ("word") fits kebab, snake and camel alike.
+ * @param {string} stem
+ * @returns {"kebab" | "snake" | "camel" | "Pascal" | "word" | undefined}
+ */
+function styleOf(stem) {
+  if (/^[a-z][a-z0-9]*$/.test(stem)) return "word";
+  if (/^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$/.test(stem)) return "kebab";
+  if (/^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/.test(stem)) return "snake";
+  if (/^[a-z][a-z0-9]*(?:[A-Z][a-z0-9]*)+$/.test(stem)) return "camel";
+  if (/^[A-Z][A-Za-z0-9]*[a-z][A-Za-z0-9]*$/.test(stem)) return "Pascal";
+  return undefined;
+}
+
+/** A name in another casing: `user_card` as Pascal is `UserCard`. @param {string} stem @param {string} style */
+function restyle(stem, style) {
+  const words = stem.split(/[-_]|(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/).filter(Boolean).map((w) => w.toLowerCase());
+  const cap = (/** @type {string} */ w) => w[0].toUpperCase() + w.slice(1);
+  if (style === "kebab") return words.join("-");
+  if (style === "snake") return words.join("_");
+  if (style === "Pascal") return words.map(cap).join("");
+  return words[0] + words.slice(1).map(cap).join("");
+}
 // Routes that receive or relay another party's payload, whose keys follow that party's casing.
 const FOREIGN_ROUTE = /(?:^|\/)(?:webhooks?|callbacks?|hooks)(?:\/|$)/;
 // Keys whose type is part of what they mean, so one name typed two ways across routes is the same field drifting.

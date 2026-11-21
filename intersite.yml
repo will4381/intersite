@@ -5,8 +5,11 @@ gates:
   testCmd: npm test
   acknowledged:
     - { gate: new-deps, target: yaml, why: "parses intersite.yml and lint/rules.yml; Node has no YAML parser and a hand-written one would be a bug farm" }
-    - { gate: new-deps, target: oxc-parser, why: "optional peer that parses JavaScript and TypeScript for search and the similar gate's partial copies; a dev dependency here only so both are tested" }
+    - { gate: new-deps, target: oxc-parser, why: "dev dependency only: search's recall test cuts its queries from Intersite's own functions with it; the gates parse with oxc inside the Rust engine" }
     - { gate: new-deps, target: playwright-core, why: "optional peer that drives the installed Chrome for the ui replay mode; a dev dependency here only so that mode is tested" }
+    - { gate: test-integrity, target: test/core.test.mjs, why: "skips only on a machine without cargo, which cannot build the engine either" }
+    - { gate: test-integrity, target: test/gates/sql.test.mjs, why: "the EXPLAIN test skips only without a local Postgres (initdb) to start" }
+    - { gate: test-integrity, target: test/cli/trace.test.mjs, why: "the page and pg_stat_statements tests skip only without Chrome or a local Postgres" }
     - { gate: test-integrity, target: test/gates/duplicates.test.mjs, why: "dropped a CPU-time limit that failed on a saturated machine; the test still checks the finding on 3,000 files and prints the time" }
     - { gate: test-integrity, target: test/gates/similar.test.mjs, why: "dropped a CPU-time limit that failed on a saturated machine; the test still checks the finding on 4,000 files and prints the time" }
     - { gate: test-integrity, target: test/gates/unused.test.mjs, why: "dropped a CPU-time limit that failed on a saturated machine; the test still checks the finding on 4,000 files and prints the time" }

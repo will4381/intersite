@@ -56,8 +56,10 @@ test("values in tests, SVG assets and data files are ignored", async () => {
 });
 
 test("a colour function built from variables is not read as a literal", async () => {
-  const { parseColour } = await import("../../gates/style-values.mjs");
-  assert.equal(parseColour("hsl(var(--ring))"), undefined);
-  assert.equal(parseColour("rgb(var(--ink) / 0.5)"), undefined);
-  assert.deepEqual(parseColour("rgb(51, 51, 51)")?.key, "#333333");
+  const r = repo(base);
+  r.write({ "src/ui/ring.css": ".ring { color: hsl(var(--ring)); }\n.ink { color: rgb(var(--ink) / 0.5); }\n.text { color: rgb(51, 51, 51); }\n" });
+  const found = await check(r.cwd);
+  assert.equal(found.some((m) => m.includes("var(")), false);
+  assert.equal(found.length, 1);
+  assert.deepEqual(found[0], "src/ui/ring.css:3 colour rgb(51, 51, 51) is the value of --color-ink (used 3 times): use the token");
 });

@@ -1,0 +1,32 @@
+[package]
+name = "intersite-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Intersite's analysis engine: SQL, regex, tracing, meaning-based twins and money drift, called by the Node CLI over JSON"
+
+[[bin]]
+name = "intersite-core"
+path = "src/main.rs"
+
+[dependencies]
+oxc_allocator = "=0.116.0"
+oxc_ast = { version = "=0.116.0", features = ["serialize"] }
+oxc_ast_visit = "=0.116.0"
+oxc_parser = "=0.116.0"
+oxc_span = "=0.116.0"
+oxc_syntax = "=0.116.0"
+sqlparser = { version = "0.64.0", features = ["visitor"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+rayon = "1.12"
+regex = "1.13"
+fancy-regex = "0.14"
+postgres = { version = "0.19.14", features = ["with-serde_json-1"] }
+postgres-native-tls = "0.5.3"
+native-tls = "0.2.18"
+
+[profile.release]
+opt-level = 3
+lto = false
+codegen-units = 16

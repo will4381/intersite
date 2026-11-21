@@ -12,7 +12,7 @@ import { runLint } from "../lint/fixture.mjs";
 import { repo, run } from "./repo.mjs";
 
 const AT = "apps/web";
-const RUN = ["test-integrity", "duplicates", "similar", "new-deps", "artifacts", "unused", "naming", "style-drift"];
+const RUN = ["test-integrity", "duplicates", "similar", "new-deps", "artifacts", "unused", "naming", "style-drift", "value-drift", "sql", "regex"];
 const helper = `export function total(items) {
   let sum = 0;
   for (const item of items) {
@@ -95,6 +95,10 @@ test("every gate names files relative to the project, and finds originals in a s
     ],
     naming: ["src/components/user_card.tsx: this folder names files in PascalCase (5 of 5): rename to UserCard.tsx"],
     "style-drift": ["src/card.css:1 colour #333333 is the value of --color-ink (used 3 times): use the token"],
+    // Project-relative money findings are covered in value-drift.test.mjs; this layout has no money copy.
+    "value-drift": ["ok gate value-drift: 0 money figures in copy checked against 0 money constants"],
+    sql: ["ok gate sql: 0 SQL statements and 0 queries in loops read"],
+    regex: ["ok gate regex: 0 regular expressions read"],
   });
   const json = await run(r.cwd, ["artifacts", "--json"]);
   assert.deepEqual(JSON.parse(json.out[0]).findings.map((/** @type {{ target: string }} */ f) => f.target), ["PLAN.md"]);
