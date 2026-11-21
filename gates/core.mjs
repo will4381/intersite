@@ -6,9 +6,10 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { GateError, JS_FILE, NOT_PRODUCT, SKIP, changeOf, listFiles, matches } from "./lib.mjs";
+import { GateError, JS_FILE, NOT_PRODUCT, SKIP, changeOf, listFiles, matches, withStdin } from "./lib.mjs";
 
 const crate = fileURLToPath(new URL("../core/", import.meta.url));
+const STALLED = 5 * 60_000;
 const binary = join(crate, "target", "release", process.platform === "win32" ? "intersite-core.exe" : "intersite-core");
 
 /** The newest modification time among the crate's sources. */
@@ -35,7 +36,10 @@ export function ensureCore() {
  * @returns {{ findings: { file: string, line: number, target: string, message: string }[], summary: string, data?: any }}
  */
 export function runCore(request) {
-  const run = spawnSync(ensureCore(), [], { input: JSON.stringify(request), encoding: "utf8", maxBuffer: 1 << 30 });
+  // A check takes seconds; one that stalls is stopped and named instead of hanging `intersite check` with it.
+  const core = ensureCore();
+  const run = withStdin(JSON.stringify(request), (fd) => spawnSync(core, [], { stdio: [fd, "pipe", "pipe"], encoding: "utf8", maxBuffer: 1 << 30, timeout: STALLED }));
+  if (/** @type {NodeJS.ErrnoException | undefined} */ (run.error)?.code === "ETIMEDOUT") throw new GateError(`intersite-core gave no answer to \`${request.command}\` in ${STALLED / 60_000} minutes and was stopped: run it again, and if it stalls again, report it`);
   if (run.status !== 0) throw new GateError((run.stderr || `intersite-core exited with ${run.status}`).trim().replace(/^intersite-core: /, ""));
   return JSON.parse(run.stdout);
 }

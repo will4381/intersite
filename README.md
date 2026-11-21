@@ -135,7 +135,7 @@ finding, exit code 0, 1 or 2.
 
 ## Agent skills
 
-`init` installs these into `.claude/skills/` and adds a short rules block to `AGENTS.md`.
+`init` installs these into `.claude/skills/` and adds a short rules block to `AGENTS.md`, both at the repository top, so a monorepo with an `intersite.yml` per package gets one copy.
 
 | Skill | Used when |
 | --- | --- |

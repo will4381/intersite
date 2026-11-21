@@ -102,6 +102,17 @@ test("init leaves .gitignore alone when a parent .gitignore already covers .inte
   assert.equal(readFileSync(join(top, ".gitignore"), "utf8"), "/.intersite/\n**/.intersite/\n");
 });
 
+test("in a package of a monorepo, init writes the agent rules and skills once at the repository top", async () => {
+  const top = mkdtempSync(join(tmpdir(), "intersite-init-pkg-"));
+  execFileSync("git", ["init", "-q"], { cwd: top });
+  for (const pkg of ["apps/api", "apps/web"]) mkdirSync(join(top, pkg), { recursive: true });
+  assert.match(await run(join(top, "apps/api")), /wrote intersite\.yml, intersite\.adapter\.mjs, \.\.\/\.\.\/AGENTS\.md, \.\.\/\.\.\/\.claude\/skills\/intersite\/SKILL\.md/);
+  assert.doesNotMatch(await run(join(top, "apps/web")), /AGENTS|skills/);
+  assert.equal(existsSync(join(top, "apps/api/AGENTS.md")) || existsSync(join(top, "apps/web/.claude")), false);
+  assert.match(readFileSync(join(top, ".claude/skills/intersite/SKILL.md"), "utf8"), /^---\nname: intersite\n/);
+  assert.equal(readFileSync(join(top, "AGENTS.md"), "utf8").split("<!-- intersite:start -->").length, 2);
+});
+
 test("init takes no arguments: an unknown flag is a usage error, not silently ignored", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "intersite-init-flag-"));
   const errors = [];

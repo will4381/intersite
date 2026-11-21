@@ -17,7 +17,7 @@ test("a migration that locks or breaks a live table is reported, each with the s
   r.write({ "db/002_more.sql": "ALTER TABLE users ADD COLUMN plan text NOT NULL;\nCREATE INDEX users_email ON users (email);\nALTER TABLE orders ADD COLUMN user_id uuid REFERENCES users(id);\nALTER TABLE users DROP COLUMN legacy;\n" });
   assert.deepEqual(await check(r.cwd), [
     "db/002_more.sql:1 adds users.plan NOT NULL with no DEFAULT, which fails on a table that has rows: add a DEFAULT, or add it nullable, backfill, then SET NOT NULL",
-    "db/002_more.sql:2 CREATE INDEX on users blocks every write to it until the index is built: use CREATE INDEX CONCURRENTLY (outside a transaction)",
+    "db/002_more.sql:2 CREATE INDEX on users blocks every write to it until the index is built: use CREATE INDEX CONCURRENTLY (outside a transaction). Before launch, with no writes to block, acknowledge it instead",
     "db/002_more.sql:4 drops a column of users while the deployed code may still read it: ship the code that stops using it first, then drop it in a later migration",
     "db/002_more.sql:3 orders(user_id) references users but no index starts with (user_id), so deleting a users row or joining scans orders: CREATE INDEX CONCURRENTLY ON orders (user_id)",
   ]);

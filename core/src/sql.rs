@@ -245,12 +245,27 @@ fn finding(s: &Stmt, rule: &str, key: &str, message: String) -> Finding {
 }
 
 /// Migration hazards: statements that lock a live table, fail on one with rows, or break the code still running.
-fn migration(s: &Stmt, created_here: &HashSet<(String, String)>, out: &mut Vec<Finding>) {
+/// `crowded` holds the migration files with more than one statement.
+fn migration(s: &Stmt, created_here: &HashSet<(String, String)>, crowded: &HashSet<&str>, out: &mut Vec<Finding>) {
     let fresh = |table: &str| created_here.contains(&(s.file.clone(), table.to_string()));
+    // Prisma sends a migration file as one script, which Postgres runs as one transaction, and CONCURRENTLY refuses to
+    // run inside a transaction: it works only as the file's one statement.
+    let prisma = s.file.contains("prisma/migrations/");
     match &s.statement {
+        Statement::CreateIndex(ci) if ci.concurrently && prisma && crowded.contains(s.file.as_str()) => {
+            let table = bare(&ci.table_name.to_string());
+            out.push(finding(s, "concurrently-in-transaction", &table, format!("CREATE INDEX CONCURRENTLY on {table} shares its migration file with other statements, and Prisma applies a file as one transaction, which CONCURRENTLY refuses: the deploy fails. Move it to a migration file of its own")));
+        }
         Statement::CreateIndex(ci) if !ci.concurrently && !fresh(&bare(&ci.table_name.to_string())) => {
             let table = bare(&ci.table_name.to_string());
-            out.push(finding(s, "index-locks", &table, format!("CREATE INDEX on {table} blocks every write to it until the index is built: use CREATE INDEX CONCURRENTLY (outside a transaction)")));
+            let how = if prisma {
+                "use CREATE INDEX CONCURRENTLY as the only statement of a migration file of its own (Prisma applies a file as one transaction, which CONCURRENTLY refuses)"
+            } else if s.file.contains("drizzle") {
+                "drizzle-kit applies migrations inside a transaction, which CONCURRENTLY refuses, so run CREATE INDEX CONCURRENTLY outside it"
+            } else {
+                "use CREATE INDEX CONCURRENTLY (outside a transaction)"
+            };
+            out.push(finding(s, "index-locks", &table, format!("CREATE INDEX on {table} blocks every write to it until the index is built: {how}. Before launch, with no writes to block, acknowledge it instead")));
         }
         Statement::AlterTable(at) => {
             let table = bare(&at.name.to_string());
@@ -468,6 +483,11 @@ pub fn run(request: &Request) -> Result<Answer, String> {
         Statement::CreateTable(ct) => Some((s.file.clone(), bare(&ct.name.to_string()))),
         _ => None,
     }).collect();
+    let mut per_file: HashMap<&str, usize> = HashMap::new();
+    for st in stmts.iter().filter(|st| !st.from_code) {
+        *per_file.entry(st.file.as_str()).or_default() += 1;
+    }
+    let crowded: HashSet<&str> = per_file.into_iter().filter(|(_, n)| *n > 1).map(|(f, _)| f).collect();
     // A statement counts when any line of it was added: a query edited in its WHERE clause is a new query.
     let changed = |s: &Stmt| {
         let span = s.statement.to_string().matches(' ').count().min(400) as u32 / 6 + 1;
@@ -481,10 +501,10 @@ pub fn run(request: &Request) -> Result<Answer, String> {
     for s in stmts.iter().filter(|s| changed(s)) {
         if whole && !s.from_code {
             let mut skipped = Vec::new();
-            migration(s, &created_here, &mut skipped);
+            migration(s, &created_here, &crowded, &mut skipped);
             history += skipped.len();
         } else {
-            migration(s, &created_here, &mut findings);
+            migration(s, &created_here, &crowded, &mut findings);
         }
         uuid_as_text(s, &inv, &mut findings);
         query(s, &inv, &mut findings);
@@ -678,6 +698,11 @@ mod tests {
 
     /// With `as_change`, every line of every file counts as added by the change; without, the whole repository is judged.
     fn check_change(files: &[(&str, &str)], as_change: bool) -> Vec<String> {
+        run_files(files, as_change).into_iter().map(|f| f.target).collect()
+    }
+
+    /// The findings, sorted by target.
+    fn run_files(files: &[(&str, &str)], as_change: bool) -> Vec<Finding> {
         let dir = std::env::temp_dir().join(format!("intersite-sql-{}", std::process::id() as u64 * 1000 + files.len() as u64 + files[0].1.len() as u64));
         for (path, text) in files {
             let p = dir.join(path);
@@ -693,8 +718,8 @@ mod tests {
             database_url: None,
             options: serde_json::Value::Null,
         };
-        let mut out: Vec<String> = run(&request).unwrap().findings.into_iter().map(|f| f.target).collect();
-        out.sort();
+        let mut out = run(&request).unwrap().findings;
+        out.sort_by(|a, b| a.target.cmp(&b.target));
         out
     }
 
@@ -720,6 +745,20 @@ mod tests {
             "db/002.sql:not-null-column:users.plan",
             "db/002.sql:set-not-null:users.email",
         ]);
+    }
+
+    #[test]
+    fn concurrently_in_prisma_needs_a_migration_file_of_its_own() {
+        let files = [
+            ("prisma/migrations/0001_init/migration.sql", "CREATE TABLE users (id uuid PRIMARY KEY, email text, name text);"),
+            ("prisma/migrations/0002_email/migration.sql", "CREATE INDEX users_email ON users (email);"),
+            ("prisma/migrations/0003_name/migration.sql", "ALTER TABLE users ADD COLUMN plan text;\nCREATE INDEX CONCURRENTLY users_name ON users (name);"),
+            ("prisma/migrations/0004_plan/migration.sql", "CREATE INDEX CONCURRENTLY users_plan ON users (plan);"),
+        ];
+        let answer = run_files(&files, true);
+        let got: Vec<&str> = answer.iter().map(|f| f.target.as_str()).collect();
+        assert_eq!(got, vec!["prisma/migrations/0002_email/migration.sql:index-locks:users", "prisma/migrations/0003_name/migration.sql:concurrently-in-transaction:users"]);
+        assert!(answer[0].message.contains("only statement of a migration file of its own"), "{}", answer[0].message);
     }
 
     #[test]

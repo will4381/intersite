@@ -2,7 +2,7 @@
 // What the gates share: git plumbing against the working tree, temporary worktrees, running the test command, and
 // blanking comments and strings so regular expressions only see code.
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync } from "node:fs";
+import { closeSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, matchesGlob, posix, relative, resolve } from "node:path";
 
@@ -232,6 +232,24 @@ export function addedLines(patch) {
 }
 
 /**
+ * Calls `fn` with a file descriptor reading `text`, to give a child as its stdin. spawnSync's `input` goes through a
+ * pipe, and on macOS that write was caught stalling: Node waiting in spawnSync, the child waiting for an end of input
+ * that never came, `intersite check` hung at 0% CPU. A regular file always ends.
+ * @template T @param {string} text @param {(fd: number) => T} fn @returns {T}
+ */
+export function withStdin(text, fn) {
+  const dir = mkdtempSync(join(tmpdir(), "intersite-stdin-"));
+  writeFileSync(join(dir, "stdin"), text);
+  const fd = openSync(join(dir, "stdin"), "r");
+  try {
+    return fn(fd);
+  } finally {
+    closeSync(fd);
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
  * The contents of many files at a commit, in one git process: a spawn per file costs seconds on a large change.
  * Paths are relative to `cwd`. A path that does not exist at the commit maps to "".
  * @param {string} cwd @param {string} sha @param {string[]} paths
@@ -241,7 +259,7 @@ export function showMany(cwd, sha, paths) {
   /** @type {Map<string, string>} */
   const texts = new Map();
   if (paths.length === 0) return texts;
-  const run = spawnSync("git", ["cat-file", "--batch"], { cwd, input: paths.map((path) => `${sha}:./${path}\n`).join(""), maxBuffer: 1 << 30 });
+  const run = withStdin(paths.map((path) => `${sha}:./${path}\n`).join(""), (fd) => spawnSync("git", ["cat-file", "--batch"], { cwd, stdio: [fd, "pipe", "pipe"], maxBuffer: 1 << 30 }));
   if (run.status !== 0) throw new GateError(`git cat-file failed: ${String(run.stderr).trim()}`);
   const out = /** @type {Buffer} */ (run.stdout);
   let at = 0;

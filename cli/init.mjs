@@ -1,7 +1,7 @@
 // @ts-check
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { CONFIG_FILE, configPath, loadConfig, projectName } from "../shared/config.mjs";
@@ -28,13 +28,17 @@ export default async function init(argv, { cwd }) {
   /** @type {string[]} */
   const wrote = [];
   /** Writes when the content differs; `keep` leaves an existing file alone. @param {string} name @param {string} text @param {boolean} [keep] */
-  const write = (name, text, keep = false) => {
-    const path = join(cwd, name);
+  const write = (name, text, keep = false, dir = cwd) => {
+    const path = join(dir, name);
     if (existsSync(path) && (keep || readFileSync(path, "utf8") === text)) return;
     mkdirSync(join(path, ".."), { recursive: true });
     writeFileSync(path, text);
-    wrote.push(name);
+    wrote.push(relative(cwd, path));
   };
+  // The agent rules and skills belong to the repository, not each package: agents read them from the top, and a
+  // monorepo with a config per package would otherwise get a copy of each in every package.
+  // `--show-cdup` is relative, so it keeps cwd's own spelling where a symlink would make `--show-toplevel` differ.
+  const top = join(cwd, spawnSync("git", ["rev-parse", "--show-cdup"], { cwd, encoding: "utf8" }).stdout?.trim() ?? "");
 
   const fresh = !configPath(cwd);
   if (fresh) {
@@ -45,17 +49,17 @@ export default async function init(argv, { cwd }) {
   if (replays) write("intersite.adapter.mjs", packaged("templates/adapter.mjs"), true);
 
   const block = `${START}\n${packaged("templates/agents.md").trimEnd()}\n${END}`;
-  const agents = existsSync(join(cwd, "AGENTS.md")) ? readFileSync(join(cwd, "AGENTS.md"), "utf8") : "";
+  const agents = existsSync(join(top, "AGENTS.md")) ? readFileSync(join(top, "AGENTS.md"), "utf8") : "";
   const from = agents.indexOf(START);
   const to = agents.indexOf(END);
   write("AGENTS.md", from >= 0 && to > from
     ? agents.slice(0, from) + block + agents.slice(to + END.length)
-    : `${agents.trimEnd()}${agents.trim() ? "\n\n" : ""}${block}\n`);
+    : `${agents.trimEnd()}${agents.trim() ? "\n\n" : ""}${block}\n`, false, top);
 
   for (const skill of readdirSync(join(packageRoot, "skills"))) {
     // intersite-bug reproduces a bug from a recorded request, which a project without replay never has.
     if (!replays && skill === "intersite-bug") continue;
-    write(`.claude/skills/${skill}/SKILL.md`, packaged(`skills/${skill}/SKILL.md`));
+    write(`.claude/skills/${skill}/SKILL.md`, packaged(`skills/${skill}/SKILL.md`), false, top);
   }
 
   // Recorded cases never belong in git. git itself says whether some .gitignore (here or above) covers them; outside

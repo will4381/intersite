@@ -28,6 +28,7 @@ const bareSuppression = new RegExp(
 );
 
 const exec = promisify(execFile);
+const STALLED = 10 * 60_000;
 const GENERATED = ".intersite-oxlintrc.json";
 const GENERATED_FILES = ".intersite-oxlintrc-files.json";
 
@@ -382,8 +383,13 @@ async function runOxlint(cwd, oxlint, { configFile, filesConfig, ignores }, path
   // oxlint lints node_modules unless a .gitignore says not to, and a fresh project may have no .gitignore.
   const args = ["--no-error-on-unmatched-pattern", "--ignore-pattern=**/node_modules/**", ...ignores.map((p) => `--ignore-pattern=${p}`), ...(paths.length ? paths : ["."])];
   /** @param {string[]} extra */
-  const oxlintRun = (extra) => exec(oxlint, [...extra, ...args], { cwd, maxBuffer: Infinity, env: { ...process.env, PATH: `${dirname(tsgolint ?? oxlint)}:${process.env.PATH}` } }).catch((/** @type {any} */ e) => e);
+  const oxlintRun = (extra) => exec(oxlint, [...extra, ...args], { cwd, maxBuffer: Infinity, timeout: STALLED, env: { ...process.env, PATH: `${dirname(tsgolint ?? oxlint)}:${process.env.PATH}` } }).catch((/** @type {any} */ e) => e);
   const [run, listed] = await Promise.all([oxlintRun(["-c", configFile, "-f", "json", ...(tsgolint ? ["--type-aware"] : [])]), oxlintRun(["-c", filesConfig, "--debug=files"])]);
+  // A lint that stalls is stopped and named instead of hanging `intersite check` with it.
+  if (run.killed || listed.killed) {
+    console.error(`intersite lint: oxlint${tsgolint ? " (with tsgolint)" : ""} did not finish in ${STALLED / 60_000} minutes and was stopped: run it again, and if it stalls again, report it`);
+    return undefined;
+  }
   /** @type {{ number_of_files: number, diagnostics: { message: string, code: string, filename: string, labels?: { span: { line: number, column: number } }[] }[] }} */
   let report;
   try {
