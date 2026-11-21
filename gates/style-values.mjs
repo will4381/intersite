@@ -93,16 +93,16 @@ export function parseNumber(raw) {
   return { num: Math.round(num * 1000) / 1000, unit };
 }
 
+/** @type {Map<string, Category>} CSS properties whose name alone gives their category. */
+const PROPERTY_CATEGORY = new Map([["font-size", "font size"], ["font-weight", "font weight"], ["line-height", "line height"], ["letter-spacing", "letter spacing"], ["z-index", "z-index"]]);
+
 /** @param {string} prop a CSS or JS property name @returns {Category | undefined} */
 function categoryOf(prop) {
   const p = prop.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
-  if (p === "font-size") return "font size";
-  if (p === "font-weight") return "font weight";
-  if (p === "line-height") return "line height";
-  if (p === "letter-spacing") return "letter spacing";
+  const named = PROPERTY_CATEGORY.get(p);
+  if (named) return named;
   if (p.endsWith("radius")) return "radius";
   if (/^(?:padding|margin|gap|row-gap|column-gap)/.test(p)) return "spacing";
-  if (p === "z-index") return "z-index";
   if (p.endsWith("duration")) return "duration";
   return undefined;
 }
@@ -237,16 +237,15 @@ function tailwind(code) {
   return out;
 }
 
+/** @type {Map<string, Category>} Tailwind prefixes whose name alone gives their category. */
+const TAILWIND_CATEGORY = new Map([["text", "font size"], ["leading", "line height"], ["tracking", "letter spacing"], ["font", "font weight"], ["z", "z-index"], ["duration", "duration"]]);
+
 /** @param {string} prefix @returns {Category | undefined} */
 function twCategory(prefix) {
-  if (prefix === "text") return "font size";
-  if (prefix === "leading") return "line height";
-  if (prefix === "tracking") return "letter spacing";
-  if (prefix === "font") return "font weight";
+  const named = TAILWIND_CATEGORY.get(prefix);
+  if (named) return named;
   if (prefix.startsWith("rounded")) return "radius";
   if (/^(?:p|m|gap|space)/.test(prefix)) return "spacing";
-  if (prefix === "z") return "z-index";
-  if (prefix === "duration") return "duration";
   return undefined;
 }
 

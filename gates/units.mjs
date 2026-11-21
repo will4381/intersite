@@ -379,6 +379,9 @@ function membersOf(tk, start, end, depth) {
   return members;
 }
 
+/** The mark a string, number, regex or JSX text token normalises to. */
+const KIND_MARK = new Map([["str", "S"], ["num", "N"], ["regex", "R"], ["text", "T"]]);
+
 /**
  * The normalised form of token `k`. What carries meaning stays: keywords, operators, JSX tags and attributes,
  * imported and global names, properties and object keys (the data a unit touches). Local names become `I`, literals
@@ -394,11 +397,7 @@ function normal(tk, k, kept, parent) {
     if (tk.text[k + 1] === ":" && (p === "{" || p === ",") && tk.text[parent[k]] === "{") return t;
     return kept.has(t) || BROWSER.has(t) || t in globalThis ? t : "I";
   }
-  if (kind === "str") return "S";
-  if (kind === "num") return "N";
-  if (kind === "regex") return "R";
-  if (kind === "text") return "T";
-  return t;
+  return KIND_MARK.get(kind) ?? t;
 }
 
 /**
