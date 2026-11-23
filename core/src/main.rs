@@ -15,10 +15,12 @@ mod js;
 mod naming;
 mod search;
 mod similar;
+mod special;
 mod regex;
 mod renames;
 mod schemas;
 mod sql;
+mod tamper;
 mod style;
 mod text;
 mod trace;
@@ -130,6 +132,9 @@ fn main() {
         "decisions" => decisions::run(&request),
         "renames" => renames::run(&request),
         "schema-drift" => schemas::run(&request),
+        "tamper" => tamper::run(&request),
+        "special-case" => special::run(&request),
+        "hook" => tamper::hook(&request),
         other => Err(format!("unknown command {other}")),
     };
     match answer {

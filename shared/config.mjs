@@ -34,7 +34,8 @@ export function projectRoot(cwd) {
 /** Paths that count as tests, for the gates that treat tests differently from source. */
 export const TEST_PATHS = ["**/*.test.*", "**/*.spec.*", "test/**", "tests/**", "**/__tests__/**", "e2e/**"];
 
-const defaults = {
+/** Every default `loadConfig` fills in. */
+export const defaults = {
   collector: {
     url: "http://127.0.0.1:8790",
     readTokenEnv: "INTERSITE_READ_TOKEN",
@@ -45,7 +46,7 @@ const defaults = {
   lint: { packs: ["tests","slop","security","state","async","perf","react","next","design","types","validation","naming","globals","ui","orm","query","workers","supabase","server","start","payments","auth","swift"], rules: {}, custom: [], baseline: "intersite-baseline.json", extends: ".oxlintrc.json", ownRules: true, typeAware: false },
   gates: {
     base: DEFAULT_BASE,
-    run: ["test-integrity","duplicates","similar","new-deps","artifacts","unused","naming","style-drift","value-drift","sql","regex","decisions","renames","schema-drift"],
+    run: ["test-integrity","duplicates","similar","new-deps","artifacts","unused","naming","style-drift","value-drift","sql","regex","decisions","renames","schema-drift","tamper","special-case"],
     testPaths: TEST_PATHS,
     testCmd: "",
     setup: "",

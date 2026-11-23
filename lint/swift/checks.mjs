@@ -299,6 +299,22 @@ export const checks = {
       .map((m) => position(f, m.index ?? 0));
   },
 
+  /** A Swift concurrency check silenced (`@unchecked Sendable`, `nonisolated(unsafe)`, …) with no comment saying why. */
+  concurrencySilencer(f) {
+    const text = f.text.split("\n");
+    const masked = f.masked.split("\n");
+    /** A comment with words in it on this line (after the code) or as the line above. @param {number} line 1-based */
+    const explained = (line) => {
+      const at = text[line - 1].search(/\/\/|\/\*/);
+      const trailing = at >= 0 && masked[line - 1][at] === " " && /\w{2,}/.test(text[line - 1].slice(at));
+      const above = /^\s*(?:\/\/|\/\*|\*)\s*\S.*\w{2,}/.test(text[line - 2] ?? "") && !masked[line - 2]?.trim();
+      return trailing || above;
+    };
+    return [...f.masked.matchAll(/@unchecked\s+Sendable\b|\bnonisolated\s*\(\s*unsafe\s*\)|@preconcurrency\s+import\b|\bMainActor\.assumeIsolated\b|\bunsafeBitCast\s*\(/g)]
+      .map((m) => position(f, m.index ?? 0))
+      .filter((hit) => !explained(hit.line));
+  },
+
   /** A whole-line comment whose words all appear in the line of code under it. */
   restatingComment(f, _p, { maxWords }) {
     const lines = f.text.split("\n");

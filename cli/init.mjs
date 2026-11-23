@@ -62,6 +62,24 @@ export default async function init(argv, { cwd }) {
     write(`.claude/skills/${skill}/SKILL.md`, packaged(`skills/${skill}/SKILL.md`), false, top);
   }
 
+  // The edit hook: Claude Code runs it before every Edit or Write, and it blocks one that weakens a check or a test
+  // before it lands. Merged into the project's settings, keeping its own hooks; an unreadable file is left alone.
+  const settingsFile = join(top, ".claude", "settings.json");
+  let settings;
+  try {
+    settings = JSON.parse(existsSync(settingsFile) ? readFileSync(settingsFile, "utf8") : "{}");
+  } catch {
+    settings = undefined;
+  }
+  if (settings && typeof settings === "object" && !Array.isArray(settings)) {
+    const pre = ((settings.hooks ??= {}).PreToolUse ??= []);
+    const installed = Array.isArray(pre) && pre.some((/** @type {any} */ entry) => entry?.hooks?.some?.((/** @type {any} */ h) => /\bintersite(?:\.mjs)?\s+hook\b/.test(h?.command ?? "")));
+    if (Array.isArray(pre) && !installed) {
+      pre.push({ matcher: "Edit|Write|MultiEdit", hooks: [{ type: "command", command: "npx intersite hook" }] });
+      write(".claude/settings.json", `${JSON.stringify(settings, null, 2)}\n`, false, top);
+    }
+  }
+
   // Recorded cases never belong in git. git itself says whether some .gitignore (here or above) covers them; outside
   // a repository only an existing .gitignore is updated.
   const ignore = existsSync(join(cwd, ".gitignore")) ? readFileSync(join(cwd, ".gitignore"), "utf8") : undefined;

@@ -866,6 +866,27 @@ rules:
             }
         }
 
+  - id: require-reason-for-unsafe-concurrency
+    check: concurrencySilencer
+    config: {}
+    message: "This silences Swift's data-race checking (@unchecked Sendable, nonisolated(unsafe), @preconcurrency import, MainActor.assumeIsolated, unsafeBitCast), and nothing says why it is safe. Make the type actually Sendable (immutable, an actor, or a lock it owns), or write the reason it cannot race in a comment on the line or the line above."
+    bad:
+      - "final class Cache: @unchecked Sendable { var items: [String: Data] = [:] }"
+      - "nonisolated(unsafe) static var shared = Formatter()"
+      - "@preconcurrency import Firebase"
+      - "func save() { MainActor.assumeIsolated { model.save() } }"
+      - "let block = unsafeBitCast(raw, to: Callback.self)"
+    good:
+      - |-
+        // Every access goes through `lock`, so the dictionary is never touched from two threads at once.
+        final class Cache: @unchecked Sendable {
+            private let lock = NSLock()
+            private var items: [String: Data] = [:]
+        }
+      - "nonisolated(unsafe) static let formatter = ISO8601DateFormatter() // written once at launch, then only read"
+      - "@preconcurrency import Firebase /* Firebase 10 has no Sendable annotations yet */"
+      - "final actor Cache { var items: [String: Data] = [:] }"
+
   - id: no-main-queue-hop
     check: mainActorDispatch
     config: {}

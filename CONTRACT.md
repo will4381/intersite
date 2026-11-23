@@ -8,7 +8,7 @@ What every part of this package agrees on. Change it here first, then in code.
 | --- | --- | --- |
 | `lint/`, `cli/lint.mjs` | Node, inside oxlint | Slop rules, mostly declared in JSON; baseline that only shrinks |
 | `gates/`, `cli/gate.mjs` | Node, local or CI | Each gate's git work (the diff, the files, the config's globs) and its output; the judging is in `core/` |
-| `core/` | Rust, built by cargo the first time a check needs it (and again when its source changes) | The analysis engine, called with one JSON request per check: similar (lexer, k-grams, Aroma features), duplicates, unused, naming, style-drift, value-drift, sql (with planning against a database), regex, artifacts, test-integrity, new-deps, mutation's choice of mutants, search, twins, trace reports |
+| `core/` | Rust, built by cargo the first time a check needs it (and again when its source changes) | The analysis engine, called with one JSON request per check: similar (lexer, k-grams, Aroma features), duplicates, unused, naming, style-drift, value-drift, sql (with planning against a database), regex, artifacts, test-integrity, new-deps, tamper (and the edit hook), special-case, mutation's choice of mutants, search, twins, trace reports |
 | `cli/search.mjs`, `cli/twins.mjs`, `cli/trace.mjs` | Node | `search`, `twins` and `trace`: arguments, processes (servers, inspectors, Chrome) and output |
 | `track/` | The browser | Names user actions and stamps them on the requests they cause |
 | `capture/` | The project's server or browser (any `fetch` runtime) | Samples, scrubs and sends cases to the collector |
@@ -162,6 +162,8 @@ finish is stopped and counts as failing on the base, like any other failure ther
 | Gate | Fails when |
 | --- | --- |
 | `test-integrity` | A test file was deleted, or has fewer tests or fewer assertions than on base, or gained a skip |
+| `tamper` | A changed file that judges the code is weakened. `tsconfig*.json`: a strict-family option (`strict`, `strictNullChecks`, `noImplicitAny`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `noImplicitReturns`, `checkJs`, …) on before and off or gone now (gone with an `extends` left is not known to be off), or a source folder added to `exclude` (build output, tests, stories and configs are not). Lint configs (`.oxlintrc*`, `eslint.config.*`, `.eslintrc*`, `biome.json(c)`, `.swiftlint.yml`): a rule's severity lowered, a configured rule removed, a new rule entry set to off, a new ignore pattern, an `extends` or plugin dropped, a SwiftLint rule disabled or no longer opted in, the config deleted; an override whose `files` are only vendored primitives (`components/ui`), build output or config files is not judged. `intersite.yml`: a gate gone from `gates.run` or a pack from `lint.packs` (a missing list means the defaults), a rule turned off, `lint.typeAware` or `lint.ownRules` turned off, a non-test path added to `gates.testPaths`, a `gates.protected` rule or a project check removed or made slow; added `gates.acknowledged` entries are not judged. The lint and gates baselines: more findings recorded. Test runners (`vitest`/`vite`/`jest`/`playwright`/`stryker` configs, package.json `jest`): new `exclude`/`testPathIgnorePatterns`/`coveragePathIgnorePatterns` entries (end-to-end suites left to their own runner are not), `include`/`testMatch` entries lost, a coverage threshold lowered or removed, `passWithNoTests` turned on, `retry`/`retries` raised. package.json scripts named test, check, lint, typecheck, ci, verify or validate (with `npm run` steps expanded): gaining `\|\| true`, `; exit 0` or `--passWithNoTests`, becoming an echo, losing a path or `--max-warnings`, or removed. CI workflows: a step that ran tests, lint, a type check or `intersite` removed or made `continue-on-error`/`if: false`, a workflow that ran one deleted, `pull_request`/`push` triggers dropped. Source: more coverage-ignore pragmas (`istanbul`, `c8`, `v8 ignore`) across the change, and `process.exit(0)` added to a test setup or teardown file. Target is `<file>:<key>` |
+| `special-case` | Added production code (not tests, fixtures, scripts, configs or test setup) answers the tests instead of solving the problem: a line branches on running under a test runner (`NODE_ENV` compared with `"test"`, `VITEST`, `JEST_WORKER_ID`, `typeof jest`/`vi`, Swift's `XCTestConfigurationFilePath` or `NSClassFromString("XCTest")`), unless another environment is named beside it (a "not production" switch), the file is an env or config module, or it is `import.meta.vitest`; or an `if`, `case` or `?:` on one of a changed test's input literals returns exactly the value that test expects for it (`expect(price("abc-123")).toBe(4200)` and `if (id === "abc-123") return 4200`). Literals of three characters or fewer, 0, ±1, 2, 10, 100, 1000 and HTTP statuses are ignored, as are functions that map literals to literals in two or more branches (a lookup table) and answers that respell the input (`"email"` → `"EMAIL"`) |
 | `duplicates` | An added block of `gates.duplicateLines` or more lines already exists elsewhere in the repository |
 | `similar` | An added function, component, hook, class or type already exists under another name: the same structure once local names and literals are set aside. Or added lines hold 80% or more of an existing function's structural features (one of 30 or more names and literals) inside a function at least half again its size: a helper pasted instead of called. Exact pasted blocks are left to `duplicates`. Target is `file:Name` |
 | `naming` | The change adds a file or folder whose casing, shared suffix (`*.service.ts`) or test pattern differs from what a clear majority of its siblings keep, or whose main export is named unlike the file where its siblings match theirs. Conventions are inferred per folder and file kind, never configured |
@@ -183,6 +185,17 @@ path or dependency name. It silences that one finding and shows up in review. Fo
 the base carries an `Intersite-Ack: <gate>: <why>` trailer: it accepts that gate's findings in this change and
 never a later one. Every gate's failure line ends by
 saying so, because an agent with no honest way out will find a dishonest one.
+
+## Edit hook
+
+`intersite hook` is a Claude Code `PreToolUse` hook for Edit, Write and MultiEdit, which `init` adds to
+`.claude/settings.json` at the repository top (merged, keeping the project's hooks, never twice). It reads the hook's
+JSON on stdin, builds the file as the edit would leave it, and judges the edit as `tamper` judges a change for an
+evaluator file, and as `test-integrity` does for a file under `gates.testPaths`. A weakening edit exits 2 with one line
+on stderr: what weakened, to fix the code instead, and that a human can make the edit or acknowledge it under
+`gates.acknowledged` (the same targets as the gates', which let the edit through). Anything else exits 0 silently,
+including bad input and an engine that was never built: the hook never builds the engine and never blocks on its own
+failure. Shell edits (`sed`, `rm`) bypass it, which is why the gates stay.
 
 ## Search
 
