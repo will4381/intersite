@@ -48,6 +48,8 @@ In a monorepo, install `intersite`, `oxlint` and `@oxlint/plugins` once at the r
 | `decisions` | One decision made in several files: an environment variable read in three or more files outside the env module, a feature flag checked in three or more, or a dispatch over the same `kind`/`type` values repeated in three or more (per package) | git |
 | `renames` | An identifier renamed in code whose old name is still written in strings, comments or docs | git |
 | `schema-drift` | An interface or object type that restates the keys of a zod, valibot, yup or TypeBox schema or a Drizzle table by hand, with the derived type to write instead | git |
+| `routes` | A link, navigation or API call to a path no page or route of the app answers (`/auth/signup` when the page is `/signup`), or a call with a method the route does not handle (`POST` to a route that exports only `GET`). Reads Next.js, React Router and Remix, SvelteKit, Nuxt and Astro routes, and Express, Hono and Fastify handlers | git |
+| `env` | A read of an environment variable the project's `.env.example` (or env schema) does not list: a typo (`STRIPE_WEBHOOK_SECRT`, with the name it probably meant) or a variable the deploy will not know to set | git |
 | `artifacts` | Leftovers: backup and `_v2` copies, scratch scripts, logs, stray `PLAN.md` and `SUMMARY.md` files | git |
 | `unused` | A file or export this change added that nothing uses, or a file it orphaned | git |
 | `protected` | A change to paths you marked as protected (money, access) with no test changed alongside | git and a `gates.protected` rule |
@@ -103,7 +105,7 @@ A change that touches `paths` fails unless it also changes a file under `needs` 
 
 ### The whole repository, not only the change
 
-`duplicates`, `similar`, `unused`, `naming`, `style-drift`, `value-drift`, `sql`, `regex`, `decisions`, `schema-drift` and `artifacts` judge a change. `--all` points them at
+`duplicates`, `similar`, `unused`, `naming`, `style-drift`, `value-drift`, `sql`, `regex`, `decisions`, `schema-drift`, `routes`, `env` and `artifacts` judge a change. `--all` points them at
 every file; record what is there today and only new findings fail, as with lint:
 
 ```bash

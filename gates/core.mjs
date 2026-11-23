@@ -47,14 +47,18 @@ export function runCore(request) {
 /**
  * A gate the engine answers by reading every product source file in the repository, reporting only on the lines the
  * change added (or on everything without a base): `regex`, `decisions`. Paths come back relative to the project.
- * @param {string} command @param {import("./lib.mjs").GateOptions} options
+ * With `everyFile`, the engine also gets every other file's path (route files, env templates, configs) and the product
+ * code as `options.product`: `routes`, `env`.
+ * @param {string} command @param {import("./lib.mjs").GateOptions} options @param {boolean} [everyFile]
  * @returns {import("./lib.mjs").GateResult}
  */
-export function productCodeGate(command, { cwd, base, testPaths }) {
+export function productCodeGate(command, { cwd, base, testPaths }, everyFile = false) {
   const { whole, top, prefix, added } = changeOf(cwd, base);
   if (!whole && ![...added.keys()].some((f) => JS_FILE.test(f))) return { findings: [], summary: "no added code" };
-  const files = listFiles(top).filter((f) => JS_FILE.test(f) && !SKIP.test(f) && !NOT_PRODUCT.test(f) && !matches(f, testPaths));
-  const answer = runCore({ command, root: top, files, added: whole ? undefined : Object.fromEntries(added), prefix });
+  const listed = listFiles(top).filter((f) => !SKIP.test(f));
+  const product = listed.filter((f) => JS_FILE.test(f) && !NOT_PRODUCT.test(f) && !matches(f, testPaths));
+  const files = everyFile ? listed : product;
+  const answer = runCore({ command, root: top, files, added: whole ? undefined : Object.fromEntries(added), prefix, ...(everyFile && { options: { product } }) });
   const name = (/** @type {string} */ file) => posix.relative(prefix || ".", file);
   return { findings: answer.findings.map((f) => ({ target: f.target.replace(f.file, name(f.file)), message: f.message.replaceAll(f.file, name(f.file)) })), summary: answer.summary };
 }

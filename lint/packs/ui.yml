@@ -34,3 +34,5 @@ builtin:
   - { rule: jsx-a11y/no-distracting-elements, pack: ui }
   - { rule: jsx-a11y/scope, pack: ui }
   - { rule: jsx-a11y/autocomplete-valid, pack: ui }
+  # `<a href="#">`, `<a href="javascript:…">` and `<a onClick>` with no destination are links that go nowhere.
+  - { rule: jsx-a11y/anchor-is-valid, pack: ui }
