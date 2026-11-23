@@ -38,7 +38,7 @@ In a monorepo, install `intersite`, `oxlint` and `@oxlint/plugins` once at the r
 | `lint` | Slop and tests that cannot fail, on top of your own oxlint config (`lint.ownRules: false` reports only the rules Intersite adds, for a project that already gates its own) | nothing |
 | `test-integrity` | A test deleted, weakened or skipped to get green | git |
 | `duplicates` | A pasted block that already exists in the repository | git |
-| `new-deps` | A dependency added without saying why | git |
+| `new-deps` | A dependency added without saying why; one npm has never heard of (an invented name anyone could register later) is named as such, and a days-old one says so | git |
 | `similar` | A new function, component, hook or type that already exists under another name; when two differ only in a few literals it says to make one with a variant. Also a helper's body pasted inside a new function | git |
 | `naming` | A file or folder named against the casing, suffix or test pattern its siblings keep, or unlike its main export | git |
 | `style-drift` | A colour, size or token that is almost one the project already has, or off a scale it keeps closed | git |
@@ -48,6 +48,8 @@ In a monorepo, install `intersite`, `oxlint` and `@oxlint/plugins` once at the r
 | `decisions` | One decision made in several files: an environment variable read in three or more files outside the env module, a feature flag checked in three or more, or a dispatch over the same `kind`/`type` values repeated in three or more (per package) | git |
 | `renames` | An identifier renamed in code whose old name is still written in strings, comments or docs | git |
 | `schema-drift` | An interface or object type that restates the keys of a zod, valibot, yup or TypeBox schema or a Drizzle table by hand, with the derived type to write instead | git |
+| `secrets` | A credential added to any file (config, workflow, docs, env file): an API key or token with a known format, a private key, a database URL with its password, a Supabase service-role key, or a committed `.env` holding a real secret. The secret is never printed | git |
+| `auth` | An endpoint (route handler, server action, loader, tRPC procedure, Convex function, Express/Hono/Fastify route) that never checks who is calling, where most of its kind in the package do. The convention is read from the project; sign-in, webhook, health and cron paths are public | git |
 | `artifacts` | Leftovers: backup and `_v2` copies, scratch scripts, logs, stray `PLAN.md` and `SUMMARY.md` files | git |
 | `unused` | A file or export this change added that nothing uses, or a file it orphaned | git |
 | `protected` | A change to paths you marked as protected (money, access) with no test changed alongside | git and a `gates.protected` rule |
@@ -103,7 +105,7 @@ A change that touches `paths` fails unless it also changes a file under `needs` 
 
 ### The whole repository, not only the change
 
-`duplicates`, `similar`, `unused`, `naming`, `style-drift`, `value-drift`, `sql`, `regex`, `decisions`, `schema-drift` and `artifacts` judge a change. `--all` points them at
+`duplicates`, `similar`, `unused`, `naming`, `style-drift`, `value-drift`, `sql`, `regex`, `decisions`, `schema-drift`, `artifacts`, `secrets` and `auth` judge a change. `--all` points them at
 every file; record what is there today and only new findings fail, as with lint:
 
 ```bash

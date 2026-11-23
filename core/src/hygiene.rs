@@ -113,23 +113,37 @@ pub fn tests(request: &Request) -> Result<Answer, String> {
 
 /// Every dependency name in any `*dependencies` section of a package.json.
 fn dependency_names(text: &str, place: &str) -> Result<Vec<String>, String> {
+    Ok(dependencies(text, place)?.into_iter().map(|(name, _)| name).collect())
+}
+
+/// Every dependency in any `*dependencies` section of a package.json, with its version spec, first mention kept.
+fn dependencies(text: &str, place: &str) -> Result<Vec<(String, String)>, String> {
     if text.is_empty() {
         return Ok(vec![]);
     }
     let pkg: serde_json::Value = serde_json::from_str(text).map_err(|e| format!("{place} is not valid JSON: {e}"))?;
-    let mut out = Vec::new();
+    let mut out: Vec<(String, String)> = Vec::new();
     for (key, value) in pkg.as_object().into_iter().flatten() {
         if key.to_lowercase().ends_with("dependencies") {
-            if let Some(deps) = value.as_object() {
-                for name in deps.keys() {
-                    if !out.contains(name) {
-                        out.push(name.clone());
-                    }
+            for (name, spec) in value.as_object().into_iter().flatten() {
+                if !out.iter().any(|(n, _)| n == name) {
+                    out.push((name.clone(), spec.as_str().unwrap_or("").to_string()));
                 }
             }
         }
     }
     Ok(out)
+}
+
+/// The npm package a dependency installs, or None when it comes from elsewhere (the workspace, a path, git, a URL)
+/// or from a scope a private registry serves. `npm:` aliases install the aliased name.
+fn npm_name(name: &str, spec: &str, private: &[String]) -> Option<String> {
+    let real = match spec.strip_prefix("npm:") {
+        Some(alias) => alias.rsplit_once('@').filter(|(n, _)| !n.is_empty()).map_or(alias, |(n, _)| n).to_string(),
+        None if ["workspace:", "file:", "link:", "portal:", "patch:", "git", "github:", "gitlab:", "bitbucket:", "http:", "https:"].iter().any(|p| spec.starts_with(p)) || spec.contains('/') => return None,
+        None => name.to_string(),
+    };
+    (!private.iter().any(|scope| real.starts_with(&format!("{scope}/")))).then_some(real)
 }
 
 #[derive(Deserialize)]
@@ -141,19 +155,42 @@ struct PackageChange {
     now: String,
 }
 
-/// Dependencies a package.json gained.
+/// Dependencies a package.json gained, each checked against the npm registry when one is given: a name the registry
+/// has never heard of is invented, and a package days old or with a version or two deserves a second look.
 pub fn new_deps(request: &Request) -> Result<Answer, String> {
     let changes: Vec<PackageChange> = serde_json::from_value(request.options["changes"].clone()).map_err(|e| e.to_string())?;
-    let mut findings = Vec::new();
+    let registry = request.options["registry"].as_str().unwrap_or("");
+    let private: Vec<String> = serde_json::from_value(request.options["privateScopes"].clone()).unwrap_or_default();
+    let mut added = Vec::new();
     for c in &changes {
         let was: HashSet<String> = dependency_names(&c.before, &c.before_place)?.into_iter().collect();
-        for name in dependency_names(&c.now, &c.path)? {
+        for (name, spec) in dependencies(&c.now, &c.path)? {
             if !was.contains(&name) {
-                findings.push(Finding { file: c.path.clone(), line: 0, target: name.clone(), message: format!("{}: new dependency \"{name}\": check it exists and is needed, or use what is already installed", c.path) });
+                added.push((c.path.clone(), npm_name(&name, &spec, &private), name));
             }
         }
     }
-    Ok(Answer { findings, summary: String::new(), data: None })
+    let mut asked: Vec<String> = added.iter().filter_map(|(_, npm, _)| npm.clone()).collect();
+    asked.sort();
+    asked.dedup();
+    let known = crate::registry::lookup_all(registry, &asked);
+    let mut findings = Vec::new();
+    for (path, npm, name) in added {
+        let message = match npm.as_ref().and_then(|n| known.get(n).map(|k| (n, k))) {
+            Some((real, crate::registry::Known::Missing)) => {
+                findings.push(Finding { file: path.clone(), line: 0, target: format!("npm-missing:{real}"), message: format!("{path}: \"{real}\" does not exist on npm: an invented package name that anyone can register later with malware; remove it, and find the real package or write the few lines yourself") });
+                continue;
+            }
+            Some((_, crate::registry::Known::Found { versions, days })) if *versions <= 3 || days.is_some_and(|d| d < 60) => {
+                let age = days.map_or(String::new(), |d| format!("first published {d} days ago, "));
+                format!("{path}: new dependency \"{name}\" ({age}{versions} version{}): make sure it is the package you meant and that it is needed, or use what is already installed", if *versions == 1 { "" } else { "s" })
+            }
+            _ => format!("{path}: new dependency \"{name}\": check it exists and is needed, or use what is already installed"),
+        };
+        findings.push(Finding { file: path, line: 0, target: name, message });
+    }
+    let summary = if registry.is_empty() || asked.is_empty() { String::new() } else { format!("{} of {} new npm packages checked against the registry", known.len(), asked.len()) };
+    Ok(Answer { findings, summary, data: None })
 }
 
 // Longest first. The compound tokens are matched only so their pieces are never mutated on their own.
@@ -337,5 +374,11 @@ mod tests {
         assert_eq!(no_ext("a/b.test.ts"), "a/b.test");
         assert!(copies("a\nb\nc", &["a\nb\nx".into()]));
         assert_eq!(dependency_names(r#"{"dependencies":{"a":"1"},"devDependencies":{"b":"2"}}"#, "p").unwrap(), vec!["a", "b"]);
+        let private = vec!["@acme".to_string()];
+        assert_eq!(npm_name("x", "^1.0.0", &private), Some("x".into()));
+        assert_eq!(npm_name("x", "npm:@scope/real@^2", &private), Some("@scope/real".into()));
+        assert_eq!(npm_name("x", "workspace:*", &private), None);
+        assert_eq!(npm_name("x", "user/repo", &private), None);
+        assert_eq!(npm_name("@acme/ui", "^1", &private), None);
     }
 }

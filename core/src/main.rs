@@ -6,6 +6,7 @@
 #![allow(clippy::needless_range_loop, clippy::nonminimal_bool)]
 
 mod aroma;
+mod auth;
 mod decisions;
 mod drift;
 mod globals;
@@ -16,8 +17,10 @@ mod naming;
 mod search;
 mod similar;
 mod regex;
+mod registry;
 mod renames;
 mod schemas;
+mod secrets;
 mod sql;
 mod style;
 mod text;
@@ -130,6 +133,8 @@ fn main() {
         "decisions" => decisions::run(&request),
         "renames" => renames::run(&request),
         "schema-drift" => schemas::run(&request),
+        "secrets" => secrets::run(&request),
+        "auth" => auth::run(&request),
         other => Err(format!("unknown command {other}")),
     };
     match answer {

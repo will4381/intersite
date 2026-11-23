@@ -12,7 +12,7 @@ import { runLint } from "../lint/fixture.mjs";
 import { repo, run } from "./repo.mjs";
 
 const AT = "apps/web";
-const RUN = ["test-integrity", "duplicates", "similar", "new-deps", "artifacts", "unused", "naming", "style-drift", "value-drift", "sql", "regex", "decisions", "renames", "schema-drift"];
+const RUN = ["test-integrity", "duplicates", "similar", "new-deps", "artifacts", "unused", "naming", "style-drift", "value-drift", "sql", "regex", "decisions", "renames", "schema-drift", "secrets", "auth"];
 const helper = `export function total(items) {
   let sum = 0;
   for (const item of items) {
@@ -70,6 +70,7 @@ const change = (dir) => ({
   [`${dir}/PLAN.md`]: "# Plan\n",
   [`${dir}/src/components/user_card.tsx`]: "export default function UserCard() { return null; }\n",
   [`${dir}/src/card.css`]: ".card { color: #333333; }\n",
+  [`${dir}/deploy/values.yaml`]: `stripeKey: ${["sk", "live", "51HxQ2bLk8dPq3RtY7uVw9ZaB"].join("_")}\n`,
 });
 
 /** @param {Record<string, unknown>} [gates] */
@@ -102,6 +103,9 @@ test("every gate names files relative to the project, and finds originals in a s
     decisions: ["ok gate decisions: 0 environment reads, flag checks and variant branches in 19 files"],
     renames: ["ok gate renames: no renames in the change"],
     "schema-drift": ["ok gate schema-drift: 0 schemas and 0 object types compared"],
+    secrets: ["deploy/values.yaml:1 Stripe live key (sk_live_…): remove it and rotate it, because a secret that reached git (or a pushed branch) is leaked; read it from an environment variable or secret store. Do not just move it to another tracked file"],
+    // Project-relative auth findings are covered in auth.test.mjs; this layout has no endpoints.
+    auth: ["ok gate auth: 0 endpoints in 19 files, 0 check who is calling"],
   });
   const json = await run(r.cwd, ["artifacts", "--json"]);
   assert.deepEqual(JSON.parse(json.out[0]).findings.map((/** @type {{ target: string }} */ f) => f.target), ["PLAN.md"]);
