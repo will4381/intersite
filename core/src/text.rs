@@ -24,6 +24,19 @@ pub fn read(root: &str, file: &str) -> Option<String> {
     Some(text)
 }
 
+/// A fresh temporary folder holding `files` (path, text), for tests; its path.
+#[cfg(test)]
+pub fn temp_tree(name: &str, files: &[(&str, &str)]) -> String {
+    let dir = std::env::temp_dir().join(format!("intersite-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for (path, text) in files {
+        let p = dir.join(path);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    }
+    dir.to_string_lossy().into()
+}
+
 /// Byte offset to 1-based line.
 pub struct Lines {
     starts: Vec<usize>,

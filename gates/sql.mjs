@@ -10,12 +10,16 @@ import { posix } from "node:path";
 import { located, runCore } from "./core.mjs";
 import { JS_FILE, NOT_PRODUCT, SKIP, changeOf, listFiles, matches } from "./lib.mjs";
 
+/** Scripts, CI and deploy files: where a command that empties a database runs unattended (core/sql.rs reads them). */
+const DEPLOY = /(?:^|\/)(?:package\.json|Dockerfile[^/]*|[^/]*\.Dockerfile|Makefile|Justfile|justfile|Procfile|vercel\.json|netlify\.toml|fly\.toml|render\.ya?ml|railway\.(?:json|toml)|nixpacks\.toml|\.gitlab-ci\.ya?ml|bitbucket-pipelines\.ya?ml|[^/]*\.sh)$|(?:^|\/)\.github\/workflows\/[^/]+\.ya?ml$/;
+
 /** @param {import("./lib.mjs").GateOptions} options @returns {Promise<import("./lib.mjs").GateResult>} */
 export async function sql({ cwd, base, testPaths }) {
   const { whole, top, prefix, added } = changeOf(cwd, base);
   if (!whole && !added.size) return { findings: [], summary: "no added lines" };
   // Every migration is read, for the indexes a new foreign key may already have; code only where it changed.
-  const files = listFiles(top).filter((f) => !SKIP.test(f) && !matches(f, testPaths) && (/\.(?:sql|prisma)$/.test(f) || (JS_FILE.test(f) && !NOT_PRODUCT.test(f) && (whole || added.has(f)))));
+  // Scripts, CI and deploy files are read where they changed, for commands that empty a database.
+  const files = listFiles(top).filter((f) => !SKIP.test(f) && !matches(f, testPaths) && (/\.(?:sql|prisma)$/.test(f) || ((JS_FILE.test(f) && !NOT_PRODUCT.test(f)) || DEPLOY.test(f)) && (whole || added.has(f))));
   const answer = runCore({ command: "sql", root: top, files, added: whole ? undefined : Object.fromEntries(added), prefix, databaseUrl: process.env.INTERSITE_DATABASE_URL ?? "" });
   const name = (/** @type {string} */ file) => posix.relative(prefix || ".", file);
   const findings = answer.findings.map((f) => ({ ...located(f, name), target: f.target.replace(f.file, name(f.file)), message: f.message.replace(f.file, name(f.file)) }));

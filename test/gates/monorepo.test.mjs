@@ -12,7 +12,7 @@ import { runLint } from "../lint/fixture.mjs";
 import { repo, run } from "./repo.mjs";
 
 const AT = "apps/web";
-const RUN = ["test-integrity", "duplicates", "similar", "new-deps", "artifacts", "unused", "naming", "style-drift", "value-drift", "sql", "regex", "decisions", "renames", "schema-drift"];
+const RUN = ["test-integrity", "duplicates", "similar", "new-deps", "artifacts", "unused", "naming", "style-drift", "value-drift", "sql", "regex", "decisions", "renames", "schema-drift", "columns"];
 const helper = `export function total(items) {
   let sum = 0;
   for (const item of items) {
@@ -102,6 +102,7 @@ test("every gate names files relative to the project, and finds originals in a s
     decisions: ["ok gate decisions: 0 environment reads, flag checks and variant branches in 19 files"],
     renames: ["ok gate renames: no renames in the change"],
     "schema-drift": ["ok gate schema-drift: 0 schemas and 0 object types compared"],
+    columns: ["ok gate columns: no database schema found"],
   });
   const json = await run(r.cwd, ["artifacts", "--json"]);
   assert.deepEqual(JSON.parse(json.out[0]).findings.map((/** @type {{ target: string }} */ f) => f.target), ["PLAN.md"]);

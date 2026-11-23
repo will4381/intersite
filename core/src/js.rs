@@ -27,16 +27,29 @@ pub struct RegexSite {
     pub name: Option<String>,
 }
 
+/// A Supabase or knex `.delete()` / `.update()` on a table with no filter in its chain: every row.
+pub struct Wipe {
+    pub line: u32,
+    pub method: String,
+    pub table: String,
+}
+
 #[derive(Default)]
 pub struct Facts {
     pub sql: Vec<SqlSite>,
     pub db_in_loops: Vec<DbInLoop>,
     pub regexes: Vec<RegexSite>,
+    pub wipes: Vec<Wipe>,
 }
 
 /// Whether a string reads as a SQL statement, not prose that starts with "Select".
 pub fn looks_like_sql(text: &str) -> bool {
-    let t = text.trim_start().to_ascii_uppercase();
+    // TRUNCATE names only tables; written in capitals or with TABLE it is SQL, not "Truncate long names".
+    let trimmed = text.trim_start();
+    if trimmed.starts_with("TRUNCATE ") || trimmed.to_ascii_uppercase().starts_with("TRUNCATE TABLE ") {
+        return true;
+    }
+    let t = trimmed.to_ascii_uppercase();
     let starts = ["SELECT ", "SELECT\n", "INSERT ", "UPDATE ", "DELETE ", "WITH ", "CREATE ", "ALTER ", "DROP "].iter().any(|k| t.starts_with(k));
     starts && [" FROM ", " INTO ", " SET ", " TABLE ", " INDEX ", "\nFROM ", "\nSET "].iter().any(|k| t.replace('\n', " \n").contains(k) || t.contains(k))
 }
@@ -76,7 +89,14 @@ struct Walker<'s> {
     pending_loop: Option<u32>,
     names: Vec<String>,
     seen_sql: std::collections::HashSet<u32>,
+    /// Calls already read as part of a longer chain, by span start.
+    chained: std::collections::HashSet<u32>,
+    /// Calls kept in a variable unawaited: a query builder whose filter is added later.
+    kept: std::collections::HashSet<u32>,
 }
+
+/// Methods that narrow a Supabase (PostgREST) or knex query to some rows.
+const ROW_FILTERS: [&str; 22] = ["eq", "neq", "gt", "gte", "lt", "lte", "like", "ilike", "is", "in", "contains", "containedBy", "overlaps", "match", "filter", "not", "or", "textSearch", "rangeGt", "rangeLt", "limit", "single"];
 
 impl<'s> Walker<'s> {
     fn line(&self, offset: u32) -> u32 {
@@ -124,6 +144,38 @@ impl<'s> Walker<'s> {
     /// Whether the line above `line` waives await-in-loop with a reason.
     fn waived(&self, line: u32) -> bool {
         line >= 2 && self.src.lines().nth(line as usize - 2).is_some_and(|l| l.contains("no-await-in-loop") && l.contains("--"))
+    }
+
+    /// A chain read from its outermost call: `supabase.from("t").delete()` with no `.eq(...)` after it.
+    fn wipe(&mut self, top: &CallExpression) {
+        let mut methods = Vec::new();
+        let mut table = None;
+        let mut call = top;
+        loop {
+            let Some(m) = call.callee.as_member_expression() else { break };
+            let Some(name) = m.static_property_name() else { break };
+            methods.push(name);
+            if name == "from" {
+                if let Some(Expression::StringLiteral(s)) = call.arguments.first().and_then(|a| a.as_expression()) {
+                    table = Some(s.value.to_string());
+                }
+                if !matches!(m.object(), Expression::Identifier(id) if ["Array", "Buffer", "Object"].contains(&id.name.as_str())) {
+                    break;
+                }
+                table = None;
+                break;
+            }
+            let Expression::CallExpression(inner) = m.object() else { break };
+            self.chained.insert(inner.span.start);
+            call = inner;
+        }
+        let Some(table) = table else { return };
+        let Some(method) = methods.iter().find(|m| **m == "delete" || **m == "update") else { return };
+        if self.kept.contains(&top.span.start) || methods.iter().any(|m| ROW_FILTERS.contains(m) || m.starts_with("where") || m.starts_with("range")) {
+            return;
+        }
+        let line = self.line(top.span.start);
+        self.facts.wipes.push(Wipe { line, method: method.to_string(), table });
     }
 
     fn regex(&mut self, offset: u32, pattern: String) {
@@ -190,6 +242,9 @@ impl<'a, 's> Visit<'a> for Walker<'s> {
     }
 
     fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
+        if self.chained.insert(it.span.start) {
+            self.wipe(it);
+        }
         let callee = self.text(&it.callee).to_string();
         if is_db_call(&callee) {
             self.db_call(it.span.start, &callee);
@@ -283,6 +338,9 @@ impl<'a, 's> Visit<'a> for Walker<'s> {
     }
 
     fn visit_variable_declarator(&mut self, it: &VariableDeclarator<'a>) {
+        if let Some(Expression::CallExpression(call)) = &it.init {
+            self.kept.insert(call.span.start);
+        }
         let name = match &it.id {
             BindingPattern::BindingIdentifier(id) => Some(id.name.as_str().to_string()),
             _ => None,
@@ -323,7 +381,7 @@ pub fn facts(path: &str, src: &str) -> Option<Facts> {
     if parsed.panicked {
         return None;
     }
-    let mut walker = Walker { src, lines: Lines::new(src), facts: Facts::default(), loops: vec![None], pending_loop: None, names: vec![], seen_sql: Default::default() };
+    let mut walker = Walker { src, lines: Lines::new(src), facts: Facts::default(), loops: vec![None], pending_loop: None, names: vec![], seen_sql: Default::default(), chained: Default::default(), kept: Default::default() };
     walker.visit_program(&parsed.program);
     Some(walker.facts)
 }

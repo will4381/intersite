@@ -7,6 +7,7 @@
 
 mod aroma;
 mod boundaries;
+mod columns;
 mod decisions;
 mod drift;
 mod globals;
@@ -147,6 +148,7 @@ fn main() {
         "tamper" => tamper::run(&request),
         "special-case" => special::run(&request),
         "hook" => tamper::hook(&request),
+        "columns" => columns::run(&request),
         other => Err(format!("unknown command {other}")),
     };
     match answer {

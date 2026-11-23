@@ -4,26 +4,28 @@
 //! `pool.query("…")`); each statement is parsed on its own, so one the parser cannot read does not hide the rest.
 
 use rayon::prelude::*;
+use regex::Regex;
 use sqlparser::ast::{visit_expressions, AlterColumnOperation, AlterTableOperation, BinaryOperator, Expr, InTarget, Statement};
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
 use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow;
+use std::sync::LazyLock;
 
 use crate::text::{self, Lines};
 use crate::{js, Answer, Finding, Request};
 
 /// One statement and where it sits.
-struct Stmt {
-    file: String,
-    line: u32,
+pub(crate) struct Stmt {
+    pub file: String,
+    pub line: u32,
     /// From a `.sql` file, or a SQL string in code.
-    from_code: bool,
-    statement: Statement,
+    pub from_code: bool,
+    pub statement: Statement,
 }
 
 /// A statement's text and its byte offset, split at top-level semicolons (quotes, dollar quotes and comments kept).
-fn split(sql: &str) -> Vec<(usize, &str)> {
+pub(crate) fn split(sql: &str) -> Vec<(usize, &str)> {
     let bytes = sql.as_bytes();
     let mut out = Vec::new();
     let (mut start, mut i) = (0, 0);
@@ -73,7 +75,7 @@ fn split(sql: &str) -> Vec<(usize, &str)> {
 }
 
 /// The statements of one piece of SQL, with the line each starts on.
-fn statements(file: &str, first_line: u32, sql: &str, from_code: bool) -> Vec<Stmt> {
+pub(crate) fn statements(file: &str, first_line: u32, sql: &str, from_code: bool) -> Vec<Stmt> {
     let lines = Lines::new(sql);
     let mut out = Vec::new();
     for (offset, piece) in split(sql) {
@@ -87,7 +89,7 @@ fn statements(file: &str, first_line: u32, sql: &str, from_code: bool) -> Vec<St
 }
 
 /// The last part of a dotted name, unquoted and lowercased: `public."Users"` is `users`.
-fn bare(name: &str) -> String {
+pub(crate) fn bare(name: &str) -> String {
     name.rsplit('.').next().unwrap_or(name).trim_matches('"').to_lowercase()
 }
 
@@ -302,6 +304,12 @@ fn migration(s: &Stmt, created_here: &HashSet<(String, String)>, crowded: &HashS
                 }
             }
         }
+        Statement::Delete(d) if !s.from_code && d.selection.is_none() => {
+            out.push(finding(s, "data-deletion", "delete", "DELETE with no WHERE in a migration removes every row of the table, in every environment it runs in: delete only the rows meant (add the WHERE), and if emptying the table is the point, say so in an acknowledgment".into()));
+        }
+        Statement::Truncate(_) if !s.from_code => {
+            out.push(finding(s, "data-deletion", "truncate", "TRUNCATE in a migration empties the table in every environment it runs in, production included: delete only the rows meant, and if emptying the table is the point, say so in an acknowledgment".into()));
+        }
         Statement::Drop { .. } if s.statement.to_string().to_uppercase().starts_with("DROP TABLE") => {
             out.push(finding(s, "drop-table", "table", "drops a table while the deployed code may still read it: ship the code that stops using it first, then drop it in a later migration".into()));
         }
@@ -388,6 +396,7 @@ fn query(s: &Stmt, inv: &Inventory, out: &mut Vec<Finding>) {
     match &s.statement {
         Statement::Update(u) if u.selection.is_none() => out.push(finding(s, "update-all", "update", "UPDATE with no WHERE changes every row of the table: add the WHERE that picks the rows meant".into())),
         Statement::Delete(d) if d.selection.is_none() => out.push(finding(s, "delete-all", "delete", "DELETE with no WHERE removes every row of the table: add the WHERE that picks the rows meant".into())),
+        Statement::Truncate(_) => out.push(finding(s, "truncate", "truncate", "TRUNCATE in application code empties the table for every user, and cannot be rolled back once committed: delete only the rows meant, with a WHERE".into())),
         _ => {}
     }
     if !matches!(s.statement, Statement::Query(_) | Statement::Update(_) | Statement::Delete(_) | Statement::Insert(_)) {
@@ -438,34 +447,230 @@ fn query(s: &Stmt, inv: &Inventory, out: &mut Vec<Finding>) {
 
 /// The SQL of every file: `.sql` files whole, code files' SQL strings, and code files' queries inside loops.
 /// One file's statements, and the database calls it makes inside loops with the function they call.
-type FileScan = (Vec<Stmt>, Vec<(String, js::DbInLoop)>);
+type FileScan = (Vec<Stmt>, Vec<(String, js::DbInLoop)>, Vec<(String, js::Wipe)>);
 
-fn read_all(request: &Request) -> (Vec<Stmt>, Vec<(String, js::DbInLoop)>) {
+fn read_all(request: &Request) -> (Vec<Stmt>, Vec<(String, js::DbInLoop)>, Vec<(String, js::Wipe)>) {
     // Prisma schemas are read in run(); here only SQL and code.
     let per_file: Vec<FileScan> = request
         .files
         .par_iter()
         .filter_map(|file| {
             let src = text::read(&request.root, file)?;
-            if file.ends_with(".prisma") {
+            if file.ends_with(".prisma") || DEPLOY.is_match(file) {
                 return None;
             }
             if file.ends_with(".sql") {
-                return Some((statements(file, 1, &src, false), vec![]));
+                return Some((statements(file, 1, &src, false), vec![], vec![]));
             }
             let facts = js::facts(file, &src)?;
             let stmts = facts.sql.iter().flat_map(|site| statements(file, site.line, &site.text, true)).collect();
             let loops = facts.db_in_loops.into_iter().map(|d| (file.clone(), d)).collect();
-            Some((stmts, loops))
+            let wipes = facts.wipes.into_iter().map(|w| (file.clone(), w)).collect();
+            Some((stmts, loops, wipes))
         })
         .collect();
     let mut stmts = Vec::new();
     let mut loops = Vec::new();
-    for (s, l) in per_file {
+    let mut wipes = Vec::new();
+    for (s, l, w) in per_file {
         stmts.extend(s);
         loops.extend(l);
+        wipes.extend(w);
     }
-    (stmts, loops)
+    (stmts, loops, wipes)
+}
+
+/// Scripts, CI and deploy files, where a command that empties a database would run on its own.
+static DEPLOY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|/)(?:package\.json|Dockerfile[^/]*|[^/]*\.Dockerfile|Makefile|Justfile|justfile|Procfile|vercel\.json|netlify\.toml|fly\.toml|render\.ya?ml|railway\.(?:json|toml)|nixpacks\.toml|\.gitlab-ci\.ya?ml|bitbucket-pipelines\.ya?ml|[^/]*\.sh)$|(?:^|/)\.github/workflows/[^/]+\.ya?ml$").unwrap());
+static DESTRUCTIVE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)prisma\s+migrate\s+reset|prisma\s+db\s+push\b[^\n]*--(?:accept-data-loss|force-reset)|drizzle-kit\s+push\b[^\n]*(?:--force|\s-f\b)|supabase\s+db\s+reset\b[^\n]*--(?:linked|db-url)|\bdrop\s+database\b|\bdropdb\b").unwrap());
+/// A script or Makefile target meant for a local database.
+static LOCAL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)dev|local|test|e2e|qa|reset|seed|fresh|clean|wipe|nuke").unwrap());
+/// package.json scripts that run on their own: builds, starts, installs, deploys.
+static AUTOMATIC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:pre|post)?(?:build|start|install|prepare|deploy|release|serve|vercel-build|heroku-postbuild)$|deploy|prod|release|(?:^|:)ci(?:$|:)|^build:|^start:").unwrap());
+static RUNS_SCRIPT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?([\w:.-]+)").unwrap());
+
+/// Commands that empty a database added where they run unattended: a deploy, a build, CI, a start script.
+fn destructive_commands(request: &Request) -> Vec<Finding> {
+    let mut out = Vec::new();
+    for file in request.files.iter().filter(|f| DEPLOY.is_match(f)) {
+        let Some(src) = text::read(&request.root, file) else { continue };
+        if !DESTRUCTIVE.is_match(&src) {
+            continue;
+        }
+        let name = file.rsplit('/').next().unwrap_or(file);
+        let lines: Vec<&str> = src.lines().collect();
+        // package.json: the scripts that run on their own, and the scripts they run.
+        let mut automatic: HashMap<String, String> = HashMap::new();
+        if name == "package.json" {
+            let scripts = serde_json::from_str::<serde_json::Value>(&src).ok().and_then(|v| v.get("scripts").cloned()).unwrap_or_default();
+            if let Some(scripts) = scripts.as_object() {
+                for (key, cmd) in scripts.iter().filter(|(k, _)| AUTOMATIC.is_match(k) && !LOCAL.is_match(k)) {
+                    automatic.insert(key.clone(), key.clone());
+                    for called in RUNS_SCRIPT.captures_iter(cmd.as_str().unwrap_or("")) {
+                        automatic.entry(called[1].to_string()).or_insert_with(|| key.clone());
+                    }
+                }
+            }
+        }
+        let ci = file.contains(".github/workflows/") || name.contains("gitlab-ci") || name.contains("bitbucket");
+        // CI that starts its own database (a service container on localhost) resets a throwaway one.
+        if ci && (src.contains("services:") || src.contains("localhost") || src.contains("127.0.0.1")) {
+            continue;
+        }
+        // A script that works on a database in a local container, or is named for local work.
+        let local_file = (name.ends_with(".sh") || name.eq_ignore_ascii_case("makefile") || name.eq_ignore_ascii_case("justfile")) && (LOCAL.is_match(file) || src.contains("docker") || src.contains("localhost") || src.contains("127.0.0.1"));
+        for (i, line) in lines.iter().enumerate() {
+            let n = i as u32 + 1;
+            let Some(m) = DESTRUCTIVE.find(line) else { continue };
+            if !request.changed(file, n) || local_file {
+                continue;
+            }
+            let runs = if name == "package.json" {
+                let key = line.trim().trim_start_matches('"').split('"').next().unwrap_or("");
+                match automatic.get(key) {
+                    Some(by) if by == key => format!("the `{key}` script, which runs on its own,"),
+                    Some(by) => format!("the `{key}` script, which `{by}` runs,"),
+                    None => continue,
+                }
+            } else if name.ends_with(".sh") || name.eq_ignore_ascii_case("makefile") || name.eq_ignore_ascii_case("justfile") {
+                // The Makefile target this line belongs to.
+                let target = lines[..i].iter().rev().find(|l| !l.starts_with(char::is_whitespace) && l.contains(':')).map(|l| l.split(':').next().unwrap_or("").trim()).unwrap_or("");
+                if LOCAL.is_match(target) {
+                    continue;
+                }
+                format!("{file}")
+            } else if ci {
+                "CI".to_string()
+            } else {
+                "the deploy".to_string()
+            };
+            out.push(Finding {
+                file: file.clone(),
+                line: n,
+                target: format!("{file}:destructive-command:{}", m.as_str().split_whitespace().take(3).collect::<Vec<_>>().join(" ").to_lowercase()),
+                message: format!("{file}:{n} `{}` deletes the database's data, and {runs} runs it against whatever database it points at, production included: deploy with `prisma migrate deploy`, `drizzle-kit migrate` or `supabase db push`, and run resets by hand against a local database only", m.as_str()),
+            });
+        }
+    }
+    out
+}
+
+static RLS_TABLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?is)^\s*create\s+(?:unlogged\s+)?table\s+(?:if\s+not\s+exists\s+)?((?:"?\w+"?\.)?"?\w+"?)"#).unwrap());
+static RLS_ON: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?is)^\s*alter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?((?:"?\w+"?\.)?"?\w+"?)\s+(enable|disable|force)\s+row\s+level\s+security"#).unwrap());
+static RLS_RENAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?is)^\s*alter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?((?:"?\w+"?\.)?"?\w+"?)\s+rename\s+to\s+("?\w+"?)"#).unwrap());
+static RLS_DROP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?is)^\s*drop\s+table\s+(?:if\s+exists\s+)?((?:"?\w+"?\.)?"?\w+"?)"#).unwrap());
+static POLICY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?is)^\s*create\s+policy\s+("[^"]+"|\S+)\s+on\s+((?:"?\w+"?\.)?"?\w+"?)(.*)$"#).unwrap());
+static DROP_POLICY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?is)^\s*drop\s+policy\s+(?:if\s+exists\s+)?("[^"]+"|\S+)\s+on\s+((?:"?\w+"?\.)?"?\w+"?)"#).unwrap());
+
+/// Whether a dotted table name is in the schema the API serves: `public`, or unqualified.
+fn in_public(name: &str) -> bool {
+    !name.contains('.') || name.trim_start_matches('"').to_lowercase().starts_with("public")
+}
+
+/// Supabase serves the public schema over its API with the anon key the app ships: a table there without row level
+/// security, or with a policy that lets anyone change any row, is open to everyone.
+fn supabase_security(request: &Request) -> Vec<Finding> {
+    let mut files: Vec<&String> = request.files.iter().filter(|f| (f.contains("supabase/migrations/") || f.contains("supabase/schemas/")) && f.ends_with(".sql")).collect();
+    if files.is_empty() {
+        return vec![];
+    }
+    files.sort();
+    let mut created: HashMap<String, (String, u32)> = HashMap::new();
+    let mut secured: HashSet<String> = HashSet::new();
+    // Turned off on purpose later: reported where it is turned off, not again where it was made.
+    let mut disabled: HashSet<String> = HashSet::new();
+    let mut every_table = false;
+    let mut policies: HashMap<(String, String), (String, u32, String)> = HashMap::new();
+    let mut out = Vec::new();
+    for file in files {
+        let Some(src) = text::read(&request.root, file) else { continue };
+        let lines = Lines::new(&src);
+        for (offset, piece) in split(&src) {
+            // The statement without the comments before it.
+            let mut body = piece;
+            loop {
+                let t = body.trim_start();
+                if let Some(rest) = t.strip_prefix("--") {
+                    body = rest.split_once('\n').map_or("", |(_, r)| r);
+                } else if let Some(rest) = t.strip_prefix("/*") {
+                    body = rest.split_once("*/").map_or("", |(_, r)| r);
+                } else {
+                    body = t;
+                    break;
+                }
+            }
+            let line = lines.line(offset + (piece.len() - body.len()));
+            let piece = body;
+            if let Some(m) = RLS_TABLE.captures(piece) {
+                if in_public(&m[1]) && !piece.to_lowercase().contains(" as select") && !piece.to_lowercase().contains(" partition of ") {
+                    created.entry(bare(&m[1])).or_insert((file.clone(), line));
+                }
+            } else if let Some(m) = RLS_ON.captures(piece) {
+                let table = bare(&m[1]);
+                if m[2].eq_ignore_ascii_case("disable") {
+                    secured.remove(&table);
+                    disabled.insert(table.clone());
+                    if request.changed(file, line) {
+                        out.push(Finding { file: file.clone(), line, target: format!("{file}:rls-disabled:{table}"), message: format!("{file}:{line} turns off row level security on {table}: anyone with the anon key the app ships can then read and change every row through the API. Keep it on and write a policy for who may do what") });
+                    }
+                } else {
+                    disabled.remove(&table);
+                    secured.insert(table);
+                }
+            } else if let Some(m) = RLS_RENAME.captures(piece) {
+                let (from, to) = (bare(&m[1]), bare(&m[2]));
+                if let Some(at) = created.remove(&from) {
+                    created.insert(to.clone(), at);
+                }
+                if secured.remove(&from) {
+                    secured.insert(to);
+                }
+            } else if let Some(m) = RLS_DROP.captures(piece) {
+                created.remove(&bare(&m[1]));
+            } else if let Some(m) = POLICY.captures(piece) {
+                policies.insert((m[1].trim_matches('"').to_string(), bare(&m[2])), (file.clone(), line, m[3].to_lowercase()));
+            } else if let Some(m) = DROP_POLICY.captures(piece) {
+                policies.remove(&(m[1].trim_matches('"').to_string(), bare(&m[2])));
+            }
+            let lower = piece.to_lowercase();
+            // A loop that enables it on every table (`execute format('alter table %I enable row level security', …)`).
+            if lower.contains("enable row level security") && (lower.contains("format(") || lower.contains("%i") || lower.contains("execute ")) {
+                every_table = true;
+            }
+        }
+    }
+    if !every_table {
+        let mut open: Vec<(&String, &(String, u32))> = created.iter().filter(|(t, (f, l))| !secured.contains(*t) && !disabled.contains(*t) && request.changed(f, *l)).collect();
+        open.sort_by(|a, b| a.1.cmp(b.1));
+        for (table, (file, line)) in open {
+            out.push(Finding { file: file.clone(), line: *line, target: format!("{file}:rls:{table}"), message: format!("{file}:{line} creates {table} in the public schema without row level security, so anyone with the anon key the app ships can read and change every row through the API: ALTER TABLE {table} ENABLE ROW LEVEL SECURITY, with policies for who may read and write") });
+        }
+    }
+    let roles = Regex::new(r"(?s)\bto\s+(.+?)(?:\busing\b|\bwith\s+check\b|$)").unwrap();
+    let mut sorted: Vec<(&(String, String), &(String, u32, String))> = policies.iter().filter(|(_, (f, l, _))| request.changed(f, *l)).collect();
+    sorted.sort_by(|a, b| (&a.1 .0, a.1 .1).cmp(&(&b.1 .0, b.1 .1)));
+    for ((name, table), (file, line, rest)) in sorted {
+        if rest.contains("as restrictive") {
+            continue;
+        }
+        let compact: String = rest.chars().filter(|c| !c.is_whitespace()).collect();
+        let command = ["select", "insert", "update", "delete"].into_iter().find(|c| rest.contains(&format!("for {c}"))).unwrap_or("all");
+        let who: Vec<String> = roles.captures(rest).map_or(vec!["public".into()], |m| m[1].split(',').map(|r| r.trim().trim_matches('"').to_string()).collect());
+        let using_true = compact.contains("using(true)");
+        let check_true = compact.contains("withcheck(true)");
+        let everyone = who.iter().any(|r| r == "public" || r == "anon");
+        let signed_in = who.iter().any(|r| r == "authenticated");
+        let opens = match command {
+            "update" | "delete" | "all" => (using_true || check_true) && (everyone || signed_in),
+            "insert" => check_true && everyone,
+            _ => false,
+        };
+        if opens {
+            let whom = if everyone { "anyone, signed in or not," } else { "any signed-in user" };
+            out.push(Finding { file: file.clone(), line: *line, target: format!("{file}:open-policy:{table}:{name}"), message: format!("{file}:{line} policy \"{name}\" lets {whom} {} every row of {table} (its condition is `true`): compare the row to auth.uid() or the caller's organization instead", if command == "all" { "read and change".to_string() } else { format!("{command}") }) });
+        }
+    }
+    out
 }
 
 /// pg_stat_statements before and after a traced run.
@@ -477,7 +682,7 @@ pub fn stats(request: &Request) -> Result<Answer, String> {
 }
 
 pub fn run(request: &Request) -> Result<Answer, String> {
-    let (stmts, loops) = read_all(request);
+    let (stmts, loops, wipes) = read_all(request);
     let (inv, fks) = inventory(&stmts);
     let created_here: HashSet<(String, String)> = stmts.iter().filter_map(|s| match &s.statement {
         Statement::CreateTable(ct) => Some((s.file.clone(), bare(&ct.name.to_string()))),
@@ -560,6 +765,16 @@ pub fn run(request: &Request) -> Result<Answer, String> {
             message: format!("{file}:{} {what} once per item of the loop at line {loop_line}, a round trip each: fetch them all in one query before the loop (an IN list, findMany, or a join), or batch the writes into one statement", calls[0].line),
         });
     }
+    for (file, w) in wipes.iter().filter(|(f, w)| request.changed(f, w.line)) {
+        findings.push(Finding {
+            file: file.clone(),
+            line: w.line,
+            target: format!("{file}:unfiltered-{}:{}", w.method, w.table),
+            message: format!("{file}:{} .{}() on {} has no filter, so it targets every row (Supabase refuses it with \"requires a WHERE clause\"; other clients run it): add .eq(...) or .in(...) for the rows meant", w.line, w.method, w.table),
+        });
+    }
+    findings.extend(destructive_commands(request));
+    findings.extend(supabase_security(request));
     let mut explained = 0;
     if let Some(url) = request.database_url.as_deref().filter(|u| !u.is_empty()) {
         let fresh: Vec<&Stmt> = stmts.iter().filter(|s| s.from_code && changed(s) && matches!(s.statement, Statement::Query(_) | Statement::Update(_) | Statement::Delete(_))).collect();
@@ -703,15 +918,10 @@ mod tests {
 
     /// The findings, sorted by target.
     fn run_files(files: &[(&str, &str)], as_change: bool) -> Vec<Finding> {
-        let dir = std::env::temp_dir().join(format!("intersite-sql-{}", std::process::id() as u64 * 1000 + files.len() as u64 + files[0].1.len() as u64));
-        for (path, text) in files {
-            let p = dir.join(path);
-            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-            std::fs::write(p, text).unwrap();
-        }
+        let root = text::temp_tree(&format!("sql-{}-{}", files.len(), files[0].1.len()), files);
         let request = Request {
             command: "sql".into(),
-            root: dir.to_string_lossy().into(),
+            root,
             files: files.iter().map(|(p, _)| p.to_string()).collect(),
             added: as_change.then(|| files.iter().map(|(p, text)| (p.to_string(), (1..=text.lines().count() as u32).collect())).collect()),
             prefix: String::new(),
@@ -727,6 +937,51 @@ mod tests {
     fn splits_around_quotes_and_dollar_quotes() {
         let parts = split("select ';'; do $$ begin perform 1; end $$; -- x;\nselect $1");
         assert_eq!(parts.len(), 3);
+    }
+
+    #[test]
+    fn flags_data_deletion_in_migrations_and_code_and_unfiltered_supabase_writes() {
+        let got = check_change(&[
+            ("db/migrations/007_cleanup.sql", "DELETE FROM sessions;\nDELETE FROM events WHERE at < now() - interval '1 year';\nTRUNCATE audit_log;"),
+            ("src/admin.ts", "export const reset = () => pool.query('TRUNCATE TABLE carts');\nexport const purge = () => supabase.from('carts').delete();\nexport const one = (id) => supabase.from('carts').delete().eq('id', id);\nexport const later = () => { const q = supabase.from('carts').delete(); return q; };\nexport const touch = () => supabase.from('carts').update({ seen: true });\nexport const truncate = (s) => s.slice(0, 10);\n"),
+        ], true);
+        assert_eq!(got, vec![
+            "db/migrations/007_cleanup.sql:data-deletion:delete",
+            "db/migrations/007_cleanup.sql:data-deletion:truncate",
+            "src/admin.ts:truncate:truncate",
+            "src/admin.ts:unfiltered-delete:carts",
+            "src/admin.ts:unfiltered-update:carts",
+        ]);
+    }
+
+    #[test]
+    fn flags_database_resets_only_where_they_run_unattended() {
+        let package = "{\n  \"scripts\": {\n    \"build\": \"prisma migrate reset --force && next build\",\n    \"db:reset\": \"prisma migrate reset\",\n    \"vercel-build\": \"npm run db:push\",\n    \"db:push\": \"prisma db push --accept-data-loss\",\n    \"dev:push\": \"drizzle-kit push --force\"\n  }\n}\n";
+        let got = check_change(&[
+            ("package.json", package),
+            ("Dockerfile", "FROM node:22\nRUN npx prisma db push --accept-data-loss\n"),
+            (".github/workflows/test.yml", "jobs:\n  test:\n    services:\n      postgres:\n        image: postgres\n    steps:\n      - run: npx prisma migrate reset --force\n"),
+            ("scripts/reset-local.sh", "dropdb app\n"),
+        ], true);
+        assert_eq!(got, vec![
+            "Dockerfile:destructive-command:prisma db push",
+            "package.json:destructive-command:prisma db push",
+            "package.json:destructive-command:prisma migrate reset",
+        ]);
+    }
+
+    #[test]
+    fn supabase_tables_need_row_level_security_and_policies_must_not_open_every_row() {
+        let files = [
+            ("supabase/migrations/001_init.sql", "create table public.notes (id uuid primary key, body text);\ncreate table public.teams (id uuid primary key);\n-- secured\nalter table public.teams enable row level security;\ncreate table private.jobs (id int);\ncreate policy \"anyone edits\" on public.teams for update to authenticated using (true);\ncreate policy \"read all\" on public.teams for select using (true);\ncreate policy \"own rows\" on public.teams for all to authenticated using (auth.uid() = id);\ncreate policy \"insert anything\" on public.teams for insert to anon with check (true);\n"),
+            ("supabase/migrations/002_off.sql", "alter table public.teams disable row level security;\n"),
+        ];
+        assert_eq!(check_change(&files, true), vec![
+            "supabase/migrations/001_init.sql:open-policy:teams:anyone edits",
+            "supabase/migrations/001_init.sql:open-policy:teams:insert anything",
+            "supabase/migrations/001_init.sql:rls:notes",
+            "supabase/migrations/002_off.sql:rls-disabled:teams",
+        ]);
     }
 
     #[test]
