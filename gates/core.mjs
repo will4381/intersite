@@ -32,13 +32,15 @@ export function ensureCore() {
 
 /**
  * Sends one request to the engine and returns its answer.
- * @param {Record<string, unknown>} request
+ * @param {Record<string, unknown>} request @param {{ build?: boolean }} [options]
  * @returns {{ findings: { file: string, line: number, target: string, message: string }[], summary: string, data?: any }}
  */
-export function runCore(request) {
+export function runCore(request, { build = true } = {}) {
   // A check takes seconds; one that stalls is stopped and named instead of hanging `intersite check` with it.
-  const core = ensureCore();
-  const run = withStdin(JSON.stringify(request), (fd) => spawnSync(core, [], { stdio: [fd, "pipe", "pipe"], encoding: "utf8", maxBuffer: 1 << 30, timeout: STALLED }));
+  // Without `build` (the edit hook, which must answer at once) an engine that was never built is an error, not a build.
+  const core = build ? ensureCore() : existsSync(binary) ? binary : undefined;
+  if (!core) throw new GateError("intersite-core is not built yet");
+  const run = withStdin(JSON.stringify(request), (fd) => spawnSync(core, [], { stdio: [fd, "pipe", "pipe"], encoding: "utf8", maxBuffer: 1 << 30, timeout: build ? STALLED : 10_000 }));
   if (/** @type {NodeJS.ErrnoException | undefined} */ (run.error)?.code === "ETIMEDOUT") throw new GateError(`intersite-core gave no answer to \`${request.command}\` in ${STALLED / 60_000} minutes and was stopped: run it again, and if it stalls again, report it`);
   if (run.status !== 0) throw new GateError((run.stderr || `intersite-core exited with ${run.status}`).trim().replace(/^intersite-core: /, ""));
   return JSON.parse(run.stdout);

@@ -68,7 +68,7 @@ fn count(re: &Fancy, text: &str) -> usize {
 }
 
 /// Tests, assertions, and skips or todos in a test file.
-fn test_counts(text: &str) -> (usize, usize, usize) {
+pub fn test_counts(text: &str) -> (usize, usize, usize) {
     let code = strip_code(text);
     (count(&TESTS, &code), count(&ASSERTS, &code), count(&SKIPS, &code))
 }

@@ -33,7 +33,7 @@ test("init writes the config, adapter and agent rules, and a second run changes 
   assert.equal(
     await run(cwd),
     "ok init: wrote intersite.yml, intersite.adapter.mjs, AGENTS.md, .claude/skills/intersite/SKILL.md, .claude/skills/intersite-bug/SKILL.md, " +
-      ".claude/skills/intersite-rule/SKILL.md, .claude/skills/intersite-setup/SKILL.md, .gitignore; install oxlint and @oxlint/plugins, then run `intersite lint --write=init`",
+      ".claude/skills/intersite-rule/SKILL.md, .claude/skills/intersite-setup/SKILL.md, .claude/settings.json, .gitignore; install oxlint and @oxlint/plugins, then run `intersite lint --write=init`",
   );
   assert.match(readFileSync(join(cwd, ".claude/skills/intersite/SKILL.md"), "utf8"), /^---\nname: intersite\n/);
   assert.equal(loadConfig(cwd).project, "acme-web-app");
@@ -65,7 +65,7 @@ test("with no intersite.yml every default applies and the project is named after
   writeFileSync(join(cwd, "package.json"), JSON.stringify({ name: "slabs" }));
   const config = loadConfig(cwd);
   assert.equal(config.project, "slabs");
-  assert.deepEqual(config.gates.run, ["test-integrity", "duplicates", "similar", "new-deps", "artifacts", "unused", "naming", "style-drift", "value-drift", "sql", "regex", "decisions", "renames", "schema-drift", "imports", "boundaries"]);
+  assert.deepEqual(config.gates.run, ["test-integrity", "duplicates", "similar", "new-deps", "artifacts", "unused", "naming", "style-drift", "value-drift", "sql", "regex", "decisions", "renames", "schema-drift", "imports", "boundaries", "tamper", "special-case"]);
   assert.equal(config.collector.url, "http://127.0.0.1:8790");
   writeFileSync(join(cwd, "package.json"), JSON.stringify({ name: "Café Crème" }));
   assert.equal(loadConfig(cwd).project, "cafe-creme");
@@ -111,6 +111,20 @@ test("in a package of a monorepo, init writes the agent rules and skills once at
   assert.equal(existsSync(join(top, "apps/api/AGENTS.md")) || existsSync(join(top, "apps/web/.claude")), false);
   assert.match(readFileSync(join(top, ".claude/skills/intersite/SKILL.md"), "utf8"), /^---\nname: intersite\n/);
   assert.equal(readFileSync(join(top, "AGENTS.md"), "utf8").split("<!-- intersite:start -->").length, 2);
+});
+
+test("init adds the edit hook to the project's Claude settings once, keeping the hooks already there", async () => {
+  const top = mkdtempSync(join(tmpdir(), "intersite-init-hook-"));
+  execFileSync("git", ["init", "-q"], { cwd: top });
+  mkdirSync(join(top, ".claude"));
+  const own = { matcher: "Bash", hooks: [{ type: "command", command: "./guard.sh" }] };
+  writeFileSync(join(top, ".claude/settings.json"), JSON.stringify({ permissions: { allow: ["Bash(npm test)"] }, hooks: { PreToolUse: [own] } }));
+  assert.match(await run(top), /\.claude\/settings\.json/);
+  const settings = JSON.parse(readFileSync(join(top, ".claude/settings.json"), "utf8"));
+  assert.deepEqual(settings.permissions, { allow: ["Bash(npm test)"] });
+  assert.deepEqual(settings.hooks.PreToolUse, [own, { matcher: "Edit|Write|MultiEdit", hooks: [{ type: "command", command: "npx intersite hook" }] }]);
+  assert.doesNotMatch(await run(top), /settings/);
+  assert.equal(JSON.parse(readFileSync(join(top, ".claude/settings.json"), "utf8")).hooks.PreToolUse.length, 2);
 });
 
 test("init takes no arguments: an unknown flag is a usage error, not silently ignored", async () => {

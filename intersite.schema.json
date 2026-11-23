@@ -168,6 +168,8 @@
               "schema-drift",
               "imports",
               "boundaries",
+              "tamper",
+              "special-case",
               "fails-on-base",
               "mutation"
             ]
@@ -188,7 +190,9 @@
             "renames",
             "schema-drift",
             "imports",
-            "boundaries"
+            "boundaries",
+            "tamper",
+            "special-case"
           ],
           "description": "Gates `intersite check` runs. `fails-on-base` and `mutation` run the tests and need `testCmd`; `check --full` adds `fails-on-base` on its own when the change says it is a fix and `testCmd` is set."
         },
