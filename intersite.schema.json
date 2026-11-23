@@ -166,6 +166,8 @@
               "decisions",
               "renames",
               "schema-drift",
+              "imports",
+              "boundaries",
               "fails-on-base",
               "mutation"
             ]
@@ -184,7 +186,9 @@
             "regex",
             "decisions",
             "renames",
-            "schema-drift"
+            "schema-drift",
+            "imports",
+            "boundaries"
           ],
           "description": "Gates `intersite check` runs. `fails-on-base` and `mutation` run the tests and need `testCmd`; `check --full` adds `fails-on-base` on its own when the change says it is a fix and `testCmd` is set."
         },
@@ -287,6 +291,35 @@
               }
             }
           }
+        },
+        "layers": {
+          "type": "array",
+          "description": "Layers, highest first: a file may import from its own layer and the ones below it, never above. The `boundaries` gate reports a new import upward.",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "paths"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "paths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1,
+                "description": "Globs of the layer's files, relative to the project folder."
+              }
+            }
+          }
+        },
+        "features": {
+          "type": "string",
+          "description": "A glob with one `*` naming each feature's folder, such as `src/features/*`: the `boundaries` gate reports a new import from one feature's files into another's."
         },
         "baseline": {
           "type": "string",

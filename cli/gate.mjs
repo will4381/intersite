@@ -7,7 +7,9 @@ import { parseArgs } from "node:util";
 
 import { loadConfig } from "../shared/config.mjs";
 import { artifacts } from "../gates/artifacts.mjs";
+import { boundaries } from "../gates/boundaries.mjs";
 import { duplicates } from "../gates/duplicates.mjs";
+import { imports } from "../gates/imports.mjs";
 import { failsOnBase } from "../gates/fails-on-base.mjs";
 import { EMPTY_TREE, GateError, resolveBase } from "../gates/lib.mjs";
 import { spawnSync } from "node:child_process";
@@ -27,10 +29,10 @@ import { unused } from "../gates/unused.mjs";
 import { valueDrift } from "../gates/value-drift.mjs";
 
 /** @type {Record<string, (options: import("../gates/lib.mjs").GateOptions) => Promise<import("../gates/lib.mjs").GateResult>>} */
-export const gates = { "test-integrity": testIntegrity, duplicates, "new-deps": newDeps, artifacts, unused, similar, naming, "style-drift": styleDrift, "value-drift": valueDrift, sql, regex, decisions, renames, "schema-drift": schemaDrift, "fails-on-base": failsOnBase, mutation, protected: protectedPaths };
+export const gates = { "test-integrity": testIntegrity, duplicates, "new-deps": newDeps, artifacts, unused, similar, naming, "style-drift": styleDrift, "value-drift": valueDrift, sql, regex, decisions, renames, "schema-drift": schemaDrift, "fails-on-base": failsOnBase, mutation, protected: protectedPaths, imports, boundaries };
 
 /** Gates that can judge the whole repository (`--all`): the rest only mean something for a change. */
-export const WHOLE = new Set(["duplicates", "similar", "unused", "naming", "style-drift", "value-drift", "sql", "regex", "decisions", "schema-drift", "artifacts"]);
+export const WHOLE = new Set(["duplicates", "similar", "unused", "naming", "style-drift", "value-drift", "sql", "regex", "decisions", "schema-drift", "artifacts", "imports", "boundaries"]);
 
 const usage = `usage: intersite gate <${Object.keys(gates).join("|")}> [--base <ref>] [--json] [--cmd "<test command>"] [--paths <glob>]... [--setup "<command>"] [--max <n>] [--timeout <seconds>] [--all [--write]]`;
 
@@ -46,7 +48,7 @@ export async function runGate(name, { cwd, config, flags = {}, all = false, fres
   const { base, testPaths, testCmd, setup, duplicateLines, mutants, entryPaths, acknowledged } = config.gates;
   // The replay adapter is loaded by Intersite itself, by the name in the config, so nothing in the project imports it.
   const loaded = [...entryPaths, config.replay.adapter.replace(/^\.\//, "")];
-  const options = { cwd, base, testPaths, testCmd, setup, duplicateLines, mutants, entryPaths: loaded, artifacts: config.gates.artifacts, protected: config.gates.protected, timeout: 120 };
+  const options = { cwd, base, testPaths, testCmd, setup, duplicateLines, mutants, entryPaths: loaded, artifacts: config.gates.artifacts, protected: config.gates.protected, layers: config.gates.layers, features: config.gates.features, timeout: 120 };
   const result = await gates[name]({ ...options, ...flags, ...(all && { base: EMPTY_TREE }) });
   const recorded = new Set(all && !fresh ? readBaseline(cwd, config)[name] : []);
   const findings = result.findings.filter((f) => !recorded.has(f.target) && !acknowledged.some((a) => a.gate === name && a.target === f.target));

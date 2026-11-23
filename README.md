@@ -50,6 +50,8 @@ In a monorepo, install `intersite`, `oxlint` and `@oxlint/plugins` once at the r
 | `schema-drift` | An interface or object type that restates the keys of a zod, valibot, yup or TypeBox schema or a Drizzle table by hand, with the derived type to write instead | git |
 | `artifacts` | Leftovers: backup and `_v2` copies, scratch scripts, logs, stray `PLAN.md` and `SUMMARY.md` files | git |
 | `unused` | A file or export this change added that nothing uses, or a file it orphaned | git |
+| `imports` | An import of something that is not there: a file that does not exist (or only under another case, which macOS forgives and Linux does not), a name the module does not export, or a package no package.json declares and nothing installed provides, the shape of an invented one. Also unchanged imports the change broke by deleting, moving or un-exporting what they named | git |
+| `boundaries` | A relative import into another workspace package, a workspace package used without being declared, a new barrel file (unless the project keeps barrels), server-only code (a database driver, a secret read at load) pulled into a `"use client"` module, and, when configured, an import against `gates.layers` or between `gates.features` | git |
 | `protected` | A change to paths you marked as protected (money, access) with no test changed alongside | git and a `gates.protected` rule |
 | your `checks` | Whatever the project already runs: its tests, generated-file checks, a model checker, a bundle budget | a `checks` entry |
 | `replay` (experimental) | An API that now answers real recorded sessions differently | capture and an adapter |
@@ -103,7 +105,7 @@ A change that touches `paths` fails unless it also changes a file under `needs` 
 
 ### The whole repository, not only the change
 
-`duplicates`, `similar`, `unused`, `naming`, `style-drift`, `value-drift`, `sql`, `regex`, `decisions`, `schema-drift` and `artifacts` judge a change. `--all` points them at
+`duplicates`, `similar`, `unused`, `naming`, `style-drift`, `value-drift`, `sql`, `regex`, `decisions`, `schema-drift`, `artifacts`, `imports` and `boundaries` judge a change. `--all` points them at
 every file; record what is there today and only new findings fail, as with lint:
 
 ```bash

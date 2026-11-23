@@ -14,7 +14,8 @@ export class GateError extends Error {}
 /**
  * @typedef {{ cwd: string, base: string, testPaths: string[], testCmd: string, setup: string,
  *   duplicateLines: number, mutants: number, timeout: number, entryPaths: string[], artifacts: string[],
- *   protected: { paths: string[], needs?: string[], why?: string }[] }} GateOptions
+ *   protected: { paths: string[], needs?: string[], why?: string }[], layers?: { name: string, paths: string[] }[],
+ *   features?: string }} GateOptions
  * @typedef {{ target: string, message: string }} Finding
  * @typedef {{ findings: Finding[], summary: string }} GateResult
  * @typedef {{ status: string, path: string, from: string }} Change

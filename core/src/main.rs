@@ -6,9 +6,12 @@
 #![allow(clippy::needless_range_loop, clippy::nonminimal_bool)]
 
 mod aroma;
+mod boundaries;
 mod decisions;
 mod drift;
 mod globals;
+mod graph;
+mod imports;
 mod hygiene;
 mod dup;
 mod js;
@@ -130,6 +133,8 @@ fn main() {
         "decisions" => decisions::run(&request),
         "renames" => renames::run(&request),
         "schema-drift" => schemas::run(&request),
+        "imports" => imports::run(&request),
+        "boundaries" => boundaries::run(&request),
         other => Err(format!("unknown command {other}")),
     };
     match answer {
