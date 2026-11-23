@@ -64,3 +64,17 @@ test("with INTERSITE_DATABASE_URL, a new query the planner would answer by scann
   assert.deepEqual(await check(r.cwd), ["src/orders.ts:1 the planner reads all ~20000 rows of orders for this query (Seq Scan, Filter: (customer_id = $1)): CREATE INDEX CONCURRENTLY ON orders (customer_id)"]);
   assert.equal(pg.psql("SELECT count(*) FROM orders"), "20000", "planning never ran the query");
 });
+
+test("a database reset added to a script that runs unattended, and a Supabase table without row level security, are reported", async () => {
+  const r = repo({ "package.json": JSON.stringify({ name: "x", scripts: { build: "next build" } }, null, 2), "supabase/migrations/001_init.sql": "create table public.notes (id uuid primary key);\nalter table public.notes enable row level security;\n" });
+  r.write({
+    "package.json": JSON.stringify({ name: "x", scripts: { build: "prisma db push --accept-data-loss && next build", "db:reset": "prisma migrate reset" } }, null, 2),
+    "supabase/migrations/002_tags.sql": "create table public.tags (id uuid primary key, name text);\n",
+    "src/notes.ts": "export const clear = () => supabase.from('notes').delete();\n",
+  });
+  assert.deepEqual(await check(r.cwd), [
+    "src/notes.ts:1 .delete() on notes has no filter, so it targets every row (Supabase refuses it with \"requires a WHERE clause\"; other clients run it): add .eq(...) or .in(...) for the rows meant",
+    "package.json:4 `prisma db push --accept-data-loss` deletes the database's data, and the `build` script, which runs on its own, runs it against whatever database it points at, production included: deploy with `prisma migrate deploy`, `drizzle-kit migrate` or `supabase db push`, and run resets by hand against a local database only",
+    "supabase/migrations/002_tags.sql:1 creates tags in the public schema without row level security, so anyone with the anon key the app ships can read and change every row through the API: ALTER TABLE tags ENABLE ROW LEVEL SECURITY, with policies for who may read and write",
+  ]);
+});

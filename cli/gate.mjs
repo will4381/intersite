@@ -7,6 +7,7 @@ import { parseArgs } from "node:util";
 
 import { loadConfig } from "../shared/config.mjs";
 import { artifacts } from "../gates/artifacts.mjs";
+import { columns } from "../gates/columns.mjs";
 import { duplicates } from "../gates/duplicates.mjs";
 import { failsOnBase } from "../gates/fails-on-base.mjs";
 import { EMPTY_TREE, GateError, resolveBase } from "../gates/lib.mjs";
@@ -27,10 +28,10 @@ import { unused } from "../gates/unused.mjs";
 import { valueDrift } from "../gates/value-drift.mjs";
 
 /** @type {Record<string, (options: import("../gates/lib.mjs").GateOptions) => Promise<import("../gates/lib.mjs").GateResult>>} */
-export const gates = { "test-integrity": testIntegrity, duplicates, "new-deps": newDeps, artifacts, unused, similar, naming, "style-drift": styleDrift, "value-drift": valueDrift, sql, regex, decisions, renames, "schema-drift": schemaDrift, "fails-on-base": failsOnBase, mutation, protected: protectedPaths };
+export const gates = { "test-integrity": testIntegrity, duplicates, "new-deps": newDeps, artifacts, unused, similar, naming, "style-drift": styleDrift, "value-drift": valueDrift, sql, regex, decisions, renames, "schema-drift": schemaDrift, columns, "fails-on-base": failsOnBase, mutation, protected: protectedPaths };
 
 /** Gates that can judge the whole repository (`--all`): the rest only mean something for a change. */
-export const WHOLE = new Set(["duplicates", "similar", "unused", "naming", "style-drift", "value-drift", "sql", "regex", "decisions", "schema-drift", "artifacts"]);
+export const WHOLE = new Set(["duplicates", "similar", "unused", "naming", "style-drift", "value-drift", "sql", "regex", "decisions", "schema-drift", "artifacts", "columns"]);
 
 const usage = `usage: intersite gate <${Object.keys(gates).join("|")}> [--base <ref>] [--json] [--cmd "<test command>"] [--paths <glob>]... [--setup "<command>"] [--max <n>] [--timeout <seconds>] [--all [--write]]`;
 

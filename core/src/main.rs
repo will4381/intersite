@@ -6,6 +6,7 @@
 #![allow(clippy::needless_range_loop, clippy::nonminimal_bool)]
 
 mod aroma;
+mod columns;
 mod decisions;
 mod drift;
 mod globals;
@@ -130,6 +131,7 @@ fn main() {
         "decisions" => decisions::run(&request),
         "renames" => renames::run(&request),
         "schema-drift" => schemas::run(&request),
+        "columns" => columns::run(&request),
         other => Err(format!("unknown command {other}")),
     };
     match answer {
