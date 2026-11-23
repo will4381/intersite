@@ -18,7 +18,7 @@
     "./intersite.schema.json": "./intersite.schema.json"
   },
   "scripts": {
-    "test": "INTERSITE_OFFLINE=1 node --test \"test/**/*.test.mjs\"",
+    "test": "GITHUB_ACTIONS= INTERSITE_OFFLINE=1 node --test \"test/**/*.test.mjs\"",
     "lint": "node bin/intersite.mjs lint",
     "check": "node bin/intersite.mjs check",
     "build:core": "cargo build --release --manifest-path core/Cargo.toml"
