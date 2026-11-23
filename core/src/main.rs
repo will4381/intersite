@@ -8,6 +8,7 @@
 mod aroma;
 mod boundaries;
 mod columns;
+mod auth;
 mod decisions;
 mod drift;
 mod globals;
@@ -24,10 +25,12 @@ mod search;
 mod similar;
 mod special;
 mod regex;
+mod registry;
 mod renames;
 mod routes;
 mod env;
 mod schemas;
+mod secrets;
 mod sql;
 mod stats;
 mod tamper;
@@ -153,6 +156,8 @@ fn main() {
         "special-case" => special::run(&request),
         "hook" => tamper::hook(&request),
         "columns" => columns::run(&request),
+        "secrets" => secrets::run(&request),
+        "auth" => auth::run(&request),
         other => Err(format!("unknown command {other}")),
     };
     match answer {

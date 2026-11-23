@@ -40,7 +40,7 @@ In a monorepo, install `intersite`, `oxlint` and `@oxlint/plugins` once at the r
 | `tamper` | The checks loosened instead of the code fixed: a strict type option turned off, a lint rule downgraded or a path ignored, a gate or lint pack dropped, a baseline grown, a test runner told to skip files, pass with no tests, retry or accept lower coverage, a CI step that ran the checks removed or allowed to fail, coverage-ignore pragmas | git |
 | `special-case` | Production code that answers the tests instead of solving the problem: a branch on running under a test runner, or a branch on a changed test's own input that returns exactly what that test expects | git |
 | `duplicates` | A pasted block that already exists in the repository | git |
-| `new-deps` | A dependency added without saying why | git |
+| `new-deps` | A dependency added without saying why; one npm has never heard of (an invented name anyone could register later) is named as such, and a days-old one says so | git |
 | `similar` | A new function, component, hook or type that already exists under another name; when two differ only in a few literals it says to make one with a variant. Also a helper's body pasted inside a new function | git |
 | `naming` | A file or folder named against the casing, suffix or test pattern its siblings keep, or unlike its main export | git |
 | `style-drift` | A colour, size or token that is almost one the project already has, or off a scale it keeps closed | git |
@@ -53,6 +53,8 @@ In a monorepo, install `intersite`, `oxlint` and `@oxlint/plugins` once at the r
 | `schema-drift` | An interface or object type that restates the keys of a zod, valibot, yup or TypeBox schema or a Drizzle table by hand, with the derived type to write instead | git |
 | `routes` | A link, navigation or API call to a path no page or route of the app answers (`/auth/signup` when the page is `/signup`), or a call with a method the route does not handle (`POST` to a route that exports only `GET`). Reads Next.js, React Router and Remix, SvelteKit, Nuxt and Astro routes, and Express, Hono and Fastify handlers | git |
 | `env` | A read of an environment variable the project's `.env.example` (or env schema) does not list: a typo (`STRIPE_WEBHOOK_SECRT`, with the name it probably meant) or a variable the deploy will not know to set | git |
+| `secrets` | A credential added to any file (config, workflow, docs, env file): an API key or token with a known format, a private key, a database URL with its password, a Supabase service-role key, or a committed `.env` holding a real secret. The secret is never printed | git |
+| `auth` | An endpoint (route handler, server action, loader, tRPC procedure, Convex function, Express/Hono/Fastify route) that never checks who is calling, where most of its kind in the package do. The convention is read from the project; sign-in, webhook, health and cron paths are public | git |
 | `artifacts` | Leftovers: backup and `_v2` copies, scratch scripts, logs, stray `PLAN.md` and `SUMMARY.md` files | git |
 | `unused` | A file or export this change added that nothing uses, or a file it orphaned | git |
 | `imports` | An import of something that is not there: a file that does not exist (or only under another case, which macOS forgives and Linux does not), a name the module does not export, or a package no package.json declares and nothing installed provides, the shape of an invented one. Also unchanged imports the change broke by deleting, moving or un-exporting what they named | git |
@@ -112,7 +114,7 @@ A change that touches `paths` fails unless it also changes a file under `needs` 
 
 ### The whole repository, not only the change
 
-`duplicates`, `similar`, `unused`, `naming`, `style-drift`, `value-drift`, `sql`, `regex`, `decisions`, `schema-drift`, `artifacts`, `imports`, `boundaries`, `columns`, `complexity`, `routes` and `env` judge a change. `--all` points them at
+`duplicates`, `similar`, `unused`, `naming`, `style-drift`, `value-drift`, `sql`, `regex`, `decisions`, `schema-drift`, `artifacts`, `imports`, `boundaries`, `columns`, `complexity`, `routes`, `env`, `secrets` and `auth` judge a change. `--all` points them at
 every file; record what is there today and only new findings fail, as with lint:
 
 ```bash

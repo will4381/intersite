@@ -28,6 +28,7 @@ postgres-native-tls = "0.5.3"
 native-tls = "0.2.18"
 oxc_resolver = "=11.23.0"
 serde_yaml = "0.9"
+ureq = { version = "2.12", default-features = false, features = ["native-tls", "json"] }
 
 [profile.release]
 opt-level = 3

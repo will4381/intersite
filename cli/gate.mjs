@@ -28,6 +28,8 @@ import { renames } from "../gates/renames.mjs";
 import { routes } from "../gates/routes.mjs";
 import { env } from "../gates/env.mjs";
 import { schemaDrift } from "../gates/schema-drift.mjs";
+import { secrets } from "../gates/secrets.mjs";
+import { auth } from "../gates/auth.mjs";
 import { sql } from "../gates/sql.mjs";
 import { tamper } from "../gates/tamper.mjs";
 import { styleDrift } from "../gates/style-drift.mjs";
@@ -36,10 +38,10 @@ import { unused } from "../gates/unused.mjs";
 import { valueDrift } from "../gates/value-drift.mjs";
 
 /** @type {Record<string, (options: import("../gates/lib.mjs").GateOptions) => Promise<import("../gates/lib.mjs").GateResult>>} */
-export const gates = { "test-integrity": testIntegrity, duplicates, "new-deps": newDeps, artifacts, unused, similar, naming, "style-drift": styleDrift, "value-drift": valueDrift, sql, regex, decisions, renames, "schema-drift": schemaDrift, "fails-on-base": failsOnBase, mutation, protected: protectedPaths, imports, boundaries, tamper, "special-case": specialCase, complexity, coverage, columns, routes, env };
+export const gates = { "test-integrity": testIntegrity, duplicates, "new-deps": newDeps, artifacts, unused, similar, naming, "style-drift": styleDrift, "value-drift": valueDrift, sql, regex, decisions, renames, "schema-drift": schemaDrift, "fails-on-base": failsOnBase, mutation, protected: protectedPaths, imports, boundaries, tamper, "special-case": specialCase, complexity, coverage, columns, routes, env, secrets, auth };
 
 /** Gates that can judge the whole repository (`--all`): the rest only mean something for a change. */
-export const WHOLE = new Set(["duplicates", "similar", "unused", "naming", "style-drift", "value-drift", "sql", "regex", "decisions", "schema-drift", "artifacts", "imports", "boundaries", "complexity", "columns", "routes", "env"]);
+export const WHOLE = new Set(["duplicates", "similar", "unused", "naming", "style-drift", "value-drift", "sql", "regex", "decisions", "schema-drift", "artifacts", "imports", "boundaries", "complexity", "columns", "routes", "env", "secrets", "auth"]);
 
 const usage = `usage: intersite gate <${Object.keys(gates).join("|")}> [--base <ref>] [--json] [--cmd "<test command>"] [--paths <glob>]... [--setup "<command>"] [--max <n>] [--timeout <seconds>] [--all [--write]]`;
 
