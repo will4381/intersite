@@ -56,5 +56,12 @@ export function productCodeGate(command, { cwd, base, testPaths }) {
   const files = listFiles(top).filter((f) => JS_FILE.test(f) && !SKIP.test(f) && !NOT_PRODUCT.test(f) && !matches(f, testPaths));
   const answer = runCore({ command, root: top, files, added: whole ? undefined : Object.fromEntries(added), prefix });
   const name = (/** @type {string} */ file) => posix.relative(prefix || ".", file);
-  return { findings: answer.findings.map((f) => ({ target: f.target.replace(f.file, name(f.file)), message: f.message.replaceAll(f.file, name(f.file)) })), summary: answer.summary };
+  return { findings: answer.findings.map((f) => ({ ...located(f, name), target: f.target.replace(f.file, name(f.file)), message: f.message.replaceAll(f.file, name(f.file)) })), summary: answer.summary };
 }
+
+/**
+ * Where an engine finding is, for `--json` and CI annotations: its file as the project names it, and its line.
+ * @param {{ file: string, line: number }} finding @param {(file: string) => string} [name] from the engine's path
+ * @returns {{ file?: string, line?: number }}
+ */
+export const located = ({ file, line }, name = (file) => file) => ({ ...(file && { file: name(file) }), ...(line > 0 && { line }) });

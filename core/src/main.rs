@@ -11,6 +11,9 @@ mod drift;
 mod globals;
 mod hygiene;
 mod dup;
+mod complexity;
+mod coverage;
+mod functions;
 mod js;
 mod naming;
 mod search;
@@ -19,6 +22,7 @@ mod regex;
 mod renames;
 mod schemas;
 mod sql;
+mod stats;
 mod style;
 mod text;
 mod trace;
@@ -125,6 +129,9 @@ fn main() {
         "new-deps" => hygiene::new_deps(&request),
         "artifacts" => hygiene::artifacts(&request),
         "mutants" => hygiene::mutants(&request),
+        "complexity" => complexity::run(&request),
+        "coverage" => coverage::run(&request),
+        "stats" => stats::run(&request),
         "trace-report" => trace::run(&request),
         "twins" => twins::run(&request),
         "decisions" => decisions::run(&request),

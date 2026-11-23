@@ -4,7 +4,8 @@
 It prints one line per finding, with the command that reruns just that finding.
 
 - **Never make a check pass by weakening it.** Do not delete, skip or loosen a test, special-case a test's inputs,
-  or silence a lint rule. If a test, a replayed case or a rule looks wrong, stop and say so. A real exception goes
+  or silence a lint rule. If a test, a replayed case or a rule looks wrong, stop and say so, and if the same finding
+  is still there after three honest attempts, stop and report it as a conflict for a human. A real exception goes
   in `intersite.yml` under `gates.acknowledged` with a reason, for one change only as a commit trailer
   `Intersite-Ack: <gate>: <why>`, or on one line as
   `// oxlint-disable-next-line intersite/<rule> -- <why>`, where a reviewer will see it. Security and test rules

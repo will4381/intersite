@@ -45,7 +45,7 @@ const defaults = {
   lint: { packs: ["tests","slop","security","state","async","perf","react","next","design","types","validation","naming","globals","ui","orm","query","workers","supabase","server","start","payments","auth","swift"], rules: {}, custom: [], baseline: "intersite-baseline.json", extends: ".oxlintrc.json", ownRules: true, typeAware: false },
   gates: {
     base: DEFAULT_BASE,
-    run: ["test-integrity","duplicates","similar","new-deps","artifacts","unused","naming","style-drift","value-drift","sql","regex","decisions","renames","schema-drift"],
+    run: ["test-integrity","duplicates","similar","new-deps","artifacts","unused","naming","style-drift","value-drift","sql","regex","decisions","renames","schema-drift","complexity"],
     testPaths: TEST_PATHS,
     testCmd: "",
     setup: "",
@@ -134,7 +134,7 @@ export function loadConfig(cwd) {
 }
 
 /** Stage names `intersite check` already uses, which a project check may not take. */
-const BUILT_IN = new Set(["lint", "replay", ...defaults.gates.run, "fails-on-base", "mutation", "protected"]);
+const BUILT_IN = new Set(["lint", "replay", ...defaults.gates.run, "fails-on-base", "mutation", "protected", "coverage"]);
 
 /**
  * The project's own checks: commands `intersite check` runs after the gates, each only when the change touches its

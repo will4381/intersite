@@ -5,7 +5,7 @@
 // The work is in core/schemas.rs.
 import { posix } from "node:path";
 
-import { runCore } from "./core.mjs";
+import { located, runCore } from "./core.mjs";
 import { SKIP, changeOf, listFiles, matches } from "./lib.mjs";
 
 const TS_FILE = /\.[cm]?tsx?$/;
@@ -17,5 +17,5 @@ export async function schemaDrift({ cwd, base, testPaths }) {
   const files = listFiles(top).filter((f) => TS_FILE.test(f) && !SKIP.test(f) && !/\.d\.[cm]?ts$/.test(f) && !matches(f, testPaths));
   const answer = runCore({ command: "schema-drift", root: top, files, added: whole ? undefined : Object.fromEntries(added), prefix });
   const name = (/** @type {string} */ file) => posix.relative(prefix || ".", file);
-  return { findings: answer.findings.map((f) => ({ target: f.target.replace(f.file, name(f.file)), message: f.message.replaceAll(f.file, name(f.file)) })), summary: answer.summary };
+  return { findings: answer.findings.map((f) => ({ ...located(f, name), target: f.target.replace(f.file, name(f.file)), message: f.message.replaceAll(f.file, name(f.file)) })), summary: answer.summary };
 }

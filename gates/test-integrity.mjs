@@ -5,7 +5,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { runCore } from "./core.mjs";
+import { located, runCore } from "./core.mjs";
 import { EMPTY_TREE, baseName, changes, matches, resolveBase, showMany } from "./lib.mjs";
 
 /**
@@ -25,5 +25,5 @@ export async function testIntegrity({ cwd, base, testPaths }) {
     now: c.status === "D" || !matches(c.path, testPaths) ? "" : readFileSync(join(cwd, c.path), "utf8"),
   }));
   const answer = runCore({ command: "test-integrity", root: cwd, options: { changes: list, since } });
-  return { findings: answer.findings.map(({ target, message }) => ({ target, message })), summary: answer.summary };
+  return { findings: answer.findings.map((f) => ({ ...located(f), target: f.target, message: f.message })), summary: answer.summary };
 }

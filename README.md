@@ -50,6 +50,7 @@ In a monorepo, install `intersite`, `oxlint` and `@oxlint/plugins` once at the r
 | `schema-drift` | An interface or object type that restates the keys of a zod, valibot, yup or TypeBox schema or a Drizzle table by hand, with the derived type to write instead | git |
 | `artifacts` | Leftovers: backup and `_v2` copies, scratch scripts, logs, stray `PLAN.md` and `SUMMARY.md` files | git |
 | `unused` | A file or export this change added that nothing uses, or a file it orphaned | git |
+| `complexity` | A function this change made hard to follow: cognitive complexity 25 or more, new or grown by 10 or more | git |
 | `protected` | A change to paths you marked as protected (money, access) with no test changed alongside | git and a `gates.protected` rule |
 | your `checks` | Whatever the project already runs: its tests, generated-file checks, a model checker, a bundle budget | a `checks` entry |
 | `replay` (experimental) | An API that now answers real recorded sessions differently | capture and an adapter |
@@ -64,8 +65,9 @@ In a monorepo, put `intersite.yml` in the app's folder: its `check` judges only 
 relative to it, and still reports a copy of code that lives in a shared package. A root config skips folders that
 have their own.
 
-Two more gates run the tests and are opt-in through `gates.run`: `fails-on-base` (a bug fix's new test must fail
-without the fix) and `mutation` (a deliberate break on a changed line must make a test fail). With `gates.testCmd`
+Three more gates run the tests and are opt-in through `gates.run`: `fails-on-base` (a bug fix's new test must fail
+without the fix), `mutation` (a changed function's body removed, or an operator flipped on a changed line, must make
+a test fail) and `coverage` (every function the change added or edited must run in some test). With `gates.testCmd`
 set, `check --full` adds `fails-on-base` on its own when the branch name or a commit message since the base says
 fix, bug, hotfix or regression.
 
@@ -120,7 +122,8 @@ finding, exit code 0, 1 or 2.
 | Command | Does |
 | --- | --- |
 | `intersite init` | Sets a project up; safe to run again after upgrading. `--no-replay` sets up lint and gates only |
-| `intersite check [--base <ref>] [--skip <stage>] [--full] [--all]` | Runs every stage that applies; one line on success. `--full` adds slow checks, `--all` covers the whole repository |
+| `intersite check [--base <ref>] [--skip <stage>] [--full] [--all] [--json]` | Runs every stage that applies; one line on success. `--full` adds slow checks, `--all` covers the whole repository, `--json` prints one object with every stage's findings. In GitHub Actions each finding prints as an annotation, so it shows on the pull request |
+| `intersite stats [--json]` | Per gate and lint rule, the findings `check` raised on this machine, and how many were fixed or acknowledged: a check people mostly acknowledge needs fixing |
 | `intersite lint [paths] [--write] [--rules]` | Lints; `--write` lowers the baseline; `--rules` lists what applies |
 | `intersite gate <name> [--base <ref>] [--all [--write]]` | Runs one gate against the diff, or with `--all` the whole repository; `--write` records today's findings |
 | `intersite search <file>[:<line>[-<line>]] \| - [--max <n>]` | Finds the functions that already contain this code, renamed or reordered |

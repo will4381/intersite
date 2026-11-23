@@ -38,7 +38,9 @@ instead of changing code to satisfy it.
 | contains `"gate": "artifacts"` | You left a backup copy, scratch file, log or planning document | Delete it; put anything worth keeping where it belongs |
 | contains `"gate": "unused"` | You added a file or export nothing uses, or orphaned a file | Wire it in or delete it |
 | contains `"gate": "fails-on-base"` | Your new test passes without your fix | Make the test exercise the bug |
-| contains `"gate": "mutation"` | A break on a changed line went unnoticed | Add an assertion that would notice it |
+| contains `"gate": "mutation"` | No test noticed a changed function's body removed, or an operator flipped on a changed line (the line names the mutant) | Write a test that fails on that mutant and passes on the real code |
+| contains `"gate": "coverage"` | A function you added or changed runs in no test | Add a test that calls it and checks what it returns or does |
+| contains `"gate": "complexity"` | A function you wrote or grew is too hard to follow (cognitive complexity 25 or more) | Split it into named steps; do not just move its branches into a lookup of closures |
 | contains `"gate": "protected"` | You changed protected code (money, access) without changing a test | Add or extend the test that proves the change; do not acknowledge it to get past |
 | `typescript/no-unnecessary-condition` | A check the types say can never fail | Decide which side is wrong, one at a time, never in bulk. If the value came through a cast (`as`), a `!`, `JSON.parse`, an untyped response or a library's loose type, the type may be lying: parse it where it enters and keep the check until then. Otherwise the check is dead: delete it |
 | `intersite/drizzle-nullable-first-column` | A table's first column can be null, so a left join reads real rows as missing | Move the primary key (or another NOT NULL column) first; if a key-sorting rule fights it, exempt table definitions from that rule |
@@ -58,8 +60,9 @@ instead of changing code to satisfy it.
 ## Never make a check pass by weakening it
 
 Do not delete, skip or loosen a test, special-case a test's inputs, edit a baseline by hand, or add a bare
-`eslint-disable`. If a check looks wrong, stop and tell the user why. A real exception is recorded where a reviewer
-sees it:
+`eslint-disable`. If a check looks wrong, stop and tell the user why. If the same finding is still there after three
+honest attempts, stop and report it as a conflict for a human instead of trying another way around the check. A real
+exception is recorded where a reviewer sees it:
 
 - For a gate: add `{ gate: <name>, target: <file or dependency>, why: "<reason>" }` to `gates.acknowledged` in
   `intersite.yml`. The failing line prints the exact entry. When the exception is about this change and not the

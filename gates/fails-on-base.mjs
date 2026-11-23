@@ -24,7 +24,7 @@ export async function failsOnBase({ cwd, base, testCmd, testPaths, setup, timeou
   if (timedOut) return { findings: [], summary: `${testCmd} does not finish within ${timeout}s on ${name}, so it does not pass without the change` };
   if (code !== 0) return { findings: [], summary: `${testCmd} fails on ${name} (exit ${code}), as a test of the change should` };
   return {
-    findings: files.map((file) => ({ target: file, message: `${file} passes on ${name} without the change, so it does not test it; rerun: ${testCmd}` })),
+    findings: files.map((file) => ({ file, target: file, message: `${file} passes on ${name} without the change, so it does not test it; rerun: ${testCmd}` })),
     summary: "",
   };
 }

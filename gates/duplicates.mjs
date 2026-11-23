@@ -2,7 +2,7 @@
 // Fails when an added block of source already exists elsewhere in the repository: pasted code that should be reused.
 // Only the project's own change is judged, but against the whole repository, since a copy of a shared package's code
 // is the case that matters most; the original is named relative to the project (`../../packages/ui/x.ts`).
-import { runCore } from "./core.mjs";
+import { located, runCore } from "./core.mjs";
 import { EMPTY_TREE, WORK_TREE, addedLines, git, matches, resolveBase, workingDiff } from "./lib.mjs";
 
 const CODE = /\.(?:[cm]?[jt]sx?|py|rb|go|rs|java|kts?|swift|c|h|cc|cpp|hpp|cs|php|vue|svelte|scala|sh|sql|css|scss)$/;
@@ -25,5 +25,5 @@ export async function duplicates({ cwd, base, testPaths, duplicateLines: n }) {
     command: "duplicates", root: cwd, files: tracked, added: Object.fromEntries([...added].map(([f, l]) => [f, [...l]])),
     options: { lines: n, changed, whole: base === EMPTY_TREE },
   });
-  return { findings: answer.findings.map(({ target, message }) => ({ target, message })), summary: answer.summary };
+  return { findings: answer.findings.map((f) => ({ ...located(f), target: f.target, message: f.message })), summary: answer.summary };
 }

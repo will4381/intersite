@@ -2,7 +2,7 @@
 // Fails when the change adds a leftover file: a backup or versioned copy, a scratch script, a log or dump, or an
 // agent's working note. Only files the change added count; anything that existed on base is the project's business.
 // The judging (names, and whether a copy's lines are mostly its original's) is in core/hygiene.rs.
-import { runCore } from "./core.mjs";
+import { located, runCore } from "./core.mjs";
 import { changes, git, listFiles, matches, projectSpec, resolveBase } from "./lib.mjs";
 
 /**
@@ -19,5 +19,5 @@ export async function artifacts({ cwd, base, testPaths, artifacts: extra }) {
   const now = listFiles(cwd, spec);
   const options = { added, was, now, sha, inTests: added.filter((f) => matches(f, testPaths)), matchesExtra: added.filter((f) => matches(f, extra)) };
   const answer = runCore({ command: "artifacts", root: cwd, options });
-  return { findings: answer.findings.map(({ target, message }) => ({ target, message })), summary: answer.summary };
+  return { findings: answer.findings.map((f) => ({ ...located(f), target: f.target, message: f.message })), summary: answer.summary };
 }

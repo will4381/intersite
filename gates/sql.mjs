@@ -7,7 +7,7 @@
 // database, and a sequential scan of a large table is reported with the index to add. The work is in core/sql.rs.
 import { posix } from "node:path";
 
-import { runCore } from "./core.mjs";
+import { located, runCore } from "./core.mjs";
 import { JS_FILE, NOT_PRODUCT, SKIP, changeOf, listFiles, matches } from "./lib.mjs";
 
 /** @param {import("./lib.mjs").GateOptions} options @returns {Promise<import("./lib.mjs").GateResult>} */
@@ -18,6 +18,6 @@ export async function sql({ cwd, base, testPaths }) {
   const files = listFiles(top).filter((f) => !SKIP.test(f) && !matches(f, testPaths) && (/\.(?:sql|prisma)$/.test(f) || (JS_FILE.test(f) && !NOT_PRODUCT.test(f) && (whole || added.has(f)))));
   const answer = runCore({ command: "sql", root: top, files, added: whole ? undefined : Object.fromEntries(added), prefix, databaseUrl: process.env.INTERSITE_DATABASE_URL ?? "" });
   const name = (/** @type {string} */ file) => posix.relative(prefix || ".", file);
-  const findings = answer.findings.map((f) => ({ target: f.target.replace(f.file, name(f.file)), message: f.message.replace(f.file, name(f.file)) }));
+  const findings = answer.findings.map((f) => ({ ...located(f, name), target: f.target.replace(f.file, name(f.file)), message: f.message.replace(f.file, name(f.file)) }));
   return { findings, summary: answer.summary };
 }

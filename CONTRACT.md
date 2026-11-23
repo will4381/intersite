@@ -8,7 +8,7 @@ What every part of this package agrees on. Change it here first, then in code.
 | --- | --- | --- |
 | `lint/`, `cli/lint.mjs` | Node, inside oxlint | Slop rules, mostly declared in JSON; baseline that only shrinks |
 | `gates/`, `cli/gate.mjs` | Node, local or CI | Each gate's git work (the diff, the files, the config's globs) and its output; the judging is in `core/` |
-| `core/` | Rust, built by cargo the first time a check needs it (and again when its source changes) | The analysis engine, called with one JSON request per check: similar (lexer, k-grams, Aroma features), duplicates, unused, naming, style-drift, value-drift, sql (with planning against a database), regex, artifacts, test-integrity, new-deps, mutation's choice of mutants, search, twins, trace reports |
+| `core/` | Rust, built by cargo the first time a check needs it (and again when its source changes) | The analysis engine, called with one JSON request per check: similar (lexer, k-grams, Aroma features), duplicates, unused, naming, style-drift, value-drift, sql (with planning against a database), regex, artifacts, test-integrity, new-deps, mutation's choice of mutants, complexity, coverage, stats, search, twins, trace reports |
 | `cli/search.mjs`, `cli/twins.mjs`, `cli/trace.mjs` | Node | `search`, `twins` and `trace`: arguments, processes (servers, inspectors, Chrome) and output |
 | `track/` | The browser | Names user actions and stamps them on the requests they cause |
 | `capture/` | The project's server or browser (any `fetch` runtime) | Samples, scrubs and sends cases to the collector |
@@ -43,6 +43,12 @@ Agents read this output, and every line costs them context.
 - Success is one line: `ok <command>: <counts>`.
 - A finding is one line: what and where, then `| rerun: <exact command>` when a narrower rerun exists.
 - Nothing decorative: no banners, colours, progress bars or blank lines. `--json` prints structured data instead.
+- In GitHub Actions (`GITHUB_ACTIONS=true`), `check`, `gate` and `lint` print each finding as an annotation instead,
+  still one line: `::error file=<path from the repository top>,line=<n>,title=intersite <gate or rule>::<the line>`.
+- `check --json` prints one object and nothing else: `{ ok, stages: [{ name, ok, code, findings: [{ file?, line?,
+  target, message }], output? }], skipped, upgrade? }`. A lint finding's `target` is its rule; `output` is what a
+  project check or replay printed; `skipped` holds the `skip …` lines. Gate findings carry `file` (relative to the
+  project) and `line` wherever the gate knows them, in `gate --json` too.
 - Exit 0 pass, 1 findings, 2 usage or setup error. A setup error is one line on stderr that says what to do. An
   unexpected error is also one line and exit 2; `INTERSITE_DEBUG=1` prints the stack.
 - `check` prints only its stages' findings and its own line; `skip <stage>: <why>` lines may come before it, and so
@@ -156,7 +162,8 @@ shared ones; `value-drift` reads every constant and string in the repository, so
 shared package's pricing; `new-deps` also checks the workspace root's `package.json` for a project in a subfolder.
 `fails-on-base` and `mutation` use a worktree of the whole repository and run `gates.testCmd` in the project's
 folder inside it, each run limited to `--timeout` seconds (120 by default): for `fails-on-base` a run that does not
-finish is stopped and counts as failing on the base, like any other failure there.
+finish is stopped and counts as failing on the base, like any other failure there. `coverage` runs `gates.testCmd` once
+in the working tree itself, limited the same way.
 `intersite gate <name> [--base <ref>]` runs one; `intersite check` runs those in `gates.run`.
 
 | Gate | Fails when |
@@ -176,13 +183,27 @@ finish is stopped and counts as failing on the base, like any other failure ther
 | `artifacts` | The change adds a leftover file: a backup or versioned copy (`*.bak`, `*_old.*`, `*-v2.*`), a scratch or debug script, a log or dump, or a stray planning document (`PLAN.md`, `SUMMARY.md`, `NOTES.md` and the like) |
 | `unused` | The change adds a source file nothing references, adds an export nothing uses, or removes the last reference to a file and leaves the file behind |
 | `fails-on-base` | The changed tests pass on the base commit, so they do not test the change. Needs `gates.testCmd`. `check --full` runs it without being listed when the branch name or a commit message since the base says fix, bug, hotfix or regression |
-| `mutation` | A small deliberate break on a changed source line leaves `gates.testCmd` passing. At most `gates.mutants` tries |
+| `complexity` | A function the change added or edited has a cognitive complexity (SonarSource's definition: +1 per `if`, `else if`, `else`, ternary, `switch`, loop, `catch`, run of like `&&`/`\|\|`/`??`, labelled jump and recursive call, plus the nesting depth for the nesting ones; a function inside another nests) of 25 or more, and is new or grew by 10 or more since the base. An outermost function counts what is nested in it; a function passed straight to a call at the top level is named `<callee> callback`. Tests, generated code, scripts and fixtures are left out. Target is `file:name` |
+| `mutation` | A deliberate break in changed code leaves `gates.testCmd` passing, after Google's mutation testing: first each changed named function's body removed (`{}`, or `undefined` for an expression body), then one operator flip per added line (`===`/`!==`, `<`/`>=`, `&&`/`\|\|`, `+`/`-`, `!` dropped, `true`/`false`, comparisons first), never inside logging, telemetry or error-reporting calls, thrown errors, text joined with `+`, or types. Once a function's removed body survives, nothing inside it is tried. At most `gates.mutants` tries, and at most 3 survivors reported per file (that file is not mutated further). Each finding names the mutant and asks for a test that fails on it |
+| `coverage` | A named function the change added or edited runs in no test: `gates.testCmd` runs once in the working tree with `NODE_V8_COVERAGE` set, and a function counts as run when V8 recorded a call to one of its name in its file (so transpiled TypeScript matches too). Tests, configs, scripts and fixtures are left out. A run that covered none of the project's code is a setup error. Target is `file:name` |
 
 A deliberate exception is an entry in `gates.acknowledged`: `{ "gate", "target", "why" }`, where `target` is the file
 path or dependency name. It silences that one finding and shows up in review. For one change only, a commit since
 the base carries an `Intersite-Ack: <gate>: <why>` trailer: it accepts that gate's findings in this change and
 never a later one. Every gate's failure line ends by
 saying so, because an agent with no honest way out will find a dishonest one.
+
+## Stats
+
+Every `check` in a git repository appends one line to `.intersite/ledger.jsonl`: `{ at, head, branch, base, findings:
+[{ stage, target }], acknowledged: [{ stage, target }] }`, where a lint finding's stage is its rule and its target its
+file, and `acknowledged` lists findings an acknowledgment let through. `intersite stats [--json]` prints one line per
+gate and lint rule, `<stage>: N raised, F fixed (x%), A acknowledged (y%)`, most acknowledged share first; with no
+data, one `ok stats:` line. A finding is fixed when an earlier run of a branch raised it and the branch's latest run
+neither raises nor acknowledges it; acknowledged when a run let it through, `gates.acknowledged` lists it, or a
+commit's `Intersite-Ack:` trailer names its gate (one per commit). It measures only: Google turns off an analyzer whose
+findings developers mark not useful more than 10% of the time, and this is the number that decision needs. The
+counting is in `core/src/stats.rs`.
 
 ## Search
 
