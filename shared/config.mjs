@@ -46,7 +46,7 @@ export const defaults = {
   lint: { packs: ["tests","slop","security","state","async","perf","react","next","design","types","validation","naming","globals","ui","orm","query","workers","supabase","server","start","payments","auth","swift"], rules: {}, custom: [], baseline: "intersite-baseline.json", extends: ".oxlintrc.json", ownRules: true, typeAware: false },
   gates: {
     base: DEFAULT_BASE,
-    run: ["test-integrity","duplicates","similar","new-deps","artifacts","unused","naming","style-drift","value-drift","sql","regex","decisions","renames","schema-drift","imports","boundaries","tamper","special-case","complexity","columns"],
+    run: ["test-integrity","duplicates","similar","new-deps","artifacts","unused","naming","style-drift","value-drift","sql","regex","decisions","renames","schema-drift","imports","boundaries","tamper","special-case","complexity","columns","routes","env"],
     testPaths: TEST_PATHS,
     testCmd: "",
     setup: "",

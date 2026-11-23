@@ -25,6 +25,8 @@ mod similar;
 mod special;
 mod regex;
 mod renames;
+mod routes;
+mod env;
 mod schemas;
 mod sql;
 mod stats;
@@ -142,6 +144,8 @@ fn main() {
         "twins" => twins::run(&request),
         "decisions" => decisions::run(&request),
         "renames" => renames::run(&request),
+        "routes" => routes::run(&request),
+        "env" => env::run(&request),
         "schema-drift" => schemas::run(&request),
         "imports" => imports::run(&request),
         "boundaries" => boundaries::run(&request),

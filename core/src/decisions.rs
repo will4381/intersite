@@ -52,12 +52,12 @@ impl Collector<'_> {
 }
 
 /// `process.env`, `import.meta.env`, `Bun.env`: the object an environment variable is read from.
-fn is_env_object(text: &str) -> bool {
+pub fn is_env_object(text: &str) -> bool {
     matches!(text, "process.env" | "import.meta.env" | "Bun.env")
 }
 
 /// A string literal's value, or undefined.
-fn string(e: &Expression) -> Option<String> {
+pub fn string(e: &Expression) -> Option<String> {
     match e {
         Expression::StringLiteral(s) => Some(s.value.to_string()),
         Expression::TemplateLiteral(t) if t.expressions.is_empty() => t.quasis.first().map(|q| q.value.raw.to_string()),
@@ -147,7 +147,7 @@ fn sites(path: &str, src: &str) -> Vec<Site> {
 }
 
 /// An env module: the one place a project reads and validates its environment, which is what the finding asks for.
-fn is_env_module(file: &str) -> bool {
+pub fn is_env_module(file: &str) -> bool {
     let name = file.rsplit('/').next().unwrap_or(file);
     let stem = name.split('.').next().unwrap_or(name);
     matches!(stem, "env" | "config" | "settings" | "environment") || file.contains("/env/") || file.contains("/config/")

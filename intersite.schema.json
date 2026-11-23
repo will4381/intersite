@@ -172,6 +172,8 @@
               "special-case",
               "complexity",
               "columns",
+              "routes",
+              "env",
               "fails-on-base",
               "mutation",
               "coverage"
@@ -197,7 +199,9 @@
             "tamper",
             "special-case",
             "complexity",
-            "columns"
+            "columns",
+            "routes",
+            "env"
           ],
           "description": "Gates `intersite check` runs. `fails-on-base`, `mutation` and `coverage` run the tests and need `testCmd`; `check --full` adds `fails-on-base` on its own when the change says it is a fix and `testCmd` is set."
         },

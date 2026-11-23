@@ -54,7 +54,7 @@ fn stem(path: &str) -> String {
 }
 
 /// POSIX path normalisation: `a/./b/../c` is `a/c`, keeping leading `..`.
-fn normalize(path: &str) -> String {
+pub fn normalize(path: &str) -> String {
     let mut out: Vec<&str> = Vec::new();
     for part in path.split('/') {
         match part {

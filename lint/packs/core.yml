@@ -274,5 +274,36 @@ rules:
     good:
       - "// ponytail: one retry, add backoff once the queue is shared\nexport const retries = 1;"
       - "// PROVIDER: Stripe retries webhooks for 3 days, so handlers must be idempotent\nexport const window = 3;"
+  - id: no-unawaited-test-action
+    needs: 'userEvent|user\.|waitFor|find(All)?By'
+    pack: tests
+    selector: "ExpressionStatement > CallExpression[callee.object.name='userEvent'][callee.property.name!='setup'], ExpressionStatement > CallExpression[callee.object.name='user'][callee.property.name=/^(click|dblClick|tripleClick|type|clear|selectOptions|deselectOptions|upload|hover|unhover|tab|keyboard|paste|pointer)$/], ExpressionStatement > CallExpression[callee.name=/^(waitFor|waitForElementToBeRemoved|find(All)?By[A-Z]\\w*)$/], ExpressionStatement > CallExpression[callee.property.name=/^(waitFor|find(All)?By[A-Z]\\w*)$/]"
+    message: This returns a promise nobody awaits, so the test moves on, or ends, before the interaction or query has happened, and passes or fails by timing. Await it.
+    bad:
+      - "test('saves', async () => {\n  userEvent.click(screen.getByText('Save'));\n  expect(save).toHaveBeenCalled();\n});"
+      - "test('types', async () => {\n  const user = userEvent.setup();\n  user.type(screen.getByRole('textbox'), 'hi');\n});"
+      - "test('loads', async () => {\n  screen.findByText('Done');\n});"
+      - "test('waits', async () => {\n  waitFor(() => expect(spy).toHaveBeenCalled());\n});"
+    good:
+      - "test('saves', async () => {\n  await userEvent.click(screen.getByText('Save'));\n  expect(save).toHaveBeenCalled();\n});"
+      - "test('types', async () => {\n  const user = userEvent.setup();\n  await user.type(screen.getByRole('textbox'), 'hi');\n});"
+      - "test('loads', async () => {\n  expect(await screen.findByText('Done')).toBeTruthy();\n});"
+      - "test('waits', () => {\n  return waitFor(() => expect(spy).toHaveBeenCalled());\n});"
+      - "test('clicks', async () => {\n  const user = userEvent.setup();\n  await user.click(screen.getByText('Go'));\n});"
+  - id: no-always-equal
+    needs: 'eq|Eq|compareTo|asymmetricMatch'
+    pack: tests
+    selector: "MethodDefinition[key.name=/^(equals|isEqual|asymmetricMatch|eq)$/] > FunctionExpression > BlockStatement[body.length=1] > ReturnStatement > Literal[value=true], Property[key.name=/^(equals|isEqual|asymmetricMatch|eq)$/] > FunctionExpression > BlockStatement[body.length=1] > ReturnStatement > Literal[value=true], Property[key.name=/^(equals|isEqual|asymmetricMatch|eq)$/] > ArrowFunctionExpression[body.type='Literal'][body.value=true], MethodDefinition[key.name='compareTo'] > FunctionExpression > BlockStatement[body.length=1] > ReturnStatement > Literal[value=0], CallExpression[callee.property.name='addEqualityTesters'] ArrowFunctionExpression[body.type='Literal'][body.value=true], CallExpression[callee.property.name='addEqualityTesters'] :function > BlockStatement[body.length=1] > ReturnStatement > Literal[value=true]"
+    message: An equality that always says yes makes every comparison against this value pass, including the assertions meant to catch a wrong one. Compare the fields that make two values the same.
+    bad:
+      - "export class Money {\n  equals(other) {\n    return true;\n  }\n}"
+      - "export const matcher = { asymmetricMatch: () => true };"
+      - "export class Version {\n  compareTo(other) {\n    return 0;\n  }\n}"
+      - "expect.addEqualityTesters([(a, b) => true]);"
+    good:
+      - "export class Money {\n  equals(other) {\n    return this.cents === other.cents;\n  }\n}"
+      - "export const matcher = { asymmetricMatch: (v) => typeof v === 'string' };"
+      - "export const flags = { equals: true };"
+      - "export class Version {\n  compareTo(other) {\n    return this.n - other.n;\n  }\n}"
 builtin:
   - { rule: vitest/require-awaited-expect-poll, pack: tests }
