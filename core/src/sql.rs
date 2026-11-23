@@ -538,7 +538,7 @@ fn destructive_commands(request: &Request) -> Vec<Finding> {
                 if LOCAL.is_match(target) {
                     continue;
                 }
-                format!("{file}")
+                file.to_string()
             } else if ci {
                 "CI".to_string()
             } else {
@@ -667,7 +667,7 @@ fn supabase_security(request: &Request) -> Vec<Finding> {
         };
         if opens {
             let whom = if everyone { "anyone, signed in or not," } else { "any signed-in user" };
-            out.push(Finding { file: file.clone(), line: *line, target: format!("{file}:open-policy:{table}:{name}"), message: format!("{file}:{line} policy \"{name}\" lets {whom} {} every row of {table} (its condition is `true`): compare the row to auth.uid() or the caller's organization instead", if command == "all" { "read and change".to_string() } else { format!("{command}") }) });
+            out.push(Finding { file: file.clone(), line: *line, target: format!("{file}:open-policy:{table}:{name}"), message: format!("{file}:{line} policy \"{name}\" lets {whom} {} every row of {table} (its condition is `true`): compare the row to auth.uid() or the caller's organization instead", if command == "all" { "read and change".to_string() } else { command.to_string() }) });
         }
     }
     out

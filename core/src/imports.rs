@@ -92,7 +92,7 @@ pub fn run(request: &Request) -> Result<Answer, String> {
     let changed: HashSet<String> = serde_json::from_value(o["changed"].clone()).unwrap_or_default();
     let gone: Vec<String> = serde_json::from_value(o["gone"].clone()).unwrap_or_default();
     let base_texts: HashMap<String, String> = serde_json::from_value(o["base"].clone()).unwrap_or_default();
-    let base: HashMap<String, Module> = base_texts.iter().filter_map(|(f, t)| Some((f.clone(), graph::read_module(f, t).unwrap_or_default()))).collect();
+    let base: HashMap<String, Module> = base_texts.iter().map(|(f, t)| (f.clone(), graph::read_module(f, t).unwrap_or_default())).collect();
     let ambient: Vec<&String> = graph.modules.values().flat_map(|m| &m.ambient).collect();
     let words = alias_words(&request.root, &request.files);
     let next = graph.packages.iter().any(|p| p.deps.contains("next"));

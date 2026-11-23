@@ -4,6 +4,8 @@
 
 // Index loops over parallel arrays and negated conditions read closer to the JS they were ported from.
 #![allow(clippy::needless_range_loop, clippy::nonminimal_bool)]
+// Tuples of facts read once and passed along (file, line, name…) are clearer than a named type used in one place.
+#![allow(clippy::type_complexity, clippy::large_enum_variant, clippy::only_used_in_recursion)]
 
 mod aroma;
 mod boundaries;
