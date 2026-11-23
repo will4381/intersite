@@ -6,7 +6,7 @@
 import { existsSync } from "node:fs";
 import { join, posix } from "node:path";
 
-import { runCore } from "./core.mjs";
+import { located, runCore } from "./core.mjs";
 import { addedLines, listFiles, matches, projectPrefix, resolveBase, topLevel, workingDiff } from "./lib.mjs";
 
 const STYLED = /\.(?:css|scss|sass|less|[cm]?[jt]sx?|vue|svelte|astro|html|swift)$/;
@@ -35,6 +35,6 @@ export async function styleDrift({ cwd, base, testPaths }) {
   const packages = all.filter((f) => posix.basename(f) === "package.json" && existsSync(join(top, f))).map((f) => posix.dirname(f)).map((d) => (d === "." ? "" : d));
   const files = all.filter((f) => STYLED.test(f) && !SKIP.test(f));
   const answer = runCore({ command: "style-drift", root: top, files, added: Object.fromEntries([...added].map(([file, lines]) => [fromTop(file), [...lines]])), options: { packages } });
-  const findings = answer.findings.map((f) => ({ target: f.target.slice(prefix.length), message: f.message.slice(prefix.length) }));
+  const findings = answer.findings.map((f) => ({ ...located(f, (file) => file.slice(prefix.length)), target: f.target.slice(prefix.length), message: f.message.slice(prefix.length) }));
   return { findings, summary: answer.summary };
 }

@@ -4,7 +4,7 @@ import { relative, resolve } from "node:path";
 
 import { projectRoot } from "../shared/config.mjs";
 
-const commands = ["init", "check", "lint", "gate", "search", "trace", "twins", "replay", "actions", "audit", "pin", "collector", "deploy", "hook"];
+const commands = ["init", "check", "lint", "gate", "search", "trace", "twins", "replay", "actions", "audit", "pin", "collector", "deploy", "hook", "stats"];
 const readsCases = ["check", "replay", "actions", "audit", "pin"];
 const [command, ...argv] = process.argv.slice(2);
 

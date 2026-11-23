@@ -16,10 +16,26 @@ export class GateError extends Error {}
  *   duplicateLines: number, mutants: number, timeout: number, entryPaths: string[], artifacts: string[],
  *   protected: { paths: string[], needs?: string[], why?: string }[], layers?: { name: string, paths: string[] }[],
  *   features?: string }} GateOptions
- * @typedef {{ target: string, message: string }} Finding
+ * @typedef {{ file?: string, line?: number, target: string, message: string }} Finding `file` relative to the project
  * @typedef {{ findings: Finding[], summary: string }} GateResult
  * @typedef {{ status: string, path: string, from: string }} Change
  */
+
+/** Whether findings print as GitHub Actions annotations, which GitHub shows on the pull request's diff. */
+export const inGitHubActions = () => process.env.GITHUB_ACTIONS === "true";
+
+/**
+ * A finding as a GitHub Actions annotation line: still one line per finding.
+ * @param {string} prefix the project's folder from the repository top (`git rev-parse --show-prefix`)
+ * @param {string} title @param {{ file?: string, line?: number }} at `file` relative to the project
+ * @param {string} text the line a terminal would print
+ */
+export function annotation(prefix, title, { file, line }, text) {
+  const escape = (/** @type {string} */ s) => s.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A");
+  const property = (/** @type {string} */ s) => escape(s).replaceAll(":", "%3A").replaceAll(",", "%2C");
+  const where = [file && `file=${property(posix.normalize(prefix + file))}`, line && `line=${line}`, `title=${property(title)}`].filter(Boolean).join(",");
+  return `::error ${where}::${escape(text)}`;
+}
 
 /**
  * @param {string} cwd
@@ -333,11 +349,12 @@ export function onInterrupt(cleanup) {
  * so a `node --test` command run from inside a test run does not silently skip.
  * @param {string} cmd
  * @param {string} cwd
- * @param {{ timeout?: number, output?: "ignore" | "stderr" }} [options] timeout in seconds
+ * @param {{ timeout?: number, output?: "ignore" | "stderr", env?: Record<string, string> }} [options] timeout in
+ *   seconds; `env` adds to the environment
  * @returns {Promise<{ code: number | null, timedOut: boolean }>}
  */
-export function sh(cmd, cwd, { timeout = 0, output = "stderr" } = {}) {
-  const env = { ...process.env };
+export function sh(cmd, cwd, { timeout = 0, output = "stderr", env: more = {} } = {}) {
+  const env = { ...process.env, ...more };
   delete env.NODE_TEST_CONTEXT;
   const out = output === "stderr" ? 2 : "ignore";
   const child = spawn(cmd, { cwd, env, shell: true, detached: true, stdio: ["ignore", out, out] });

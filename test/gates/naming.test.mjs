@@ -18,7 +18,7 @@ test("a snake_case file added to a PascalCase folder is reported with the expect
   const r = repo(pascal);
   r.write({ "src/components/user_card.tsx": "export default function UserCard() { return null; }\n" });
   assert.deepEqual(await check(r.cwd), [
-    { target: "src/components/user_card.tsx", message: "src/components/user_card.tsx: this folder names files in PascalCase (5 of 5): rename to UserCard.tsx" },
+    { file: "src/components/user_card.tsx", target: "src/components/user_card.tsx", message: "src/components/user_card.tsx: this folder names files in PascalCase (5 of 5): rename to UserCard.tsx" },
   ]);
 });
 

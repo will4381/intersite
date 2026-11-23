@@ -91,7 +91,7 @@ fn place(url: &str, root: &Path) -> Option<Place> {
     Some(Place::Project(rel.to_string_lossy().replace('\\', "/")))
 }
 
-fn percent_decode(s: &str) -> String {
+pub fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -109,7 +109,7 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-fn json_files(dir: &str, ext: &str) -> Vec<serde_json::Value> {
+pub fn json_files(dir: &str, ext: &str) -> Vec<serde_json::Value> {
     let Ok(entries) = std::fs::read_dir(dir) else { return vec![] };
     let paths: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|x| x == ext)).collect();
     paths.par_iter().filter_map(|p| serde_json::from_slice(&std::fs::read(p).ok()?).ok()).collect()

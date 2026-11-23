@@ -8,10 +8,12 @@ import { parseArgs } from "node:util";
 import { loadConfig } from "../shared/config.mjs";
 import { artifacts } from "../gates/artifacts.mjs";
 import { boundaries } from "../gates/boundaries.mjs";
+import { complexity } from "../gates/complexity.mjs";
+import { coverage } from "../gates/coverage.mjs";
 import { duplicates } from "../gates/duplicates.mjs";
 import { imports } from "../gates/imports.mjs";
 import { failsOnBase } from "../gates/fails-on-base.mjs";
-import { EMPTY_TREE, GateError, resolveBase } from "../gates/lib.mjs";
+import { EMPTY_TREE, GateError, annotation, inGitHubActions, projectPrefix, resolveBase } from "../gates/lib.mjs";
 import { spawnSync } from "node:child_process";
 import { decisions } from "../gates/decisions.mjs";
 import { mutation } from "../gates/mutation.mjs";
@@ -31,10 +33,10 @@ import { unused } from "../gates/unused.mjs";
 import { valueDrift } from "../gates/value-drift.mjs";
 
 /** @type {Record<string, (options: import("../gates/lib.mjs").GateOptions) => Promise<import("../gates/lib.mjs").GateResult>>} */
-export const gates = { "test-integrity": testIntegrity, duplicates, "new-deps": newDeps, artifacts, unused, similar, naming, "style-drift": styleDrift, "value-drift": valueDrift, sql, regex, decisions, renames, "schema-drift": schemaDrift, "fails-on-base": failsOnBase, mutation, protected: protectedPaths, imports, boundaries, tamper, "special-case": specialCase };
+export const gates = { "test-integrity": testIntegrity, duplicates, "new-deps": newDeps, artifacts, unused, similar, naming, "style-drift": styleDrift, "value-drift": valueDrift, sql, regex, decisions, renames, "schema-drift": schemaDrift, "fails-on-base": failsOnBase, mutation, protected: protectedPaths, imports, boundaries, tamper, "special-case": specialCase, complexity, coverage };
 
 /** Gates that can judge the whole repository (`--all`): the rest only mean something for a change. */
-export const WHOLE = new Set(["duplicates", "similar", "unused", "naming", "style-drift", "value-drift", "sql", "regex", "decisions", "schema-drift", "artifacts", "imports", "boundaries"]);
+export const WHOLE = new Set(["duplicates", "similar", "unused", "naming", "style-drift", "value-drift", "sql", "regex", "decisions", "schema-drift", "artifacts", "imports", "boundaries", "complexity"]);
 
 const usage = `usage: intersite gate <${Object.keys(gates).join("|")}> [--base <ref>] [--json] [--cmd "<test command>"] [--paths <glob>]... [--setup "<command>"] [--max <n>] [--timeout <seconds>] [--all [--write]]`;
 
@@ -45,6 +47,8 @@ const usage = `usage: intersite gate <${Object.keys(gates).join("|")}> [--base <
  * @param {string} name
  * @param {{ cwd: string, config: import("../shared/config.mjs").Config, flags?: Partial<import("../gates/lib.mjs").GateOptions>, all?: boolean, fresh?: boolean }} options
  *   `fresh`: count recorded findings too, to record them again
+ * @returns {Promise<import("../gates/lib.mjs").GateResult & { accepted: import("../gates/lib.mjs").Finding[] }>}
+ *   `accepted`: findings an acknowledgment let through, which `stats` counts
  */
 export async function runGate(name, { cwd, config, flags = {}, all = false, fresh = false }) {
   const { base, testPaths, testCmd, setup, duplicateLines, mutants, entryPaths, acknowledged } = config.gates;
@@ -53,10 +57,12 @@ export async function runGate(name, { cwd, config, flags = {}, all = false, fres
   const options = { cwd, base, testPaths, testCmd, setup, duplicateLines, mutants, entryPaths: loaded, artifacts: config.gates.artifacts, protected: config.gates.protected, layers: config.gates.layers, features: config.gates.features, timeout: 120 };
   const result = await gates[name]({ ...options, ...flags, ...(all && { base: EMPTY_TREE }) });
   const recorded = new Set(all && !fresh ? readBaseline(cwd, config)[name] : []);
-  const findings = result.findings.filter((f) => !recorded.has(f.target) && !acknowledged.some((a) => a.gate === name && a.target === f.target));
+  const fresher = result.findings.filter((f) => !recorded.has(f.target));
+  const isAcknowledged = (/** @type {import("../gates/lib.mjs").Finding} */ f) => acknowledged.some((a) => a.gate === name && a.target === f.target);
+  const findings = fresher.filter((f) => !isAcknowledged(f));
   const why = findings.length && !all ? acknowledgedInCommits(cwd, flags.base ?? base, name) : "";
-  if (why) return { findings: [], summary: `${result.summary}; ${findings.length} acknowledged for this change: ${why}` };
-  return { findings, summary: result.summary };
+  if (why) return { findings: [], summary: `${result.summary}; ${findings.length} acknowledged for this change: ${why}`, accepted: fresher };
+  return { findings, summary: result.summary, accepted: fresher.filter(isAcknowledged) };
 }
 
 /**
@@ -89,9 +95,10 @@ function readBaseline(cwd, config) {
 
 /**
  * @param {string[]} argv
- * @param {{ cwd: string, quiet?: boolean }} options `quiet` leaves out the success line, for `check`
+ * @param {{ cwd: string, quiet?: boolean, silent?: boolean, collect?: (result: Awaited<ReturnType<typeof runGate>>) => void }} options
+ *   for `check`: `quiet` leaves out the success line, `collect` is handed the result, `silent` prints nothing (`--json`)
  */
-export default async function gate(argv, { cwd, quiet = false }) {
+export default async function gate(argv, { cwd, quiet = false, silent = false, collect }) {
   let parsed;
   try {
     parsed = parseArgs({
@@ -169,15 +176,25 @@ export default async function gate(argv, { cwd, quiet = false }) {
     return 2;
   }
 
-  const { findings, summary } = result;
-  if (values.json) {
-    console.log(JSON.stringify({ gate: name, ok: !findings.length, summary, findings }));
-  } else if (!findings.length) {
+  collect?.(result);
+  if (!silent) show(name, result, { json: values.json, all: values.all, quiet, cwd });
+  return result.findings.length ? 1 : 0;
+}
+
+/**
+ * Prints a gate's result: `--json`, the success line, or one line per finding (a GitHub annotation in Actions).
+ * @param {string} name @param {import("../gates/lib.mjs").GateResult} result
+ * @param {{ json?: boolean, all?: boolean, quiet: boolean, cwd: string }} how
+ */
+function show(name, { findings, summary }, { json, all, quiet, cwd }) {
+  if (json) return console.log(JSON.stringify({ gate: name, ok: !findings.length, summary, findings }));
+  if (!findings.length) {
     if (!quiet) console.log(`ok gate ${name}: ${summary}`);
-  } else {
-    for (const f of findings) {
-      console.log(`${f.message} | to accept: add { "gate": "${name}", "target": "${f.target}", "why": "…" } to gates.acknowledged in intersite.yml${values.all ? `, or record today's with \`intersite gate ${name} --all --write\`` : `, or for this change only a commit trailer \`Intersite-Ack: ${name}: <why>\``}`);
-    }
+    return;
   }
-  return findings.length ? 1 : 0;
+  const prefix = inGitHubActions() ? projectPrefix(cwd) : "";
+  for (const f of findings) {
+    const text = `${f.message} | to accept: add { "gate": "${name}", "target": "${f.target}", "why": "…" } to gates.acknowledged in intersite.yml${all ? `, or record today's with \`intersite gate ${name} --all --write\`` : `, or for this change only a commit trailer \`Intersite-Ack: ${name}: <why>\``}`;
+    console.log(inGitHubActions() ? annotation(prefix, `intersite ${name}`, f, text) : text);
+  }
 }

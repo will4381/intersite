@@ -18,6 +18,7 @@ export async function protectedPaths({ cwd, base, testPaths, protected: rules })
     if (!touched.length || changed.some((c) => c.status !== "D" && matches(c.path, needs))) continue;
     const more = touched.length > 1 ? ` and ${touched.length - 1} more protected files` : "";
     findings.push({
+      file: touched[0].path,
       target: rule.paths.join(","),
       message: `${touched[0].path}${more} changed with no change under ${needs.join(", ")}${rule.why ? `: ${rule.why}` : ""}`,
     });

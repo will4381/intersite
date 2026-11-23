@@ -203,7 +203,7 @@ for (const [kind, where] of installs) {
     const { code, out, err } = await run(r.cwd, ["mutation"]);
     assert.deepEqual(err, []);
     assert.equal(code, 1);
-    assert.deepEqual(lines(out), ["src/clamp.mjs:2 survived '<' → '>='"]);
+    assert.deepEqual(lines(out), ["src/clamp.mjs:1 no test notices when clamp's body is removed: write a test that fails on this mutant and passes on the real code"]);
     assert.equal(r.worktrees(), 1);
   });
 }

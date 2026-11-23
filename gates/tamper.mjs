@@ -7,7 +7,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { defaults, loadConfig } from "../shared/config.mjs";
-import { runCore } from "./core.mjs";
+import { located, runCore } from "./core.mjs";
 import { changes, resolveBase, showMany } from "./lib.mjs";
 
 /** Files that hold an evaluator's settings; core/tamper.rs decides exactly what each one is. */
@@ -38,5 +38,5 @@ export async function tamper({ cwd, base }) {
   const list = changes(cwd, sha).filter((c) => (c.status !== "A" && (EVALUATOR.test(c.from) || context.baselines.includes(c.from))) || (SOURCE.test(c.path) && c.status !== "D" && PRAGMA.test(now(c.path) ?? "")));
   const before = showMany(cwd, sha, list.map((c) => c.from));
   const answer = runCore({ command: "tamper", root: cwd, options: { context, changes: list.map((c) => ({ path: c.path, before: before.get(c.from) ?? "", now: c.status === "D" ? null : now(c.path) ?? null })) } });
-  return { findings: answer.findings.map(({ target, message }) => ({ target, message })), summary: answer.summary };
+  return { findings: answer.findings.map((f) => ({ ...located(f), target: f.target, message: f.message })), summary: answer.summary };
 }

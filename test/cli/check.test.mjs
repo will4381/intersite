@@ -1,7 +1,7 @@
 // @ts-check
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -37,7 +37,7 @@ test("check runs every gate, names the ones that failed, and passes once the cha
 
   rmSync(join(r.cwd, "PLAN.md"));
   const clean = await check(r.cwd);
-  assert.deepEqual(clean.lines, ["ok check: test-integrity, duplicates, similar, new-deps, artifacts, unused, naming, style-drift, value-drift, sql, regex, decisions, renames, schema-drift, imports, boundaries, tamper, special-case, replay"], "success is one line");
+  assert.deepEqual(clean.lines, ["ok check: test-integrity, duplicates, similar, new-deps, artifacts, unused, naming, style-drift, value-drift, sql, regex, decisions, renames, schema-drift, imports, boundaries, tamper, special-case, complexity, replay"], "success is one line");
   assert.equal(clean.code, 0, clean.stderr);
 });
 
@@ -53,7 +53,7 @@ test("check skips replay with one line when nothing answers at replay.target", a
   r.write({ "intersite.json": JSON.stringify({ project: "t", gates: { base: "base" }, replay: { target: "http://127.0.0.1:9" } }), "intersite.adapter.mjs": "export async function signIn() { return {}; }\n" });
   r.commit("adapter");
   const { code, lines } = await check(r.cwd);
-  assert.deepEqual(lines, ["skip replay: nothing answers at http://127.0.0.1:9 (start the server to replay recorded sessions)", "ok check: test-integrity, duplicates, similar, new-deps, artifacts, unused, naming, style-drift, value-drift, sql, regex, decisions, renames, schema-drift, imports, boundaries, tamper, special-case"]);
+  assert.deepEqual(lines, ["skip replay: nothing answers at http://127.0.0.1:9 (start the server to replay recorded sessions)", "ok check: test-integrity, duplicates, similar, new-deps, artifacts, unused, naming, style-drift, value-drift, sql, regex, decisions, renames, schema-drift, imports, boundaries, tamper, special-case, complexity"]);
   assert.equal(code, 0);
 });
 
@@ -101,4 +101,33 @@ test("a change that says it fixes a bug runs fails-on-base with --full, and name
   assert.equal(quick.lines[0], "skip fails-on-base: slow, run with `intersite check --full`");
   const full = await new Promise((done) => execFile(process.execPath, [bin, "check", "--skip", "lint", "--full"], { cwd: r.cwd }, (error, stdout) => done({ code: error ? Number(error.code) : 0, lines: stdout.trim().split("\n") })));
   assert.match(/** @type {any} */ (full).lines.at(-1), /^ok check: .*fails-on-base/);
+});
+
+test("--json prints one object with each stage's findings and file, and each run is added to the ledger stats reads", async () => {
+  const r = repo({ "src/a.mjs": "export const a = 1;\n", "src/use.mjs": "import { a } from './a.mjs';\nconsole.log(a);\n" });
+  r.write({ "intersite.json": JSON.stringify({ project: "t", gates: { base: "base", run: ["artifacts", "new-deps"], acknowledged: [{ gate: "new-deps", target: "left-pad", why: "t" }] }, replay: false, checks: [{ name: "own", run: "echo broke; exit 4" }] }) });
+  r.commit("config");
+  r.git("tag", "-f", "base");
+  r.write({ "PLAN.md": "# Plan\n", "package.json": JSON.stringify({ dependencies: { "left-pad": "1" } }) });
+  const json = await new Promise((done) => execFile(process.execPath, [bin, "check", "--skip", "lint", "--json"], { cwd: r.cwd }, (error, stdout) => done({ code: error ? Number(error.code) : 0, stdout })));
+  const { code, stdout } = /** @type {{ code: number, stdout: string }} */ (json);
+  assert.equal(code, 1);
+  const report = JSON.parse(stdout);
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.stages.map((/** @type {{ name: string, ok: boolean }} */ s) => [s.name, s.ok]), [["artifacts", false], ["new-deps", true], ["own", false]]);
+  assert.deepEqual(Object.keys(report.stages[0].findings[0]), ["file", "target", "message"]);
+  assert.equal(report.stages[0].findings[0].file, "PLAN.md");
+  assert.deepEqual(report.stages[2].output, ["broke", "own: failed with exit 4 | rerun: echo broke; exit 4"]);
+  const ledger = readFileSync(join(r.cwd, ".intersite", "ledger.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(ledger.length, 1);
+  assert.deepEqual(ledger[0].findings, [{ stage: "artifacts", target: "PLAN.md" }, { stage: "own", target: "own" }]);
+  assert.deepEqual(ledger[0].acknowledged, [{ stage: "new-deps", target: "left-pad" }]);
+});
+
+test("in GitHub Actions each finding prints as an annotation line that names its file from the repository top", async () => {
+  const r = repo({ "apps/web/src/a.mjs": "export const a = 1;\n" }, { run: ["artifacts"] }, { at: "apps/web" });
+  r.write({ "apps/web/PLAN.md": "# Plan\n" });
+  const out = await new Promise((done) => execFile(process.execPath, [bin, "check", "--skip", "lint"], { cwd: r.cwd, env: { ...process.env, GITHUB_ACTIONS: "true" } }, (_error, stdout) => done(stdout)));
+  const first = String(out).split("\n").find((line) => line.startsWith("::")) ?? "";
+  assert.match(first, /^::error file=apps\/web\/PLAN\.md,title=intersite artifacts::PLAN\.md /);
 });

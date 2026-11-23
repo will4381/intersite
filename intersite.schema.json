@@ -170,8 +170,10 @@
               "boundaries",
               "tamper",
               "special-case",
+              "complexity",
               "fails-on-base",
-              "mutation"
+              "mutation",
+              "coverage"
             ]
           },
           "default": [
@@ -192,9 +194,10 @@
             "imports",
             "boundaries",
             "tamper",
-            "special-case"
+            "special-case",
+            "complexity"
           ],
-          "description": "Gates `intersite check` runs. `fails-on-base` and `mutation` run the tests and need `testCmd`; `check --full` adds `fails-on-base` on its own when the change says it is a fix and `testCmd` is set."
+          "description": "Gates `intersite check` runs. `fails-on-base`, `mutation` and `coverage` run the tests and need `testCmd`; `check --full` adds `fails-on-base` on its own when the change says it is a fix and `testCmd` is set."
         },
         "testPaths": {
           "type": "array",

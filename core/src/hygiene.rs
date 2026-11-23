@@ -156,30 +156,6 @@ pub fn new_deps(request: &Request) -> Result<Answer, String> {
     Ok(Answer { findings, summary: String::new(), data: None })
 }
 
-// Longest first. The compound tokens are matched only so their pieces are never mutated on their own.
-static TOKEN: LazyLock<Fancy> = LazyLock::new(|| Fancy::new(r"===|!==|=>|\+\+|--|\+=|-=|>>>?=?|<<=?|\*\*|==|!=|<=|>=|&&|\|\||<|>|\+|-|\btrue\b|\bfalse\b|!(?!=)").unwrap());
-
-fn swap(t: &str) -> Option<&'static str> {
-    Some(match t {
-        "===" => "!==",
-        "!==" => "===",
-        "==" => "!=",
-        "!=" => "==",
-        "<" => ">=",
-        ">=" => "<",
-        ">" => "<=",
-        "<=" => ">",
-        "&&" => "||",
-        "||" => "&&",
-        "+" => "-",
-        "-" => "+",
-        "true" => "false",
-        "false" => "true",
-        "!" => "",
-        _ => return None,
-    })
-}
-
 /// Takes one item from each list in turn, so the first items are spread across every list.
 fn interleave<T: Clone>(lists: &[Vec<T>]) -> Vec<T> {
     let mut out = Vec::new();
@@ -194,29 +170,51 @@ fn interleave<T: Clone>(lists: &[Vec<T>]) -> Vec<T> {
     out
 }
 
-/// The mutants to try: on each added source line, every operator or boolean that has a swap, spread across lines and
-/// files, at most `max`. Offsets are in UTF-16 units, as the JavaScript that applies them counts.
+/// The mutants to try, after Google's mutation testing in code review: for each changed function, its body removed (a
+/// function no test notices losing is covered but not checked), then one operator flip per added line, never inside
+/// logging, telemetry, thrown errors, joined text or types. Bodies first, spread across files, at most `max`. Each
+/// mutant names the functions around it, so once one's body survives nothing inside it is tried. Offsets and lengths
+/// are in UTF-16 units, as the JavaScript that applies them counts.
 pub fn mutants(request: &Request) -> Result<Answer, String> {
     let files: Vec<(String, Vec<u32>)> = serde_json::from_value(request.options["files"].clone()).map_err(|e| e.to_string())?;
     let max = request.options["max"].as_u64().unwrap_or(10) as usize;
     let mut per_file: Vec<Vec<serde_json::Value>> = Vec::new();
     for (path, lines) in &files {
         let text = std::fs::read_to_string(std::path::Path::new(&request.root).join(path)).unwrap_or_default();
+        let Some(shape) = crate::functions::read(path, &text) else { continue };
         let wanted: HashSet<u32> = lines.iter().copied().collect();
-        let mut offset = 0usize;
-        let mut per_line: Vec<Vec<serde_json::Value>> = Vec::new();
-        for (i, code) in strip_code(&text).split('\n').enumerate() {
-            if wanted.contains(&(i as u32 + 1)) {
-                let found = TOKEN.find_iter(code).filter_map(|m| m.ok()).filter_map(|m| {
-                    let to = swap(m.as_str())?;
-                    let column = code[..m.start()].encode_utf16().count();
-                    Some(serde_json::json!({ "path": path, "line": i + 1, "at": offset + column, "from": m.as_str(), "to": to }))
-                });
-                per_line.push(found.collect());
+        let key = |i: usize| format!("{path}:{i}");
+        let within = |at: u32, skip: Option<usize>| -> Vec<String> {
+            shape.funcs.iter().enumerate().filter(|(j, f)| Some(*j) != skip && f.body.0 <= at && at < f.body.1).map(|(j, _)| key(j)).collect()
+        };
+        let mut list = Vec::new();
+        for (i, f) in shape.funcs.iter().enumerate() {
+            if f.empty || !(f.line..=f.end_line).any(|l| wanted.contains(&l)) {
+                continue;
             }
-            offset += code.encode_utf16().count() + 1;
+            let at = crate::functions::utf16(&text, f.body.0);
+            let length = text[f.body.0 as usize..f.body.1 as usize].encode_utf16().count();
+            let to = if f.expression_body { "undefined" } else { "{}" };
+            list.push(serde_json::json!({ "kind": "body", "path": path, "line": f.line, "name": f.name, "at": at, "length": length, "from": "", "to": to, "key": key(i), "within": within(f.body.0, Some(i)) }));
         }
-        per_file.push(interleave(&per_line));
+        let mut best: HashMap<u32, &crate::functions::Site> = HashMap::new();
+        for site in shape.sites.iter().filter(|s| wanted.contains(&s.line)) {
+            let slot = best.entry(site.line).or_insert(site);
+            if site.rank < slot.rank {
+                *slot = site;
+            }
+        }
+        let mut sites: Vec<&crate::functions::Site> = best.into_values().collect();
+        sites.sort_by_key(|s| s.start);
+        for s in sites {
+            let line_start = text[..s.start as usize].rfind('\n').map_or(0, |i| i + 1);
+            let line_end = text[s.start as usize..].find('\n').map_or(text.len(), |i| s.start as usize + i);
+            let mutated = format!("{}{}{}", &text[line_start..s.start as usize], s.to, &text[s.start as usize + s.from.len()..line_end]);
+            let shown: String = mutated.trim().chars().take(100).collect();
+            let at = crate::functions::utf16(&text, s.start);
+            list.push(serde_json::json!({ "kind": "operator", "path": path, "line": s.line, "at": at, "length": s.from.encode_utf16().count(), "from": s.from, "to": s.to, "text": shown, "within": within(s.start, None) }));
+        }
+        per_file.push(list);
     }
     let chosen: Vec<serde_json::Value> = interleave(&per_file).into_iter().take(max).collect();
     Ok(Answer { findings: vec![], summary: String::new(), data: Some(serde_json::Value::Array(chosen)) })

@@ -6,7 +6,7 @@
 // in core/naming.rs.
 import { posix } from "node:path";
 
-import { runCore } from "./core.mjs";
+import { located, runCore } from "./core.mjs";
 import { changes, listFiles, matches, projectSpec, resolveBase } from "./lib.mjs";
 
 const SKIP = /(?:^|\/)(?:node_modules|dist|build|out|vendor|coverage|generated|__generated__|migrations|drizzle|Pods|DerivedData)\/|\.min\.|\.d\.[cm]?ts$/;
@@ -23,5 +23,5 @@ export async function naming({ cwd, base, testPaths }) {
   const files = listFiles(cwd, spec);
   const tests = added.filter((f) => matches(f, testPaths));
   const answer = runCore({ command: "naming", root: cwd, files, options: { added, tests } });
-  return { findings: answer.findings.map(({ target, message }) => ({ target, message })), summary: answer.summary };
+  return { findings: answer.findings.map((f) => ({ ...located(f), target: f.target, message: f.message })), summary: answer.summary };
 }

@@ -12,6 +12,7 @@ import { loadConfig } from "../shared/config.mjs";
 import { builtinRules, declaredRule, packageRules } from "../lint/catalog.mjs";
 import { runSwiftlint, swiftFiles, swiftRules } from "../lint/swift/swiftlint.mjs";
 import { compilerOptions } from "../lint/tsconfig.mjs";
+import { annotation, inGitHubActions } from "../gates/lib.mjs";
 
 /** @typedef {Record<string, Record<string, number>>} Baseline */
 /** @typedef {{ file: string, line: number, column: number, rule: string, message: string }} Finding */
@@ -80,9 +81,10 @@ async function shippedRules(oxlint, cacheDir) {
 
 /**
  * @param {string[]} argv
- * @param {{ cwd: string, quiet?: boolean }} options `quiet` leaves out the success line, for `check`
+ * @param {{ cwd: string, quiet?: boolean, silent?: boolean, collect?: (findings: Finding[]) => void }} options for `check`:
+ *   `quiet` leaves out the success line, `collect` is handed the findings, `silent` prints nothing (`--json`)
  */
-export default async function lint(argv, { cwd, quiet = false }) {
+export default async function lint(argv, { cwd, quiet = false, silent = false, collect }) {
   const flags = argv.filter((a) => a.startsWith("--"));
   const flag = flags[0];
   const paths = argv.filter((a) => !a.startsWith("--"));
@@ -182,15 +184,26 @@ export default async function lint(argv, { cwd, quiet = false }) {
   const { next, over, under, baselined } = compareBaseline(found, baseline, paths);
   if (flag === "--write") writeFileSync(baselineFile, `${JSON.stringify(sorted(next), null, 2)}\n`);
   const failed = flag === "--write" ? over : [...over, ...under];
-  if (flag === "--json") {
-    console.log(JSON.stringify({ findings: failed, baselined }));
-  } else if (failed.length) {
-    for (const f of over) console.log(`${f.file}:${f.line}:${f.column} ${f.rule} ${f.message}`);
-    if (flag !== "--write") for (const f of under) console.log(`${f.file} ${f.rule}: ${f.message}`);
-  } else if (!quiet) {
-    console.log(`ok lint: ${report.number_of_files} files, 0 new findings${baselined ? `, ${baselined} baselined` : ""}`);
-  }
+  collect?.(failed);
+  if (!silent) show({ flag, over, under: flag === "--write" ? [] : under, baselined, quiet, files: report.number_of_files, cwd });
   return failed.length ? 1 : 0;
+}
+
+/**
+ * Prints lint's result: `--json`, the success line, or one line per finding (a GitHub annotation in Actions).
+ * @param {{ flag?: string, over: Finding[], under: Finding[], baselined: number, quiet: boolean, files: number, cwd: string }} result
+ */
+function show({ flag, over, under, baselined, quiet, files, cwd }) {
+  if (flag === "--json") return console.log(JSON.stringify({ findings: [...over, ...under], baselined }));
+  if (!over.length && !under.length) {
+    if (!quiet) console.log(`ok lint: ${files} files, 0 new findings${baselined ? `, ${baselined} baselined` : ""}`);
+    return;
+  }
+  const prefix = inGitHubActions() ? spawnSync("git", ["rev-parse", "--show-prefix"], { cwd, encoding: "utf8" }).stdout?.trim() ?? "" : "";
+  /** @param {Finding} f @param {string} text */
+  const print = (f, text) => console.log(inGitHubActions() ? annotation(prefix, `intersite ${f.rule}`, f, text) : text);
+  for (const f of over) print(f, `${f.file}:${f.line}:${f.column} ${f.rule} ${f.message}`);
+  for (const f of under) print({ ...f, line: 0 }, `${f.file} ${f.rule}: ${f.message}`);
 }
 
 /**
