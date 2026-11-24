@@ -62,7 +62,8 @@ test("named actions flow from the browser to stored cases, and the CLI reads the
 
   // The server: handles a request, then records it the way the README shows.
   const capture = createCapture({ project: "demo", url: collector.url, token: "local-ingest", release: "prod1", sample: 1 });
-  let tick = Date.parse("2026-11-10T12:00:00.000Z");
+  // Recent, not fixed: a stored case expires ttlDays after it happened, and the CLI reads only live ones.
+  let tick = Date.now() - 60_000;
   /** @type {typeof fetch} */
   const server = async (input, init) => {
     const request = new Request(input, init);

@@ -13,6 +13,7 @@ import * as noSecretInLog from "./no-secret-in-log.mjs";
 import * as noServerEnvInClient from "./no-server-env-in-client.mjs";
 import * as noTimingUnsafeSecretCompare from "./no-timing-unsafe-secret-compare.mjs";
 import * as noShellInjection from "./no-shell-injection.mjs";
+import * as noUnguardedRecursiveRm from "./no-unguarded-recursive-rm.mjs";
 import * as noUnguardedServerAction from "./no-unguarded-server-action.mjs";
 import * as noUnverifiedStripeWebhook from "./no-unverified-stripe-webhook.mjs";
 
@@ -31,6 +32,7 @@ export default [
   noServerEnvInClient,
   noShellInjection,
   noTimingUnsafeSecretCompare,
+  noUnguardedRecursiveRm,
   noUnguardedServerAction,
   noUnverifiedStripeWebhook,
 ];

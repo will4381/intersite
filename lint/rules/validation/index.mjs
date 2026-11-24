@@ -9,6 +9,8 @@ import * as noNonNullOnInput from "./no-non-null-on-input.mjs";
 import * as noUncheckedNumberInput from "./no-unchecked-number-input.mjs";
 import * as noUncheckedTypePredicate from "./no-unchecked-type-predicate.mjs";
 import * as noUnguardedStorageParse from "./no-unguarded-storage-parse.mjs";
+import * as noWidenThenAssert from "./no-widen-then-assert.mjs";
+import * as noWidenedConst from "./no-widened-const.mjs";
 import * as requirePaginationCap from "./require-pagination-cap.mjs";
 import * as requireRequestValidation from "./require-request-validation.mjs";
 
@@ -23,6 +25,8 @@ export default [
   noUncheckedNumberInput,
   noUncheckedTypePredicate,
   noUnguardedStorageParse,
+  noWidenThenAssert,
+  noWidenedConst,
   requirePaginationCap,
   requireRequestValidation,
 ];

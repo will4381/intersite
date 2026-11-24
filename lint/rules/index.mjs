@@ -13,6 +13,7 @@ import * as noGuardSuppression from "./no-guard-suppression.mjs";
 import * as noHotPathOverhead from "./no-hot-path-overhead.mjs";
 import * as noLintSuppression from "./no-lint-suppression.mjs";
 import * as noMockOnlyAssertions from "./no-mock-only-assertions.mjs";
+import * as noReduceAccumulatorCopy from "./no-reduce-accumulator-copy.mjs";
 import * as noModuleScopeLet from "./no-module-scope-let.mjs";
 import * as noSelfComparisonAssertion from "./no-self-comparison-assertion.mjs";
 import * as noSilentFallback from "./no-silent-fallback.mjs";
@@ -43,6 +44,7 @@ export default [
   noHotPathOverhead,
   noLintSuppression,
   noMockOnlyAssertions,
+  noReduceAccumulatorCopy,
   noModuleScopeLet,
   noSelfComparisonAssertion,
   noSilentFallback,

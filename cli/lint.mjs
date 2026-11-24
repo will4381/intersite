@@ -208,8 +208,10 @@ function show({ flag, over, under, baselined, quiet, files, cwd }) {
 
 /**
  * What `lint.typeAware` turns on: mistakes only the type checker can see. Promises nobody awaits; a switch over a union
- * that misses a member; a cast to the type the value already has; a check of a value whose type says it cannot fail
- * the check (data validated where it came in, then checked again inside); a missing `await` that skips the catch.
+ * that misses a member; a cast to the type the value already has, or to one narrower than it with nothing checked; a
+ * check of a value whose type says it cannot fail the check (data validated where it came in, then checked again
+ * inside); a missing `await` that skips the catch; a throw of something that is not an Error; a `.catch` callback
+ * that types its error as `any`.
  * @type {Record<string, string | unknown[]>}
  */
 const TYPE_AWARE = {
@@ -220,6 +222,9 @@ const TYPE_AWARE = {
   "typescript/no-unnecessary-type-assertion": "error",
   "typescript/no-unnecessary-condition": "error",
   "typescript/return-await": ["error", "error-handling-correctness-only"],
+  "typescript/no-unsafe-type-assertion": "error",
+  "typescript/only-throw-error": "error",
+  "typescript/use-unknown-in-catch-callback-variable": "error",
 };
 
 /**

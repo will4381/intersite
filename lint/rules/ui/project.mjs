@@ -12,13 +12,16 @@ const PALETTE = "slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|gree
 // A custom property holding a colour: a literal, a colour function, or shadcn's bare "222 47% 11%" channels.
 const COLOR_VAR = /(--[\w-]+)\s*:\s*(?:#[\da-f]{3,8}\b|(?:rgba?|hsla?|oklch|oklab|lab|lch|hwb|color|color-mix)\(|\d+(?:\.\d+)?(?:deg)?\s+\d+(?:\.\d+)?%\s+\d+(?:\.\d+)?%)/gi;
 const THEME_COLOR = /--color-([a-z][\w-]*)\s*:/g;
+/** A dark-mode block that sets custom properties: `.dark {`, `[data-theme="dark"] {`, `@media (prefers-color-scheme: dark) { :root {`. */
+const DARK_BLOCK = /(?:\.dark\b|\[data-(?:theme|mode|color-scheme)=["']?dark|prefers-color-scheme:\s*dark)[^{]*\{[^}]*?--[\w-]+\s*:/;
 const TYPE_VAR = /(--(?:font|text|type|leading|tracking|font-size|font-weight)[\w-]*)\s*:/g;
 const PALETTE_NAME = new RegExp(`^(?:${PALETTE})(?:-\\d+)?$`);
 
 /**
  * `stylesheets` is 0 when none were found (a fixture, or styles kept in JS): rules then assume a system exists.
  * `primitives` maps a raw element (`button`) to the project's own component file for it (`src/components/ui/button.tsx`).
- * @typedef {{ colorVars: string[], themeColors: string[], typeVars: string[], tailwind: boolean, stylesheets: number, primitives: Record<string, string> }} DesignSystem
+ * @typedef {{ colorVars: string[], themeColors: string[], typeVars: string[], tailwind: boolean, stylesheets: number, primitives: Record<string, string>, darkTheme: boolean }} DesignSystem
+ *   `darkTheme`: a stylesheet sets colour variables again for dark mode (`.dark { --background: … }`), so the theme's colours switch by themselves
  * @type {Map<string, DesignSystem>}
  */
 const cache = new Map();
@@ -86,6 +89,7 @@ export function designSystem(cwd) {
   const themeColors = new Set();
   const typeVars = new Set();
   let tailwind = false;
+  let darkTheme = false;
   /** @type {Record<string, string>} */
   const primitives = {};
   const found = projectFiles(cwd, isStyleFile);
@@ -99,6 +103,7 @@ export function designSystem(cwd) {
     for (const sheet of importedSheets(file, text)) if (!files.includes(sheet)) files.push(sheet);
     const isConfig = /tailwind\.config/.test(file);
     tailwind ||= isConfig || /@import\s+["']tailwindcss|@tailwind\s|@theme\b/.test(text);
+    darkTheme ||= DARK_BLOCK.test(text);
     for (const m of text.matchAll(COLOR_VAR)) colorVars.add(m[1]);
     for (const m of text.matchAll(THEME_COLOR)) themeColors.add(m[1]);
     for (const m of text.matchAll(TYPE_VAR)) typeVars.add(m[1]);
@@ -114,6 +119,7 @@ export function designSystem(cwd) {
     tailwind,
     stylesheets: files.length,
     primitives,
+    darkTheme,
   };
   cache.set(cwd, system);
   return system;
