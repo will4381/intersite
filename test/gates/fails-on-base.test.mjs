@@ -97,7 +97,7 @@ test("a test that fails on the base only because it cannot load there proves not
 test("a failure on the base in a test the change did not touch is not the new test failing", async () => {
   const r = repo({ "add.mjs": "export const add = (a, b) => a + b;\n", "test/flaky.test.mjs": 'import assert from "node:assert/strict";\nimport { existsSync } from "node:fs";\nassert.ok(existsSync("fixed"));\n' });
   r.write({ fixed: "", "test/add.test.mjs": 'import assert from "node:assert/strict";\nimport { add } from "../add.mjs";\nassert.equal(add(2, 2), 4);\n' });
-  const { code, out } = await run(r.cwd, ["fails-on-base", "--cmd", "node --test test/", "--paths", "test/**"]);
+  const { code, out } = await run(r.cwd, ["fails-on-base", "--cmd", "node --test", "--paths", "test/**"]);
   assert.equal(code, 1);
   assert.match(out[0], /^test\/add\.test\.mjs does not fail on base: .*flaky\.test\.mjs does, which the change did not touch/);
 });

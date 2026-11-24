@@ -94,7 +94,7 @@ test("a check named like a built-in stage is refused with one line", async () =>
 });
 
 test("a change that says it fixes a bug runs fails-on-base with --full, and names it among the slow stages without", async () => {
-  const r = repo({ "src/sum.mjs": "export const sum = (a, b) => a - b;\n", "test/sum.test.mjs": "export {};\n" }, { testCmd: "node --test test/" });
+  const r = repo({ "src/sum.mjs": "export const sum = (a, b) => a - b;\n", "test/sum.test.mjs": "export {};\n" }, { testCmd: "node --test" });
   r.write({ "src/sum.mjs": "export const sum = (a, b) => a + b;\n", "test/sum.test.mjs": "import assert from 'node:assert/strict';\nimport { test } from 'node:test';\nimport { sum } from '../src/sum.mjs';\ntest('adds', () => assert.equal(sum(2, 2), 4));\n" });
   r.commit("fix: sum subtracted");
   const quick = await check(r.cwd);
