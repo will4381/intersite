@@ -31,6 +31,12 @@ static MYSQL_TEXT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)`\w+`|\bE
 /// A project that declares a MySQL database: Prisma's provider (in a schema or a migration lock) or Drizzle's dialect.
 static MYSQL_PROJECT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"provider\s*=\s*"mysql"|dialect\s*:\s*["'](?:mysql|singlestore)["']|\bmysqlTable\("#).unwrap());
 
+/// A statement without its comments and quoted strings, where a backquote is a note's, not MySQL's: `-- the `id` key`.
+fn code_only(sql: &str) -> String {
+    static NOT_CODE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)--[^\n]*|/\*.*?\*/|'(?:[^']|'')*'").unwrap());
+    NOT_CODE.replace_all(sql, " ").into_owned()
+}
+
 /// Whether the repository's database is MySQL, by its Prisma schema, migration lock or Drizzle config.
 pub(crate) fn mysql_project(root: &str, files: &[String]) -> bool {
     files
@@ -89,18 +95,18 @@ pub(crate) fn split(sql: &str) -> Vec<(usize, &str)> {
     out.into_iter().filter(|(_, s)| s.lines().any(|l| !l.trim().is_empty() && !l.trim().starts_with("--"))).collect()
 }
 
-/// The statements of one piece of SQL, with the line each starts on. Each is read as Postgres, or as MySQL when it is
-/// written in MySQL's own syntax or only MySQL's parser reads it.
+/// The statements of one piece of SQL, with the line each starts on. Each is read as Postgres, or as MySQL when its code
+/// (not its comments or strings) is written in MySQL's own syntax.
 pub(crate) fn statements(file: &str, first_line: u32, sql: &str, from_code: bool) -> Vec<Stmt> {
     let lines = Lines::new(sql);
     let mut out = Vec::new();
     for (offset, piece) in split(sql) {
         let lead = piece.len() - piece.trim_start().len();
         let line = first_line + lines.line(offset + lead) - 1;
-        let marked = MYSQL_TEXT.is_match(piece);
-        let parsed = if marked { Parser::parse_sql(&MySqlDialect {}, piece).map(|p| (p, true)) } else { Err(sqlparser::parser::ParserError::ParserError(String::new())) }
-            .or_else(|_| Parser::parse_sql(&PostgreSqlDialect {}, piece).map(|p| (p, false)))
-            .or_else(|_| Parser::parse_sql(&MySqlDialect {}, piece).map(|p| (p, true)));
+        let marked = MYSQL_TEXT.is_match(&code_only(piece));
+        // Only MySQL's own syntax is read as MySQL: its parser also accepts what Postgres rightly refuses, such as a
+        // name built at run time (`public.$1`).
+        let parsed = if marked { Parser::parse_sql(&MySqlDialect {}, piece).map(|p| (p, true)) } else { Parser::parse_sql(&PostgreSqlDialect {}, piece).map(|p| (p, false)) };
         if let Ok((parsed, mysql)) = parsed {
             out.extend(parsed.into_iter().map(|statement| Stmt { file: file.to_string(), line, from_code, mysql, statement }));
         }
@@ -990,6 +996,11 @@ mod tests {
             ("prisma/migrations/2_plan/migration.sql", "ALTER TABLE users ADD COLUMN plan text NOT NULL;\nCREATE INDEX users_plan ON users (plan);"),
         ];
         assert_eq!(check_change(&prisma, true), Vec::<String>::new());
+        // A name built at run time (`public.${t}`, read as `public.$1`) is no statement to judge, in either dialect.
+        assert_eq!(check_change(&[("src/reset.ts", "export const drop = (t) => pool.query(`DROP TABLE IF EXISTS public.${t}`);\n")], true), Vec::<String>::new());
+        // A Postgres migration whose comments quote names in backquotes is still Postgres.
+        let noted = [("db/migrations/003.sql", "-- index the `email` key\nCREATE INDEX users_email ON users (email);")];
+        assert_eq!(check_change(&noted, true), vec!["db/migrations/003.sql:index-locks:users"]);
     }
 
     #[test]
