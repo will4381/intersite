@@ -12,7 +12,7 @@ import { answers, replaySessions } from "../replay/run.mjs";
 import { compareSnapshots, describe } from "../replay/snapshot.mjs";
 import { collectorTokens, loadConfig } from "../shared/config.mjs";
 
-const MODES = ["baseline", "twice", "cross-tenant", "ui", "contract"];
+const MODES = ["baseline", "twice", "race", "cross-tenant", "ui", "contract"];
 
 const options = /** @type {const} */ ({
   id: { type: "string" },

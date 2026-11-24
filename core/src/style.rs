@@ -26,6 +26,7 @@ static VAR_REF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"var\((--[\w-]+)"
 static TW_REF: LazyLock<Fancy> = LazyLock::new(|| Fancy::new(r"(?<![\w-])(?:bg|text|border|fill|stroke|ring|outline|from|via|to|decoration|divide|caret|accent|shadow)-([a-z][\w-]*)").unwrap());
 
 const MAX_BYTES: u64 = 512 * 1024;
+const MAX_LINE: usize = 4000;
 /** OKLab distance under which two colours read as the same: about the just-noticeable difference. */
 const NEAR_COLOUR: f64 = 0.02;
 /// A near miss must also be within this share of the value it misses, so 2.5px is not "nearly 2px".
@@ -603,6 +604,11 @@ pub fn run(request: &Request) -> Result<Answer, String> {
             let mine = added.get(file.as_str());
             let package = pkg(file);
             for (i, line) in blank_comments(&text).split('\n').enumerate() {
+                // A line this long is embedded data or generated output (an inline SVG, a minified bundle), not a
+                // value someone wrote, and the backtracking patterns would crawl through it.
+                if line.len() > MAX_LINE {
+                    continue;
+                }
                 if line.contains("var(") {
                     refs.extend(VAR_REF.captures_iter(line).map(|c| c[1].to_string()));
                 }

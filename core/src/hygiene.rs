@@ -59,9 +59,13 @@ pub fn strip_code(text: &str) -> String {
 
 static TESTS: LazyLock<Fancy> = LazyLock::new(|| Fancy::new(r"(?<![.\w$])(?:t\.)?(?:it|test)(?:\.(?:each|only|concurrent|skip|todo))?\s*\(").unwrap());
 static ASSERTS: LazyLock<Fancy> = LazyLock::new(|| {
-    Fancy::new(r"(?<![.\w$])(?:expect|assert)\s*\(|(?<![.\w$])assert\.\w+\s*\(|(?<![.\w$])t\.(?:is|not|true|false|truthy|falsy|deepEqual|notDeepEqual|like|regex|throws|throwsAsync|notThrows|notThrowsAsync|snapshot|pass|fail|assert|equal|ok)\b").unwrap()
+    Fancy::new(r"(?<![.\w$])(?:expect|assert)\s*\(|(?<![.\w$])fc\.assert\s*\(|(?<![.\w$])assert\.\w+\s*\(|(?<![.\w$])t\.(?:is|not|true|false|truthy|falsy|deepEqual|notDeepEqual|like|regex|throws|throwsAsync|notThrows|notThrowsAsync|snapshot|pass|fail|assert|equal|ok)\b").unwrap()
 });
-static SKIPS: LazyLock<Fancy> = LazyLock::new(|| Fancy::new(r"(?<![.\w$])(?:(?:it|test|describe|suite|t)\.(?:skip|todo)\b|x(?:it|test|describe)\s*\(|(?:skip|todo)\s*:)").unwrap());
+/// Tests that will not run, or not as written: skipped, todo, focused (`.only` runs nothing else), skipped on a
+/// condition, or inverted (`it.fails` passes when its body fails).
+static SKIPS: LazyLock<Fancy> = LazyLock::new(|| {
+    Fancy::new(r"(?<![.\w$])(?:(?:it|test|describe|suite|context|t)\.(?:skip|todo|only|fixme|fails|skipIf|runIf)\b|[xf](?:it|test|describe)\s*\(|(?:skip|todo|only)\s*:)").unwrap()
+});
 
 fn count(re: &Fancy, text: &str) -> usize {
     re.find_iter(text).filter(|m| m.is_ok()).count()
@@ -102,7 +106,7 @@ pub fn tests(request: &Request) -> Result<Answer, String> {
             lost.push(format!("assertions {} → {}", was.1, now.1));
         }
         if now.2 > was.2 {
-            lost.push(format!("skips and todos {} → {}", was.2, now.2));
+            lost.push(format!("skipped, focused or inverted tests {} → {}", was.2, now.2));
         }
         if !lost.is_empty() {
             findings.push(Finding { file: c.path.clone(), line: 0, target: c.path.clone(), message: format!("{}: {} since {since}", c.path, lost.join(", ")) });
@@ -193,6 +197,13 @@ pub fn new_deps(request: &Request) -> Result<Answer, String> {
     Ok(Answer { findings, summary, data: None })
 }
 
+/// A semantic mutant as the gate applies it: the cut's text replaced, offsets in UTF-16 units.
+fn cut_json(path: &str, text: &str, c: &crate::functions::Cut, shown: String, within: Vec<String>) -> serde_json::Value {
+    let at = crate::functions::utf16(text, c.start);
+    let length = text[c.start as usize..c.end as usize].encode_utf16().count();
+    serde_json::json!({ "kind": "cut", "label": c.label, "path": path, "line": c.line, "at": at, "length": length, "from": shown, "to": c.to, "within": within })
+}
+
 /// Takes one item from each list in turn, so the first items are spread across every list.
 fn interleave<T: Clone>(lists: &[Vec<T>]) -> Vec<T> {
     let mut out = Vec::new();
@@ -208,8 +219,10 @@ fn interleave<T: Clone>(lists: &[Vec<T>]) -> Vec<T> {
 }
 
 /// The mutants to try, after Google's mutation testing in code review: for each changed function, its body removed (a
-/// function no test notices losing is covered but not checked), then one operator flip per added line, never inside
-/// logging, telemetry, thrown errors, joined text or types. Bodies first, spread across files, at most `max`. Each
+/// function no test notices losing is covered but not checked), then one mutant per added line: a semantic cut (an
+/// access check, a tenant filter, an idempotency or state guard, a cache invalidation) before an operator flip, and a
+/// plain guard or an error fallback rethrown after it, never inside logging, telemetry, thrown errors, joined text or
+/// types. Bodies first, spread across files, at most `max`. Each
 /// mutant names the functions around it, so once one's body survives nothing inside it is tried. Offsets and lengths
 /// are in UTF-16 units, as the JavaScript that applies them counts.
 pub fn mutants(request: &Request) -> Result<Answer, String> {
@@ -234,8 +247,18 @@ pub fn mutants(request: &Request) -> Result<Answer, String> {
             let to = if f.expression_body { "undefined" } else { "{}" };
             list.push(serde_json::json!({ "kind": "body", "path": path, "line": f.line, "name": f.name, "at": at, "length": length, "from": "", "to": to, "key": key(i), "within": within(f.body.0, Some(i)) }));
         }
+        // One mutant per line: a semantic cut first, then the best operator flip, then a plain guard or error fallback.
+        let snippet = |start: usize, end: usize| -> String { text[start..end].lines().next().unwrap_or("").trim().chars().take(80).collect() };
+        let mut taken: HashSet<u32> = HashSet::new();
+        let mut later = Vec::new();
+        let cuts: Vec<&crate::functions::Cut> = shape.cuts.iter().filter(|c| wanted.contains(&c.line)).collect();
+        for c in cuts.iter().filter(|c| c.first()) {
+            if taken.insert(c.line) {
+                list.push(cut_json(path, &text, c, snippet(c.start as usize, c.end as usize), within(c.start, None)));
+            }
+        }
         let mut best: HashMap<u32, &crate::functions::Site> = HashMap::new();
-        for site in shape.sites.iter().filter(|s| wanted.contains(&s.line)) {
+        for site in shape.sites.iter().filter(|s| wanted.contains(&s.line) && !taken.contains(&s.line)) {
             let slot = best.entry(site.line).or_insert(site);
             if site.rank < slot.rank {
                 *slot = site;
@@ -244,6 +267,7 @@ pub fn mutants(request: &Request) -> Result<Answer, String> {
         let mut sites: Vec<&crate::functions::Site> = best.into_values().collect();
         sites.sort_by_key(|s| s.start);
         for s in sites {
+            taken.insert(s.line);
             let line_start = text[..s.start as usize].rfind('\n').map_or(0, |i| i + 1);
             let line_end = text[s.start as usize..].find('\n').map_or(text.len(), |i| s.start as usize + i);
             let mutated = format!("{}{}{}", &text[line_start..s.start as usize], s.to, &text[s.start as usize + s.from.len()..line_end]);
@@ -251,6 +275,12 @@ pub fn mutants(request: &Request) -> Result<Answer, String> {
             let at = crate::functions::utf16(&text, s.start);
             list.push(serde_json::json!({ "kind": "operator", "path": path, "line": s.line, "at": at, "length": s.from.encode_utf16().count(), "from": s.from, "to": s.to, "text": shown, "within": within(s.start, None) }));
         }
+        for c in cuts.iter().filter(|c| !c.first()) {
+            if taken.insert(c.line) {
+                later.push(cut_json(path, &text, c, snippet(c.start as usize, c.end as usize), within(c.start, None)));
+            }
+        }
+        list.extend(later);
         per_file.push(list);
     }
     let chosen: Vec<serde_json::Value> = interleave(&per_file).into_iter().take(max).collect();

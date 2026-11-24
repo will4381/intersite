@@ -9,7 +9,7 @@ import { located, runCore } from "./core.mjs";
 import { JS_FILE, SKIP, changeOf, changes, listFiles, matches, showMany } from "./lib.mjs";
 
 /** Sources in other languages: a table they name may be written there, so it is never reported as unwritten. */
-const OTHER = /\.(?:py|go|rb|swift|kt|kts|java|php|cs|ex|exs|dart|rs|scala)$/;
+const OTHER = /\.(?:py|go|rb|swift|kt|kts|java|php|cs|ex|exs|dart|rs|scala|xs|lua)$/;
 
 /** @param {import("./lib.mjs").GateOptions} options @returns {Promise<import("./lib.mjs").GateResult>} */
 export async function columns({ cwd, base, testPaths }) {

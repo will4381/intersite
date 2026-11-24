@@ -6,7 +6,7 @@ import { afterEach, beforeEach, test } from "node:test";
 import { replaySessions } from "../../replay/run.mjs";
 import { DEFAULT_ID_PATTERN } from "../../shared/shape.mjs";
 import * as adapter from "./adapter.mjs";
-import { listSession, notesSession, preexistingSession, recorded, startTarget } from "./helpers.mjs";
+import { listSession, notesSession, paymentSession, preexistingSession, recorded, startTarget } from "./helpers.mjs";
 
 /** @type {Awaited<ReturnType<typeof startTarget>>} */
 let target;
@@ -94,6 +94,31 @@ test("twice catches a write that fails when repeated", async () => {
   assert.deepEqual(failures(await replay(notesSession(), ["twice"])), []);
   target.bugs.add("twice");
   assert.deepEqual(failures(await replay(notesSession(), ["twice"])), ["twice s-notes-4 second send got 500, first got 200"]);
+});
+
+/** The adapter with the toy target's state: how many payments it has credited. */
+const withState = { ...adapter, state: async (/** @type {{ target: string }} */ { target: url }) => (await fetch(`${url}/__state`)).json() };
+
+test("twice fails a repeated webhook that changes the state again, by the adapter's state, though both answers are 200", async () => {
+  assert.deepEqual(failures(await replay(paymentSession(), ["twice"], withState)), []);
+  target.bugs.add("double-credit");
+  assert.deepEqual(failures(await replay(paymentSession(), ["twice"])), [], "without state only the status is judged");
+  assert.deepEqual(failures(await replay(paymentSession(), ["twice"], withState)), ["twice s-pay-1 the second send changed the state again (/credits 1 → 2): a repeated webhook must apply once"]);
+});
+
+test("race sends a webhook twice at once and fails when both deliveries create a record", async () => {
+  const healthy = await replay(paymentSession(), ["race"]);
+  assert.deepEqual(healthy.steps.map((s) => `${s.caseId} ${s.result}`), ["s-pay-1 passed"]);
+  target.bugs.add("race");
+  assert.deepEqual(failures(await replay(paymentSession(), ["race"])), ["race s-pay-1 sent twice at once, it created two records (crd_000001 and crd_000002): only one may apply"]);
+});
+
+test("invariants get the adapter's state from before and after the session", async () => {
+  /** @type {unknown[]} */
+  const seen = [];
+  const conserving = { ...withState, invariants: [{ name: "credits once", check: async (/** @type {{ before?: unknown, after?: unknown }} */ { before, after }) => (seen.push(before, after), undefined) }] };
+  await replay(paymentSession(), ["baseline"], conserving);
+  assert.deepEqual(seen, [{ credits: 0 }, { credits: 1 }]);
 });
 
 test("cross-tenant catches a read of another tenant's record", async () => {

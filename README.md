@@ -36,7 +36,7 @@ In a monorepo, install `intersite`, `oxlint` and `@oxlint/plugins` once at the r
 | Stage | Catches | Needs |
 | --- | --- | --- |
 | `lint` | Slop and tests that cannot fail, on top of your own oxlint config (`lint.ownRules: false` reports only the rules Intersite adds, for a project that already gates its own) | nothing |
-| `test-integrity` | A test deleted, weakened or skipped to get green | git |
+| `test-integrity` | A test deleted, weakened, skipped, focused with `.only` or inverted with `it.fails` to get green | git |
 | `tamper` | The checks loosened instead of the code fixed: a strict type option turned off, a lint rule downgraded or a path ignored, a gate or lint pack dropped, a baseline grown, a test runner told to skip files, pass with no tests, retry or accept lower coverage, a CI step that ran the checks removed or allowed to fail, coverage-ignore pragmas | git |
 | `special-case` | Production code that answers the tests instead of solving the problem: a branch on running under a test runner, or a branch on a changed test's own input that returns exactly what that test expects | git |
 | `duplicates` | A pasted block that already exists in the repository | git |
@@ -55,6 +55,7 @@ In a monorepo, install `intersite`, `oxlint` and `@oxlint/plugins` once at the r
 | `env` | A read of an environment variable the project's `.env.example` (or env schema) does not list: a typo (`STRIPE_WEBHOOK_SECRT`, with the name it probably meant) or a variable the deploy will not know to set | git |
 | `secrets` | A credential added to any file (config, workflow, docs, env file): an API key or token with a known format, a private key, a database URL with its password, a Supabase service-role key, or a committed `.env` holding a real secret. The secret is never printed | git |
 | `auth` | An endpoint (route handler, server action, loader, tRPC procedure, Convex function, Express/Hono/Fastify route) that never checks who is calling, where most of its kind in the package do. The convention is read from the project; sign-in, webhook, health and cron paths are public | git |
+| `structure` | Code whose parts know each other in ways that make it hard to read (after [deslop-please](https://github.com/deterministic-machines/deslop-please) and *A Philosophy of Software Design*): folders or files side by side that call each other in a circle (`module-cycle`), declarations in a circle a folder cycle cannot show (`tangle`), a class field changed from outside the class (`field-leak`), and one caller working through more than 7 of a folder's functions on one type, step by step (`shallow-module`). Runtime uses only: type imports order nothing | git |
 | `artifacts` | Leftovers: backup and `_v2` copies, scratch scripts, logs, stray `PLAN.md` and `SUMMARY.md` files | git |
 | `unused` | A file or export this change added that nothing uses, or a file it orphaned | git |
 | `imports` | An import of something that is not there: a file that does not exist (or only under another case, which macOS forgives and Linux does not), a name the module does not export, or a package no package.json declares and nothing installed provides, the shape of an invented one. Also unchanged imports the change broke by deleting, moving or un-exporting what they named | git |
@@ -74,9 +75,12 @@ In a monorepo, put `intersite.yml` in the app's folder: its `check` judges only 
 relative to it, and still reports a copy of code that lives in a shared package. A root config skips folders that
 have their own.
 
-Three more gates run the tests and are opt-in through `gates.run`: `fails-on-base` (a bug fix's new test must fail
-without the fix), `mutation` (a changed function's body removed, or an operator flipped on a changed line, must make
-a test fail) and `coverage` (every function the change added or edited must run in some test). With `gates.testCmd`
+Three more gates run the tests and are opt-in through `gates.run`: `fails-on-base` (a bug fix's new test must pass
+with the fix and fail without it on a test's own verdict: a test that only fails to compile, load or finish on the
+base proves nothing), `mutation` (a changed function's body removed, an access check, tenant filter, idempotency or
+state guard or cache invalidation removed, or an operator flipped on a changed line, must make a test fail; a mutant
+that only breaks the build is invalid, not killed) and `coverage` (every function the change added or edited must run
+in some test). `check` runs the gates that only read side by side, about five times faster on a large repository. With `gates.testCmd`
 set, `check --full` adds `fails-on-base` on its own when the branch name or a commit message since the base says
 fix, bug, hotfix or regression.
 
@@ -248,7 +252,8 @@ rule out. It needs the
 | `workers` | on | Cloudflare Workers: promises neither awaited nor passed to `waitUntil`, destructured `ctx.waitUntil` |
 | `supabase` | on | Supabase results whose `error` is never read, `auth.getSession()` trusted on the server |
 | `server` | on | Express and Fastify: sending twice without `return`, Express 4 async handlers with no error forwarding |
-| `start` | on | TanStack Start server functions whose validator only types the input |
+| `start` | on | TanStack Start server functions whose validator only types the input; TanStack Router `redirect()` or `notFound()` written as a statement instead of thrown |
+| `effect` | on | Effect: an effect run (`Effect.runPromise`, `runSync`…) inside `Effect.gen`, which starts a second runtime |
 | `payments` | on | Stripe amounts built with floats or taken from the client; refunds, transfers and payouts with no idempotency key; in files named `*.money.ts`, fractional literals, `Math.round`/`floor`/`ceil`/`trunc`, `parseFloat` and `toFixed` |
 | `auth` | on | A `userId` taken from the request in a handler that has the session |
 | `swift` | on | Swift through SwiftLint (`brew install swiftlint`): force `try` and force unwraps, empty `catch` and discarded `try?`, `print` logging, stub `fatalError`s, fixed `asyncAfter` delays, `Task` in `onAppear`, `AnyView`, flag clusters, deprecated SwiftUI APIs, fixed font sizes and raw colours outside design-system files, secrets in source or `UserDefaults`, type and identifier casing, view builders over 100 lines or nested past 7 levels, more than 12 `@State` properties, notification event buses and discarded observers, settable singletons, strong `self` in subscriptions and timers, redundant main-queue hops, generic `MARK`s, restating comments |
@@ -309,7 +314,8 @@ Fastify, Next.js and browser-only (`wrapFetch`) forms are shown at the top of
   freely as long as the name stays.
 - **Replay modes:** `baseline` (same status and response shape as production; a server error production recorded
   fails while it still happens and passes once it is fixed), `twice` (a repeated write must not
-  error), `cross-tenant` (another account must be refused, and its lists must not show records the session created; a record public by design goes in
+  error, and a PUT, DELETE, webhook or write with an idempotency key must not change the adapter's `state()` again),
+  `race` (the same webhook or idempotent write sent twice at once must not fail or create two records), `cross-tenant` (another account must be refused, and its lists must not show records the session created; a record public by design goes in
   `replay.crossTenantIgnore` with a reason), `ui` (each named action's page loads cleanly in Chrome;
   reads are clicked, and writes fill the form from the recorded body, submit it and must get the recorded status).
 - **Cheaper `ui` runs:** `npx playwright install chromium-headless-shell` makes `ui` use Chrome Headless Shell instead
@@ -317,7 +323,9 @@ Fastify, Next.js and browser-only (`wrapFetch`) forms are shown at the top of
   (`replay.browser: lightpanda`) is lighter still but has no real layout, so clicks and visibility checks may not
   work; it is unverified with Intersite.
 - **The adapter** (`intersite.adapter.mjs`) tells replay how to sign in a seeded test user and which seeded record
-  stands in for an ID from production. Capture stores no headers, so anything every request needs (an API version,
+  stands in for an ID from production. Its optional `state()` returns what the app holds as JSON (counts, balances),
+  which invariants get from before and after each session (money conserved, one credit per payment) and `twice`
+  compares around a repeated write. Capture stores no headers, so anything every request needs (an API version,
   an idempotency key) comes from its optional `headers` export.
 - Replay refuses a target that is not local unless `--allow-remote` is passed.
 

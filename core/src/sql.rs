@@ -6,7 +6,7 @@
 use rayon::prelude::*;
 use regex::Regex;
 use sqlparser::ast::{visit_expressions, AlterColumnOperation, AlterTableOperation, BinaryOperator, Expr, InTarget, Statement};
-use sqlparser::dialect::PostgreSqlDialect;
+use sqlparser::dialect::{MySqlDialect, PostgreSqlDialect};
 use sqlparser::parser::Parser;
 use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow;
@@ -21,7 +21,22 @@ pub(crate) struct Stmt {
     pub line: u32,
     /// From a `.sql` file, or a SQL string in code.
     pub from_code: bool,
+    /// MySQL (or a MySQL-compatible database such as PlanetScale's Vitess): Postgres' lock advice does not apply.
+    pub mysql: bool,
     pub statement: Statement,
+}
+
+/// SQL only MySQL writes: backquoted names, a storage engine, AUTO_INCREMENT, an unsigned integer.
+static MYSQL_TEXT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)`\w+`|\bENGINE\s*=|\bAUTO_INCREMENT\b|\bUNSIGNED\b").unwrap());
+/// A project that declares a MySQL database: Prisma's provider (in a schema or a migration lock) or Drizzle's dialect.
+static MYSQL_PROJECT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"provider\s*=\s*"mysql"|dialect\s*:\s*["'](?:mysql|singlestore)["']|\bmysqlTable\("#).unwrap());
+
+/// Whether the repository's database is MySQL, by its Prisma schema, migration lock or Drizzle config.
+pub(crate) fn mysql_project(root: &str, files: &[String]) -> bool {
+    files
+        .iter()
+        .filter(|f| f.ends_with(".prisma") || f.ends_with("migration_lock.toml") || f.contains("drizzle.config.") || f.ends_with("schema.ts"))
+        .any(|f| text::read(root, f).is_some_and(|t| MYSQL_PROJECT.is_match(&t)))
 }
 
 /// A statement's text and its byte offset, split at top-level semicolons (quotes, dollar quotes and comments kept).
@@ -74,23 +89,28 @@ pub(crate) fn split(sql: &str) -> Vec<(usize, &str)> {
     out.into_iter().filter(|(_, s)| s.lines().any(|l| !l.trim().is_empty() && !l.trim().starts_with("--"))).collect()
 }
 
-/// The statements of one piece of SQL, with the line each starts on.
+/// The statements of one piece of SQL, with the line each starts on. Each is read as Postgres, or as MySQL when it is
+/// written in MySQL's own syntax or only MySQL's parser reads it.
 pub(crate) fn statements(file: &str, first_line: u32, sql: &str, from_code: bool) -> Vec<Stmt> {
     let lines = Lines::new(sql);
     let mut out = Vec::new();
     for (offset, piece) in split(sql) {
         let lead = piece.len() - piece.trim_start().len();
         let line = first_line + lines.line(offset + lead) - 1;
-        if let Ok(parsed) = Parser::parse_sql(&PostgreSqlDialect {}, piece) {
-            out.extend(parsed.into_iter().map(|statement| Stmt { file: file.to_string(), line, from_code, statement }));
+        let marked = MYSQL_TEXT.is_match(piece);
+        let parsed = if marked { Parser::parse_sql(&MySqlDialect {}, piece).map(|p| (p, true)) } else { Err(sqlparser::parser::ParserError::ParserError(String::new())) }
+            .or_else(|_| Parser::parse_sql(&PostgreSqlDialect {}, piece).map(|p| (p, false)))
+            .or_else(|_| Parser::parse_sql(&MySqlDialect {}, piece).map(|p| (p, true)));
+        if let Ok((parsed, mysql)) = parsed {
+            out.extend(parsed.into_iter().map(|statement| Stmt { file: file.to_string(), line, from_code, mysql, statement }));
         }
     }
     out
 }
 
-/// The last part of a dotted name, unquoted and lowercased: `public."Users"` is `users`.
+/// The last part of a dotted name, unquoted and lowercased: `public."Users"` and MySQL's `` `Users` `` are `users`.
 pub(crate) fn bare(name: &str) -> String {
-    name.rsplit('.').next().unwrap_or(name).trim_matches('"').to_lowercase()
+    name.rsplit('.').next().unwrap_or(name).trim_matches(|c| c == '"' || c == '`').to_lowercase()
 }
 
 /// The column names in a parenthesised list: `(a, "b" DESC)` is a, b.
@@ -250,6 +270,11 @@ fn finding(s: &Stmt, rule: &str, key: &str, message: String) -> Finding {
 /// `crowded` holds the migration files with more than one statement.
 fn migration(s: &Stmt, created_here: &HashSet<(String, String)>, crowded: &HashSet<&str>, out: &mut Vec<Finding>) {
     let fresh = |table: &str| created_here.contains(&(s.file.clone(), table.to_string()));
+    // MySQL builds an index and adds a column or a foreign key online (InnoDB's online DDL), fills a NOT NULL column it
+    // adds with the type's implicit default, and has no CONCURRENTLY, NOT VALID or SET NOT NULL to advise: those
+    // Postgres hazards are not MySQL's. Dropping or renaming what running code reads breaks either.
+    let postgres_only = |rule: &str| s.mysql && matches!(rule, "concurrently-in-transaction" | "index-locks" | "not-null-column" | "foreign-key-locks" | "set-not-null");
+    let before = out.len();
     // Prisma sends a migration file as one script, which Postgres runs as one transaction, and CONCURRENTLY refuses to
     // run inside a transaction: it works only as the file's one statement.
     let prisma = s.file.contains("prisma/migrations/");
@@ -315,11 +340,23 @@ fn migration(s: &Stmt, created_here: &HashSet<(String, String)>, crowded: &HashS
         }
         _ => {}
     }
+    let mut i = before;
+    while i < out.len() {
+        if postgres_only(out[i].target.rsplit(':').nth(1).unwrap_or("")) {
+            out.remove(i);
+        } else {
+            i += 1;
+        }
+    }
 }
 
 /// A column that holds UUIDs as text: 36 characters where the uuid type stores 16 bytes, compared and indexed as
 /// strings, and never checked to be a UUID. Applies to new tables too: the type is cheapest to fix before rows exist.
 fn uuid_as_text(s: &Stmt, inv: &Inventory, out: &mut Vec<Finding>) {
+    // MySQL has no uuid type: CHAR(36) or BINARY(16) is how it stores one.
+    if s.mysql {
+        return;
+    }
     let mut check = |table: &str, col: &sqlparser::ast::ColumnDef| {
         let options = col.options.iter().map(|o| o.option.to_string()).collect::<Vec<_>>().join(" ");
         let name = bare(&col.name.to_string());
@@ -358,7 +395,7 @@ fn prisma(file: &str, src: &str, request: &Request) -> Vec<Finding> {
     let mut model = String::new();
     for (i, line) in src.lines().enumerate() {
         let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("model ") {
+        if let Some(rest) = trimmed.strip_prefix("model ").filter(|_| trimmed.split("//").next().unwrap_or("").trim_end().ends_with('{')) {
             model = rest.split_whitespace().next().unwrap_or("").to_string();
             continue;
         }
@@ -682,8 +719,14 @@ pub fn stats(request: &Request) -> Result<Answer, String> {
 }
 
 pub fn run(request: &Request) -> Result<Answer, String> {
-    let (stmts, loops, wipes) = read_all(request);
+    let (mut stmts, loops, wipes) = read_all(request);
+    if mysql_project(&request.root, &request.files) {
+        for s in &mut stmts {
+            s.mysql = true;
+        }
+    }
     let (inv, fks) = inventory(&stmts);
+    let mysql_files: HashSet<&str> = stmts.iter().filter(|s| s.mysql).map(|s| s.file.as_str()).collect();
     let created_here: HashSet<(String, String)> = stmts.iter().filter_map(|s| match &s.statement {
         Statement::CreateTable(ct) => Some((s.file.clone(), bare(&ct.name.to_string()))),
         _ => None,
@@ -736,7 +779,8 @@ pub fn run(request: &Request) -> Result<Answer, String> {
                 }
             }
         }
-        if !inv.covers(&fk.table, &fk.columns) {
+        // InnoDB makes the index a foreign key needs when it is added.
+        if !inv.covers(&fk.table, &fk.columns) && !mysql_files.contains(fk.file.as_str()) {
             let cols = fk.columns.join(", ");
             findings.push(Finding {
                 file: fk.file.clone(),
@@ -931,6 +975,21 @@ mod tests {
         let mut out = run(&request).unwrap().findings;
         out.sort_by(|a, b| a.target.cmp(&b.target));
         out
+    }
+
+    #[test]
+    fn mysql_migrations_get_no_postgres_lock_advice_but_still_break_running_code() {
+        let files = [
+            ("db/migrations/001.sql", "CREATE TABLE `users` (`id` int unsigned NOT NULL AUTO_INCREMENT, `email` varchar(255), PRIMARY KEY (`id`)) ENGINE=InnoDB;\nCREATE TABLE `orders` (`id` int NOT NULL, `user_id` int unsigned, PRIMARY KEY (`id`), FOREIGN KEY (`user_id`) REFERENCES `users` (`id`)) ENGINE=InnoDB;"),
+            ("db/migrations/002.sql", "ALTER TABLE `users` ADD COLUMN `plan` varchar(20) NOT NULL;\nCREATE INDEX `users_email` ON `users` (`email`);\nALTER TABLE `users` DROP COLUMN `legacy`;"),
+        ];
+        assert_eq!(check_change(&files, true), vec!["db/migrations/002.sql:drop-column:users"]);
+        // The same migration in a Prisma project that declares MySQL, written without MySQL's own syntax.
+        let prisma = [
+            ("prisma/schema.prisma", "datasource db {\n  provider = \"mysql\"\n  url = env(\"DATABASE_URL\")\n}\n"),
+            ("prisma/migrations/2_plan/migration.sql", "ALTER TABLE users ADD COLUMN plan text NOT NULL;\nCREATE INDEX users_plan ON users (plan);"),
+        ];
+        assert_eq!(check_change(&prisma, true), Vec::<String>::new());
     }
 
     #[test]

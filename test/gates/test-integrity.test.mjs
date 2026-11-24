@@ -33,7 +33,11 @@ test("removing an assertion, removing a test and adding a skip are each reported
   for (const [edit, expected] of [
     [a.replace('  assert.ok("assert(not counted)");\n', ""), /assertions 3 → 2/],
     [a.replace(/test\("subtracts"[^]*$/, ""), /tests 2 → 1, assertions 3 → 2/],
-    [a.replace('test("adds"', 'test.skip("adds"'), /skips and todos 0 → 1/],
+    [a.replace('test("adds"', 'test.skip("adds"'), /skipped, focused or inverted tests 0 → 1/],
+    // Focusing one test runs none of the others; a conditional skip and an inverted test do not run as written.
+    [a.replace('test("adds"', 'test.only("adds"'), /skipped, focused or inverted tests 0 → 1/],
+    [a.replace('test("adds"', 'test.skipIf(process.env.CI)("adds"'), /skipped, focused or inverted tests 0 → 1/],
+    [a.replace('test("subtracts"', 'test.fails("subtracts"'), /skipped, focused or inverted tests 0 → 1/],
   ]) {
     const r = repo(files);
     r.write({ "test/a.test.mjs": /** @type {string} */ (edit) });
@@ -41,6 +45,15 @@ test("removing an assertion, removing a test and adding a skip are each reported
     assert.equal(code, 1);
     assert.match(out[0], /** @type {RegExp} */ (expected));
   }
+});
+
+test("a fast-check property counts as an assertion, so dropping it is reported", async () => {
+  const prop = 'import fc from "fast-check";\nimport { test } from "node:test";\ntest("sorts", () => {\n  fc.assert(fc.property(fc.array(fc.integer()), (xs) => xs.length >= 0));\n});\n';
+  const r = repo({ ...files, "test/p.test.mjs": prop });
+  r.write({ "test/p.test.mjs": prop.replace(/  fc\.assert[^\n]*\n/, "") });
+  const { code, out } = await run(r.cwd, ["test-integrity"]);
+  assert.equal(code, 1);
+  assert.match(out[0], /^test\/p\.test\.mjs: assertions 1 → 0/);
 });
 
 test("a committed change is compared with base too", async () => {

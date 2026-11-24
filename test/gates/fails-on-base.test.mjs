@@ -77,10 +77,35 @@ test("Ctrl-C while the test command runs stops it and removes the worktree", asy
   assert.equal(r.worktrees(), 1);
 });
 
-test("a test command that hangs on the base commit is stopped and counts as failing there", async () => {
-  const r = fixed("assert.equal(add(2, 2), 4);");
-  const { code, out } = await run(r.cwd, ["fails-on-base", "--cmd", `node -e "setInterval(() => {}, 1000)"`, "--paths", "test/**", "--timeout", "1"]);
-  assert.equal(code, 0);
-  assert.match(out.join("\n"), /^ok gate fails-on-base: .* does not finish within 1s on base, so it does not pass without the change$/);
+test("a test that hangs on the base commit proves nothing: the time limit is not a test's verdict", async () => {
+  const r = repo({ "add.mjs": "export const add = (a, b) => { for (;;) {} };\n" });
+  r.write({ "add.mjs": "export const add = (a, b) => a + b;\n", "test/add.test.mjs": 'import assert from "node:assert/strict";\nimport { add } from "../add.mjs";\nassert.equal(add(2, 2), 4);\n' });
+  const { code, out } = await run(r.cwd, [...args, "--timeout", "2"]);
+  assert.equal(code, 1);
+  assert.match(out[0], /^test\/add\.test\.mjs fails on base only because it did not finish within 2s \(give the test its own timeout so the runner reports it as a failure\), which proves nothing/);
+  assert.equal(r.worktrees(), 1);
+});
+
+test("a test that fails on the base only because it cannot load there proves nothing", async () => {
+  const r = repo({ "add.mjs": "export const sum = (a, b) => a - b;\n" });
+  r.write({ "add.mjs": "export const sum = (a, b) => a + b;\nexport const add = sum;\n", "test/add.test.mjs": 'import assert from "node:assert/strict";\nimport { add } from "../add.mjs";\nassert.equal(add(2, 2), 4);\n' });
+  const { code, out } = await run(r.cwd, args);
+  assert.equal(code, 1);
+  assert.match(out[0], /^test\/add\.test\.mjs fails on base only because it does not compile or load: SyntaxError: The requested module '\.\.\/add\.mjs' does not provide an export named 'add'/);
+});
+
+test("a failure on the base in a test the change did not touch is not the new test failing", async () => {
+  const r = repo({ "add.mjs": "export const add = (a, b) => a + b;\n", "test/flaky.test.mjs": 'import assert from "node:assert/strict";\nimport { existsSync } from "node:fs";\nassert.ok(existsSync("fixed"));\n' });
+  r.write({ fixed: "", "test/add.test.mjs": 'import assert from "node:assert/strict";\nimport { add } from "../add.mjs";\nassert.equal(add(2, 2), 4);\n' });
+  const { code, out } = await run(r.cwd, ["fails-on-base", "--cmd", "node --test test/", "--paths", "test/**"]);
+  assert.equal(code, 1);
+  assert.match(out[0], /^test\/add\.test\.mjs does not fail on base: .*flaky\.test\.mjs does, which the change did not touch/);
+});
+
+test("a new test that fails with the change too proves nothing by failing on the base", async () => {
+  const r = fixed("assert.equal(add(2, 2), 5);");
+  const { code, out } = await run(r.cwd, args);
+  assert.equal(code, 1);
+  assert.match(out[0], /^test\/add\.test\.mjs does not pass with the change \(a test failed\), so failing on base would prove nothing/);
   assert.equal(r.worktrees(), 1);
 });

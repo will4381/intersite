@@ -220,7 +220,11 @@ fn lower_first(name: &str) -> String {
 }
 
 fn prisma_model(file: &str, src: &str) -> Vec<Table> {
-    let block = |line: &str, kind: &str| line.trim().strip_prefix(kind).map(|r| r.split_whitespace().next().unwrap_or("").trim_end_matches('{').to_string());
+    // `model User {`: a declaration opens a block on its line, so a field named `model` (`model String?`) is not one.
+    let block = |line: &str, kind: &str| {
+        let line = line.split("//").next().unwrap_or("").trim();
+        line.strip_prefix(kind).filter(|_| line.ends_with('{')).map(|r| r.split_whitespace().next().unwrap_or("").trim_end_matches('{').to_string())
+    };
     let models: HashSet<String> = src.lines().filter_map(|l| block(l, "model ")).collect();
     let mut out = Vec::new();
     let mut current: Option<Table> = None;
@@ -789,6 +793,15 @@ fn uses(file: &str, src: &str) -> Uses {
 static TYPED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\w+):\s*\{\s*Row:\s*\{").unwrap());
 static REST: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/rest/v1/(\w+)").unwrap());
 
+/// A column as Postgres reads it: a quoted name keeps its case (`"Status"`), an unquoted one folds to lowercase.
+fn ident(name: &str) -> String {
+    let last = name.rsplit('.').next().unwrap_or(name);
+    match last.strip_prefix('"').and_then(|l| l.strip_suffix('"')) {
+        Some(quoted) => quoted.to_string(),
+        None => last.to_lowercase(),
+    }
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // SQL text: writes, references and trigger-set columns, by pattern (statements inside function bodies included).
 
@@ -1068,7 +1081,7 @@ fn near<'n>(name: &str, known: impl Iterator<Item = &'n str>) -> Option<&'n str>
 static SAMPLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|/)(?:fixtures?|__fixtures__|mocks?|__mocks__|stories|storybook|examples?)/|\.(?:stories|story|fixture|mock)\.[cm]?[jt]sx?$").unwrap());
 static TEST: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|/)(?:tests?|__tests__|e2e|spec)/|\.(?:test|spec)\.[cm]?[jt]sx?$").unwrap());
 static CODE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.(?:[cm]?[jt]sx?|vue|svelte|astro)$").unwrap());
-static OTHER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.(?:py|go|rb|swift|kt|kts|java|php|cs|ex|exs|dart|rs|scala)$").unwrap());
+static OTHER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.(?:py|go|rb|swift|kt|kts|java|php|cs|ex|exs|dart|rs|scala|xs|lua)$").unwrap());
 /// Schemas a project does not own: Supabase's auth and storage, Postgres' catalogs.
 const FOREIGN_SCHEMAS: [&str; 12] = ["auth", "storage", "pg_catalog", "information_schema", "extensions", "cron", "net", "vault", "realtime", "supabase_functions", "graphql", "pgsodium"];
 
@@ -1158,12 +1171,12 @@ impl Unknowns<'_> {
             self.table(file, s.line, &name);
         }
         let targets: Vec<(String, Vec<String>)> = match &s.statement {
-            Statement::Insert(ins) => vec![(bare(&ins.table.to_string()), ins.columns.iter().map(|c| bare(&c.to_string())).collect())],
+            Statement::Insert(ins) => vec![(bare(&ins.table.to_string()), ins.columns.iter().map(|c| ident(&c.to_string())).collect())],
             Statement::Update(u) if u.table.joins.is_empty() && u.from.is_none() => match &u.table.relation {
                 TableFactor::Table { name, .. } => {
                     let cols = u.assignments.iter().flat_map(|a| match &a.target {
-                        AssignmentTarget::ColumnName(n) => vec![bare(&n.to_string())],
-                        AssignmentTarget::Tuple(ns) => ns.iter().map(|n| bare(&n.to_string())).collect(),
+                        AssignmentTarget::ColumnName(n) => vec![ident(&n.to_string())],
+                        AssignmentTarget::Tuple(ns) => ns.iter().map(|n| ident(&n.to_string())).collect(),
                     });
                     vec![(bare(&name.to_string()), cols.collect())]
                 }
@@ -1460,6 +1473,21 @@ mod tests {
     }
 
     const PRISMA: &str = "model User {\n  id        String  @id @default(uuid())\n  email     String  @unique\n  nickname  String?\n  posts     Post[]\n  @@map(\"users\")\n}\n\nmodel Post {\n  id       String  @id @default(uuid())\n  title    String\n  authorId String? @map(\"author_id\")\n  author   User?   @relation(fields: [authorId], references: [id])\n  editedAt DateTime? @updatedAt\n}\n";
+
+    #[test]
+    fn a_quoted_sql_column_keeps_its_case_and_an_unquoted_one_folds() {
+        assert_eq!(ident("\"Status\""), "Status");
+        assert_eq!(ident("job.\"Status\""), "Status");
+        assert_eq!(ident("Status"), "status");
+    }
+
+    #[test]
+    fn a_prisma_field_named_model_is_a_field_not_a_model() {
+        let tables = prisma_model("schema.prisma", "model ai_run {\n  id    String @id\n  model String?\n  notes String?\n}\n");
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].name, "ai_run");
+        assert!(tables[0].columns.iter().any(|c| c.name == "notes"), "{:?}", tables[0].columns.iter().map(|c| &c.name).collect::<Vec<_>>());
+    }
 
     #[test]
     fn prisma_nested_writes_set_the_related_rows_foreign_key_and_a_mistyped_field_is_reported() {

@@ -1,10 +1,13 @@
 // @ts-check
 import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { availableParallelism } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { Worker } from "node:worker_threads";
 
 import { EMPTY_TREE, GateError, changes, git, inGit, matches, resolveBase } from "../gates/lib.mjs";
+import { runCore } from "../gates/core.mjs";
 import { answers } from "../replay/run.mjs";
 import { loadConfig } from "../shared/config.mjs";
 import { WHOLE } from "./gate.mjs";
@@ -16,6 +19,22 @@ function reachable(url) {
 }
 
 const TAIL = 40;
+
+/**
+ * What a failed project check's output says stopped it, when that was not a test's verdict: it did not compile or load,
+ * or it could not run. Judged in core/outcome.rs; an engine that was never built says nothing.
+ * @param {string} output @param {number | null} code
+ */
+function kindOf(output, code) {
+  try {
+    const { kind, why } = runCore({ command: "outcome", options: { output, code, timedOut: false } }, { build: false }).data;
+    if (kind === "compile") return ` (does not compile or load: ${why})`;
+    if (kind === "setup") return ` (could not run: ${why || "stopped before any test"})`;
+  } catch (error) {
+    if (!(error instanceof GateError)) throw error;
+  }
+  return "";
+}
 
 /**
  * @typedef {{ file?: string, line?: number, target: string, message: string }} Finding
@@ -44,7 +63,7 @@ function runCheck(check, root, print, record) {
       const lines = output.trimEnd().split("\n");
       if (lines.length > TAIL) print(`… ${check.name}: last ${TAIL} lines of output`);
       print(lines.slice(-TAIL).join("\n"));
-      const message = `${check.name}: failed with exit ${code ?? "by signal"} | rerun: ${check.cwd === "." ? "" : `cd ${check.cwd} && `}${check.run}`;
+      const message = `${check.name}: failed with exit ${code ?? "by signal"}${kindOf(output, code)} | rerun: ${check.cwd === "." ? "" : `cd ${check.cwd} && `}${check.run}`;
       print(message);
       record.findings.push({ target: check.name, message });
       done(1);
@@ -52,15 +71,58 @@ function runCheck(check, root, print, record) {
   });
 }
 
+/** Gates that run the project's tests: one at a time, after the others, so they do not compete with each other. */
+const RUNS_TESTS = new Set(["fails-on-base", "mutation", "coverage"]);
+
+/**
+ * Worker threads that run gates side by side (cli/gate-worker.mjs). Each gate's time is mostly git and the engine in
+ * processes of their own, so a few at once finish in about the time of the slowest.
+ * @param {number} size
+ */
+function gatePool(size) {
+  /** @type {{ job: object, done: (answer: any) => void }[]} */
+  const queue = [];
+  /** @type {Worker[]} */
+  const idle = [];
+  const workers = Array.from({ length: size }, () => new Worker(new URL("./gate-worker.mjs", import.meta.url)));
+  const next = () => {
+    while (idle.length && queue.length) {
+      const worker = /** @type {Worker} */ (idle.pop());
+      const { job, done } = /** @type {typeof queue[number]} */ (queue.shift());
+      worker.once("message", (answer) => {
+        idle.push(worker);
+        done(answer);
+        next();
+      });
+      worker.postMessage(job);
+    }
+  };
+  idle.push(...workers);
+  return {
+    /** @param {{ argv: string[], cwd: string, silent: boolean }} job @returns {Promise<{ code: number, out: string[], err: string[], findings: Finding[], accepted: Finding[] }>} */
+    run: (job) => new Promise((done) => (queue.push({ job, done }), next())),
+    close: () => Promise.all(workers.map((worker) => worker.terminate())),
+  };
+}
+
 /**
  * Runs one stage, its findings going to `record`. With `silent` (`--json`) nothing is printed: what a project check or
  * replay would print is kept as the stage's output, and replay's `FAIL` lines are its findings.
  * @param {{ name: string, command: string, argv: string[], check?: { name: string, run: string, cwd: string } }} stage
  * @param {string} cwd @param {Record} record @param {boolean} silent
+ * @param {Promise<{ code: number, out: string[], err: string[], findings: Finding[], accepted: Finding[] }>} [pooled] the stage's answer from a gate worker
  * @returns {Promise<number>}
  */
-async function runStage(stage, cwd, record, silent) {
+async function runStage(stage, cwd, record, silent, pooled) {
   if (stage.check) return runCheck(stage.check, cwd, silent ? (line) => record.output.push(line) : console.log, record);
+  if (pooled) {
+    const answer = await pooled;
+    for (const line of answer.out) console.log(line);
+    for (const line of answer.err) console.error(line);
+    record.findings.push(...answer.findings);
+    record.acknowledged.push(...answer.accepted);
+    return answer.code;
+  }
   const run = (await import(`./${stage.command}.mjs`)).default;
   if (stage.command === "lint") {
     /** @param {{ file: string, line: number, rule: string, message: string }[]} found */
@@ -178,20 +240,28 @@ export default async function check(argv, { cwd }) {
   /** @type {Record[]} */
   const records = [];
   let worst = 0;
-  /** @param {typeof stages[number]} stage */
-  const runOne = async (stage) => {
+  /** @param {typeof stages[number]} stage @param {Parameters<typeof runStage>[4]} [pooled] */
+  const runOne = async (stage, pooled) => {
     // Each stage prints only its findings; this command's own line is the one success line.
     /** @type {Record} */
     const record = { name: stage.name, code: 0, findings: [], acknowledged: [], output: [] };
     records.push(record);
-    record.code = await runStage(stage, cwd, record, Boolean(flags.json));
+    record.code = await runStage(stage, cwd, record, Boolean(flags.json), pooled);
     if (record.code !== 0) failed.push(stage.name);
     worst = Math.max(worst, record.code);
   };
   const [lint, ...rest] = stages.filter((stage) => !skip.has(stage.name));
-  // Lint waits on oxlint in another process, so the gates run meanwhile; its line prints when it finishes.
+  // Lint waits on oxlint in another process, so the gates run meanwhile; its line prints when it finishes. The gates
+  // that only read run side by side in workers and print in order; those that run the tests wait for them.
   const linting = lint ? runOne(lint) : undefined;
-  for (const stage of rest) await runOne(stage);
+  const side = rest.filter((stage) => stage.command === "gate" && !RUNS_TESTS.has(stage.name));
+  const pool = side.length > 1 ? gatePool(Math.min(side.length, Math.max(2, Math.min(6, availableParallelism() - 1)))) : undefined;
+  const pending = new Map(pool ? side.map((stage) => [stage, pool.run({ argv: stage.argv, cwd, silent: Boolean(flags.json) })]) : []);
+  try {
+    for (const stage of rest) await runOne(stage, pending.get(stage));
+  } finally {
+    await pool?.close();
+  }
   await linting;
   const tag = await upgrade;
   if (git) addToLedger(cwd, flags.base ?? config.gates.base, records);

@@ -4,12 +4,15 @@ use std::path::Path;
 
 /// Files over this size are skipped: generated bundles and data, not code someone wrote.
 const MAX_BYTES: u64 = 512 * 1024;
+const SCHEMA_MAX_BYTES: u64 = 32 * 1024 * 1024;
 
 /// A file's text, or None when it is missing, too large, binary or generated.
 pub fn read(root: &str, file: &str) -> Option<String> {
     let path = Path::new(root).join(file);
     let meta = std::fs::metadata(&path).ok()?;
-    if !meta.is_file() || meta.len() > MAX_BYTES {
+    // A schema is one file however many tables it holds: a large Prisma schema or SQL dump is still written by hand.
+    let limit = if file.ends_with(".prisma") || file.ends_with(".sql") { SCHEMA_MAX_BYTES } else { MAX_BYTES };
+    if !meta.is_file() || meta.len() > limit {
         return None;
     }
     let text = std::fs::read_to_string(&path).ok()?;
@@ -97,6 +100,14 @@ pub fn stem(word: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_large_schema_is_read_and_a_large_source_file_is_not() {
+        let big = "x".repeat(600 * 1024);
+        let root = temp_tree("text-limits", &[("schema.prisma", big.as_str()), ("bundle.ts", big.as_str())]);
+        assert!(read(&root, "schema.prisma").is_some());
+        assert!(read(&root, "bundle.ts").is_none());
+    }
 
     #[test]
     fn splits_identifiers_and_lines() {

@@ -92,6 +92,7 @@
             "supabase",
             "server",
             "start",
+            "effect",
             "payments",
             "auth",
             "swift"
@@ -176,6 +177,7 @@
               "env",
               "secrets",
               "auth",
+              "structure",
               "fails-on-base",
               "mutation",
               "coverage"
@@ -205,7 +207,8 @@
             "routes",
             "env",
             "secrets",
-            "auth"
+            "auth",
+            "structure"
           ],
           "description": "Gates `intersite check` runs. `fails-on-base`, `mutation` and `coverage` run the tests and need `testCmd`; `check --full` adds `fails-on-base` on its own when the change says it is a fix and `testCmd` is set."
         },
@@ -496,6 +499,7 @@
                 "enum": [
                   "baseline",
                   "twice",
+                  "race",
                   "cross-tenant",
                   "ui",
                   "contract"

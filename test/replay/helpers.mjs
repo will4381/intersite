@@ -36,7 +36,9 @@ function reply(res, status, body) {
  * "n+1" (each request runs more queries, as reported in its Server-Timing header), "list-leak" (`GET /notes` lists every
  * tenant's notes while reads by ID stay scoped). Other switches: "fresh" (random IDs and a `createdAt` on each note, a
  * `requestId` on each list, as a real server answers), "migration" (note text comes back upper-cased), "reorder" (lists
- * come back newest first). `GET /plans` is a catalogue shared by both tenants.
+ * come back newest first). `GET /plans` is a catalogue shared by both tenants. `POST /webhooks/payments` credits a
+ * payment event once per event ID ("double-credit": every delivery credits; "race": the check and the credit are apart,
+ * so two deliveries at once both credit); `GET /__state` counts the credits.
  */
 export async function startTarget() {
   /** @type {Set<string>} */
@@ -46,7 +48,10 @@ export async function startTarget() {
   /** @type {Map<string, { id: string, tenant: string, text: string, archived: boolean, createdAt: string }>} */
   let notes = new Map();
   let counter = 0;
+  /** @type {{ id: string, event: string }[]} */
+  let credits = [];
   const reset = () => {
+    credits = [];
     notes = new Map([["note_seed01", { id: "note_seed01", tenant: "a", text: "seed", archived: false, createdAt: new Date().toISOString() }]]);
     counter = 0;
   };
@@ -67,6 +72,15 @@ export async function startTarget() {
     const method = req.method ?? "GET";
     if (url.pathname === "/__reset") return reset(), reply(res, 200, {});
     if (url.pathname === "/stats") return reply(res, 200, { ok: !bugs.has("ledger") });
+    if (url.pathname === "/__state") return reply(res, 200, { credits: credits.length });
+    if (method === "POST" && url.pathname === "/webhooks/payments") {
+      const seen = credits.find((credit) => credit.event === body?.event);
+      if (bugs.has("race")) await new Promise((done) => setTimeout(done, 20));
+      if (seen && !bugs.has("double-credit")) return reply(res, 200, { credit: { id: seen.id } });
+      const credit = { id: nextId("crd"), event: body?.event };
+      credits.push(credit);
+      return reply(res, 200, { credit: { id: credit.id } });
+    }
     log.push({ method, path: url.pathname, body, headers: req.headers });
     res.setHeader("server-timing", `queries;desc=${bugs.has("n+1") ? 9 : 2}, db;dur=3.1`);
 
@@ -171,6 +185,11 @@ export function notesSession(session = "s-notes", start = 1000) {
     recorded({ id: `${session}-3`, session, seq: start + 3, method: "POST", route: "/notes/:id/comments", path: "/notes/note_prodA1/comments", body: { noteId: "note_prodA1", text: "c" }, status: 201, json: { comment: { id: "cmt_prodB2", noteId: "note_prodA1" } } }),
     recorded({ id: `${session}-4`, session, seq: start + 4, method: "POST", route: "/notes/:id/archive", path: "/notes/note_prodA1/archive", status: 200, json: { note: { id: "note_prodA1", archived: true } } }),
   ];
+}
+
+/** One payment webhook delivery, signed by the provider rather than a user. */
+export function paymentSession(session = "s-pay") {
+  return [recorded({ id: `${session}-1`, session, seq: 7001, method: "POST", route: "/webhooks/payments", path: "/webhooks/payments", body: { event: "first" }, status: 200, json: { credit: { id: "crd_prod0001" } } })];
 }
 
 /** Reads a note the session did not create. */

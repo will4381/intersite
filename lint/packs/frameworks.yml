@@ -48,5 +48,30 @@ rules:
       - "export const events = pgTable('events', { id: serial('id'), note: text('note') });"
       - "console.table(rows);"
       - "export const members = pgTable('members', { orgId: uuid('org_id').notNull(), userId: uuid('user_id').notNull() }, (t) => [primaryKey({ columns: [t.orgId, t.userId] })]);"
+  - id: no-unthrown-router-redirect
+    needs: '@tanstack/(?:react|solid|vue)-(?:router|start)'
+    pack: start
+    selector: "ExpressionStatement > CallExpression.expression[callee.name=/^(redirect|notFound)$/], ExpressionStatement > CallExpression.expression[callee.object.name=/^(Route|route)$/][callee.property.name=/^(redirect|notFound)$/]"
+    message: "In TanStack Router and Start, redirect() and notFound() only build the value: written as a statement they do nothing, and the loader or beforeLoad carries on as if the user were allowed through. Throw it: throw redirect({ to: '/login' })."
+    bad:
+      - "import { createFileRoute, redirect } from '@tanstack/react-router';\nexport const Route = createFileRoute('/admin')({\n  beforeLoad: ({ context }) => {\n    if (!context.user) redirect({ to: '/login' });\n  },\n});"
+      - "import { notFound } from '@tanstack/react-router';\nexport async function loadPost(id: string) {\n  const post = await getPost(id);\n  if (!post) {\n    notFound();\n  }\n  return post;\n}"
+      - "import { redirect } from '@tanstack/react-start';\nexport const requireUser = async (user?: User) => {\n  if (!user) {\n    redirect({ to: '/sign-in' });\n  }\n};"
+    good:
+      - "import { createFileRoute, redirect } from '@tanstack/react-router';\nexport const Route = createFileRoute('/admin')({\n  beforeLoad: ({ context }) => {\n    if (!context.user) throw redirect({ to: '/login' });\n  },\n});"
+      - "import { notFound } from '@tanstack/react-router';\nexport async function loadPost(id: string) {\n  const post = await getPost(id);\n  if (!post) throw notFound();\n  return post;\n}"
+      - "import { redirect } from 'next/navigation';\nexport default async function Page() {\n  const user = await getUser();\n  if (!user) redirect('/login');\n  return null;\n}"
+      - "import { redirect } from '@tanstack/react-router';\nexport const toLogin = () => redirect({ to: '/login' });"
+  - id: no-nested-effect-run
+    needs: 'from [\x27\x22]effect[\x27\x22/]'
+    pack: effect
+    selector: "CallExpression[callee.object.name='Effect'][callee.property.name='gen'] CallExpression[callee.object.name='Effect'][callee.property.name=/^run(Promise|Sync|Fork|PromiseExit|SyncExit|Callback)$/]"
+    message: "Running an effect inside Effect.gen starts a second runtime: it loses this fiber's services and context, is not interrupted with it, and its typed failure becomes an untyped rejection or throw. Compose it instead: yield* the effect."
+    bad:
+      - "import { Effect } from 'effect';\nexport const charge = (id: string) => Effect.gen(function* () {\n  const user = yield* loadUser(id);\n  const receipt = yield* Effect.promise(() => Effect.runPromise(bill(user)));\n  return receipt;\n});"
+      - "import { Effect } from 'effect';\nexport const program = Effect.gen(function* () {\n  const config = Effect.runSync(readConfig);\n  yield* start(config);\n});"
+    good:
+      - "import { Effect } from 'effect';\nexport const charge = (id: string) => Effect.gen(function* () {\n  const user = yield* loadUser(id);\n  return yield* bill(user);\n});"
+      - "import { Effect } from 'effect';\nconst program = Effect.gen(function* () {\n  yield* start;\n});\nEffect.runPromise(program);"
 builtin:
   - { rule: nextjs/no-async-client-component, pack: next }

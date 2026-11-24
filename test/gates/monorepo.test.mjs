@@ -12,7 +12,7 @@ import { runLint } from "../lint/fixture.mjs";
 import { repo, run } from "./repo.mjs";
 
 const AT = "apps/web";
-const RUN = ["test-integrity", "duplicates", "similar", "new-deps", "artifacts", "unused", "naming", "style-drift", "value-drift", "sql", "regex", "decisions", "renames", "schema-drift", "columns", "routes", "env", "secrets", "auth"];
+const RUN = ["test-integrity", "duplicates", "similar", "new-deps", "artifacts", "unused", "naming", "style-drift", "value-drift", "sql", "regex", "decisions", "renames", "schema-drift", "columns", "routes", "env", "secrets", "auth", "structure"];
 const helper = `export function total(items) {
   let sum = 0;
   for (const item of items) {
@@ -110,6 +110,8 @@ test("every gate names files relative to the project, and finds originals in a s
     secrets: ["deploy/values.yaml:1 Stripe live key (sk_live_…): remove it and rotate it, because a secret that reached git (or a pushed branch) is leaked; read it from an environment variable or secret store. Do not just move it to another tracked file"],
     // Project-relative auth findings are covered in auth.test.mjs; this layout has no endpoints.
     auth: ["ok gate auth: 0 endpoints in 19 files, 0 check who is calling"],
+    // Project-relative structure findings are covered in structure.test.mjs; this layout has no circles.
+    structure: ["ok gate structure: 19 files, 19 declarations: 0 module cycles, 0 tangles, 0 field leaks, 0 shallow modules"],
   });
   const json = await run(r.cwd, ["artifacts", "--json"]);
   assert.deepEqual(JSON.parse(json.out[0]).findings.map((/** @type {{ target: string }} */ f) => f.target), ["PLAN.md"]);

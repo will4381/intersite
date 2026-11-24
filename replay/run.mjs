@@ -2,10 +2,10 @@
 import { UI_METHOD } from "../shared/case.mjs";
 import { idsOf, shapeDiff, shapeOf } from "../shared/shape.mjs";
 import { countersOf } from "./metrics.mjs";
-import { idMatcher, normalise } from "./snapshot.mjs";
+import { compareSnapshots, describe, idMatcher, normalise } from "./snapshot.mjs";
 
 /** @typedef {import("../shared/case.mjs").Case} Case */
-/** @typedef {"baseline" | "twice" | "cross-tenant" | "ui" | "contract"} Mode */
+/** @typedef {"baseline" | "twice" | "race" | "cross-tenant" | "ui" | "contract"} Mode */
 /**
  * The project's replay adapter (see CONTRACT.md "Replay adapter").
  * @typedef {object} Adapter
@@ -14,7 +14,10 @@ import { idMatcher, normalise } from "./snapshot.mjs";
  * @property {(options: { target: string }) => Promise<void>} [reset]
  * @property {(request: { caseId: string, method: string, route: string }) => Record<string, string> | Promise<Record<string, string>>} [headers]
  *   Headers for every replayed request, signed in or not: an API version the server requires, a per-request idempotency key.
- * @property {{ name: string, check: (options: { target: string, fetch: typeof fetch }) => Promise<string | undefined> }[]} [invariants]
+ * @property {(options: { target: string }) => Promise<unknown>} [state]
+ *   The application's observable state as JSON (row counts, balances, statuses), read from the test environment.
+ *   Invariants get it from before and after the session, and `twice` compares it around a repeated write.
+ * @property {{ name: string, check: (options: { target: string, fetch: typeof fetch, before?: unknown, after?: unknown }) => Promise<string | undefined> }[]} [invariants]
  */
 /**
  * @typedef {object} Step
@@ -40,7 +43,7 @@ import { idMatcher, normalise } from "./snapshot.mjs";
  * One pass over a session in one mode. `known` holds every ID sent or answered so far; `mine` the IDs the owner's
  * writes produced, `theirs` those another account's writes produced.
  * @typedef {{ mode: Mode, steps: Step[], send: ReturnType<typeof sender>, auth: ReturnType<typeof signer>, pattern: RegExp,
- *   known: Set<string>, mine: Set<string>, theirs: Set<string> }} Pass
+ *   known: Set<string>, mine: Set<string>, theirs: Set<string>, headersFor: (request: Case["request"], item: Case) => Promise<Record<string, string>> }} Pass
  */
 
 const DAY = 86_400_000;
@@ -54,6 +57,22 @@ const STREAM = /^text\/event-stream\b/i;
 const REFUSED = [400, 401, 403, 404, 422];
 // The headers that carry a credential, whose values an answer must never echo; an account selector or an origin may be.
 const CREDENTIAL_HEADER = /^(?:authorization|cookie|proxy-authorization)$|token|secret|api-?key|session/i;
+// A provider delivers a webhook at least once, so a repeat must change nothing.
+const WEBHOOK = /(?:^|\/)webhooks?(?:\/|$)/i;
+
+/**
+ * Whether sending this write again must leave the application as one send did: PUT and DELETE by HTTP's definition, a
+ * webhook, and any write sent with an idempotency key (the adapter's `headers`).
+ * @param {Case["request"]} request @param {Record<string, string>} [headers]
+ */
+const mustRepeatSafely = (request, headers = {}) =>
+  request.method === "PUT" || request.method === "DELETE" || WEBHOOK.test(request.route) || Object.keys(headers).some((name) => /^idempotency-key$/i.test(name));
+
+/** How two states differ, as one line, or undefined when they are the same. @param {unknown} before @param {unknown} after */
+function stateChange(before, after) {
+  const [found] = compareSnapshots({ s: { status: 0, body: before } }, { s: { status: 0, body: after } }, []);
+  return found && describe(found.differences);
+}
 
 /** Whether anything answers HTTP at this URL, whatever the status. @param {string} url */
 export function answers(url) {
@@ -104,12 +123,13 @@ async function replaySession({ session, cases }, modes, context, ui) {
   const result = { session, steps: [] };
   // With baseline in the run, the contract lint reads the baseline answers instead of sending everything again.
   for (const mode of modes.filter((item) => item !== "contract" || !modes.includes("baseline"))) {
-    const skipped = mode === "ui" && ui ? await ui.replay(ordered, result.steps, context) : await replayOnce(mode, api, result, context);
+    const { skipped, before } = mode === "ui" && ui ? { skipped: await ui.replay(ordered, result.steps, context), before: undefined } : await replayPass(mode, api, result, context);
     if (skipped && !result.skipped) result.skipped = skipped;
     const last = api.at(-1);
     if (mode !== "baseline" || !last || skipped) continue;
+    const after = await context.adapter.state?.({ target: context.target });
     for (const invariant of context.adapter.invariants ?? []) {
-      const message = await invariant.check({ target: context.target, fetch: context.fetch });
+      const message = await invariant.check({ target: context.target, fetch: context.fetch, before, after });
       result.steps.push({
         mode, caseId: last.id, method: "INVARIANT", route: invariant.name,
         ...(message ? { result: "failed", reason: message } : { result: "passed" }),
@@ -120,16 +140,28 @@ async function replaySession({ session, cases }, modes, context, ui) {
 }
 
 /**
- * One pass over a session in one API mode. Returns the skip reason when an ID could not be resolved.
+ * One pass over a session in one API mode. Returns the skip reason when an ID could not be resolved, and the adapter's
+ * state as the pass began.
  * @param {Mode} mode @param {Case[]} cases @param {SessionResult} result @param {Context} context
+ * @returns {Promise<{ skipped: string | undefined, before: unknown }>}
  */
-async function replayOnce(mode, cases, result, context) {
-  const { target, adapter, pattern } = context;
+async function replayPass(mode, cases, result, context) {
+  const { target, adapter } = context;
   await adapter.reset?.({ target });
+  const before = mode === "baseline" ? await adapter.state?.({ target }) : undefined;
+  return { skipped: await replayOnce(mode, cases, result, context), before };
+}
+
+/** The steps of one pass. Returns the skip reason when an ID could not be resolved. @param {Mode} mode @param {Case[]} cases @param {SessionResult} result @param {Context} context */
+async function replayOnce(mode, cases, result, context) {
+  const { adapter, pattern } = context;
   /** @type {Map<string, string>} recorded ID -> replayed ID */
   const ids = new Map();
   /** @type {Pass} */
-  const pass = { mode, steps: result.steps, send: sender(context), auth: signer(context), pattern, known: new Set(), mine: new Set(), theirs: new Set() };
+  const pass = {
+    mode, steps: result.steps, send: sender(context), auth: signer(context), pattern, known: new Set(), mine: new Set(), theirs: new Set(),
+    headersFor: async (/** @type {Case["request"]} */ request, /** @type {Case} */ item) => (await adapter.headers?.({ caseId: item.id, method: request.method, route: request.route })) ?? {},
+  };
   const snapshot = context.snapshots && mode === "baseline" ? { created: pass.mine, numbers: new Map(), from: Date.now() } : undefined;
   const unsigned = await signInFailure(cases, pass);
   if (unsigned) {
@@ -160,8 +192,11 @@ async function replayOnce(mode, cases, result, context) {
     if (mode === "cross-tenant" && !open) await asOtherAccount(item, request, pass);
 
     const headers = await pass.auth(kind, false);
-    const first = await pass.send(request, item, headers);
+    // In race, a write that must repeat safely is sent twice at once, as a retrying client or a provider would.
+    const racing = mode === "race" && method !== "GET" && mustRepeatSafely(request, await pass.headersFor(request, item));
+    const [first, twin] = await Promise.all([pass.send(request, item, headers), racing ? pass.send(request, item, headers) : undefined]);
     learnIds(item, first.json, ids);
+    if (twin) record(pass, item, ...raceVerdict(first, twin, pattern));
     if (context.contract && (mode === "baseline" || mode === "contract")) {
       const sent = Object.entries(headers).filter(([name]) => CREDENTIAL_HEADER.test(name)).map(([, value]) => value);
       (result.live ??= {})[item.id] = { status: first.status, json: first.json, text: first.text, contentType: first.contentType, sent };
@@ -175,16 +210,42 @@ async function replayOnce(mode, cases, result, context) {
       if (Object.keys(first.counters).length) /** @type {Step} */ (pass.steps.at(-1)).counters = first.counters;
       if (snapshot) (result.snapshot ??= {})[item.id] = { status: first.status, body: normalise(first.json ?? null, snapshot) };
     }
-    if (mode === "twice" && method !== "GET" && (first.status >= 500 || first.status === 0)) {
-      // The write failed the first time: that is baseline's finding, and a resend says nothing about repeating it.
-      record(pass, item, "skipped", `the first send already got ${first.status}, so a resend says nothing about repeating it`);
-    } else if (mode === "twice" && method !== "GET") {
-      const second = await pass.send(request, item, await pass.auth(kind, false));
-      if (second.status >= 500 || second.status === 0) record(pass, item, "failed", `second send got ${second.status}, first got ${first.status}`, second.exchange);
-      else record(pass, item, "passed");
-    }
+    if (mode === "twice" && method !== "GET") await repeat(item, request, first, pass, context);
   }
   return undefined;
+}
+
+/**
+ * `twice`: sends a write again. The second answer must not be a server error, and for a write that must repeat safely
+ * the adapter's state must not change again.
+ * @param {Case} item @param {Case["request"]} request @param {{ status: number, headers: Record<string, string> }} first
+ * @param {Pass} pass @param {Context} context
+ */
+async function repeat(item, request, first, pass, context) {
+  // The write failed the first time: that is baseline's finding, and a resend says nothing about repeating it.
+  if (first.status >= 500 || first.status === 0) return record(pass, item, "skipped", `the first send already got ${first.status}, so a resend says nothing about repeating it`);
+  const { adapter, target } = context;
+  const watch = adapter.state && mustRepeatSafely(request, first.headers);
+  const once = watch ? await adapter.state?.({ target }) : undefined;
+  const second = await pass.send(request, item, await pass.auth(item.actor.kind, false));
+  const changed = watch ? stateChange(once, await adapter.state?.({ target })) : undefined;
+  if (second.status >= 500 || second.status === 0) record(pass, item, "failed", `second send got ${second.status}, first got ${first.status}`, second.exchange);
+  else if (changed) record(pass, item, "failed", `the second send changed the state again (${changed}): a repeated ${WEBHOOK.test(request.route) ? "webhook" : request.method} must apply once`, second.exchange);
+  else record(pass, item, "passed");
+}
+
+/**
+ * Two identical writes sent at once: neither may fail with a server error, and they may not create two records.
+ * @param {{ status: number, json: unknown, exchange: { sent: string, got: string } }} first @param {typeof first} twin @param {RegExp} pattern
+ * @returns {[Step["result"], string?, { sent: string, got: string }?]}
+ */
+function raceVerdict(first, twin, pattern) {
+  const broke = [first, twin].find((answer) => answer.status >= 500 || answer.status === 0);
+  if (broke) return ["failed", `sent twice at once, one got ${broke.status} (the other ${broke === first ? twin.status : first.status})`, broke.exchange];
+  const made = [first, twin].map((answer) => (answer.status < 300 ? Object.values(idsOf(answer.json, pattern)) : []));
+  const apart = made[0].length && made[1].length && !made[0].some((id) => made[1].includes(id));
+  if (apart) return ["failed", `sent twice at once, it created two records (${made[0][0]} and ${made[1][0]}): only one may apply`, twin.exchange];
+  return ["passed"];
 }
 
 /** Whether `replay.crossTenantIgnore` accepts another account reaching this case's route. @param {Context} context @param {Case} item */
@@ -287,14 +348,14 @@ function sender({ target, fetch, adapter }) {
       .catch((/** @type {Error} */ error) => error);
     if (answered instanceof Error) {
       const cause = answered.name === "TimeoutError" ? `nothing within ${ANSWER_MS / 1000}s` : /** @type {{ code?: string }} */ (answered.cause)?.code ?? answered.message;
-      return { status: 0, json: undefined, text: "", contentType: "", exchange: { sent, got: `no answer (${cause})` }, counters: {} };
+      return { status: 0, json: undefined, text: "", contentType: "", exchange: { sent, got: `no answer (${cause})` }, counters: {}, headers };
     }
     const { response, text } = answered;
     let json;
     try { json = JSON.parse(text); } catch { json = undefined; }
     return {
       status: response.status, json, text, contentType: response.headers.get("content-type") ?? "",
-      exchange: { sent, got: clip(`${response.status} ${text}`) }, counters: countersOf(response.headers.get("server-timing")),
+      exchange: { sent, got: clip(`${response.status} ${text}`) }, counters: countersOf(response.headers.get("server-timing")), headers,
     };
   };
 }
@@ -372,6 +433,8 @@ export function learnIds(item, json, ids) {
 function counts(mode, item, pattern) {
   if (mode === "contract") return false;
   if (mode === "twice") return item.request.method !== "GET";
+  // Whether the adapter adds an idempotency key is known only when sending: such a write is checked, never skipped.
+  if (mode === "race") return item.request.method !== "GET" && mustRepeatSafely(item.request);
   if (mode === "cross-tenant") {
     if (item.actor.kind === "anonymous") return false;
     let named = false;

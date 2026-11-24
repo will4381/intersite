@@ -82,3 +82,42 @@ test("a mutant that hangs the tests times out, counts as killed, and the worktre
   assert.equal(code, 0);
   assert.equal(r.worktrees(), 1);
 });
+
+test("removing an access check, a tenant filter or an idempotency guard no test notices is reported by what it protected", async () => {
+  const src = `export async function close(db, user, id) {
+  if (!user) throw new Error("signed out");
+  const existing = db.closed.get(id);
+  if (existing) return existing;
+  const job = db.jobs.find({ where: { id, orgId: user.orgId } });
+  db.closed.set(id, job);
+  return job;
+}
+`;
+  const db = "export const db = { closed: new Map(), jobs: { find: ({ where }) => ({ id: where.id, orgId: where.orgId }) } };\n";
+  const r = repo({ "src/close.mjs": "export const close = () => {};\n", "src/db.mjs": db }, { testCmd: "node test/close.test.mjs" });
+  r.write({
+    "src/close.mjs": src,
+    "test/close.test.mjs": 'import assert from "node:assert/strict";\nimport { close } from "../src/close.mjs";\nimport { db } from "../src/db.mjs";\nassert.equal((await close(db, { orgId: "o1" }, "j1")).id, "j1");\n',
+  });
+  const { code, out } = await run(r.cwd, ["mutation", "--json"]);
+  assert.equal(code, 1);
+  const report = JSON.parse(out[0]);
+  assert.deepEqual(report.findings.map((/** @type {{ message: string }} */ f) => f.message.split(": write")[0]), [
+    'src/close.mjs:2 no test fails when `if (!user) throw new Error("signed out");` is removed (an access check)',
+    "src/close.mjs:4 no test fails when `if (existing) return existing;` is removed (an idempotency guard)",
+    "src/close.mjs:5 no test fails when the tenant filter `, orgId: user.orgId` is dropped from the query",
+  ]);
+  assert.match(report.summary, /semantic: access 0\/1, idempotency 0\/1, tenant 0\/1/);
+});
+
+test("a mutant that only breaks the build is invalid, not killed", async () => {
+  const r = repo({ "src/a.mjs": "export const a = 1;\n" }, { testCmd: "node check.mjs" });
+  r.write({
+    "src/a.mjs": "export async function save(user) {\n  await requireUser(user);\n  return 1;\n}\nexport const requireUser = async () => {};\n",
+    // Stands in for a type-checking runner: the file without its check no longer compiles.
+    "check.mjs": 'import { readFileSync } from "node:fs";\nif (!readFileSync("src/a.mjs", "utf8").includes("requireUser(user)")) { console.log("src/a.mjs(2,3): error TS2554: Expected 1 arguments"); process.exit(2); }\n',
+  });
+  const { code, out } = await run(r.cwd, ["mutation", "--max", "1", "--json"]);
+  assert.equal(code, 0, out.join("\n"));
+  assert.equal(JSON.parse(out[0]).summary, "0/0 mutants killed, 1 invalid (did not compile or run)");
+});

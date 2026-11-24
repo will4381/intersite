@@ -74,7 +74,10 @@ npx intersite replay --id <request-id>
 npx intersite gate fails-on-base --cmd "npm test"
 ```
 
-`fails-on-base` runs your new or changed tests against the code before your fix; they must fail there. Use the
+`fails-on-base` runs your new or changed tests with your fix, where they must pass, and against the code before it,
+where they must fail on their own assertion: a test that fails there only because it does not compile or load (it
+imports something your fix added), could not run, or never finishes proves nothing, and neither does another test
+failing. Use the
 project's test command; with `gates.testCmd` set in `intersite.yml`, `--cmd` can be left out, and
 `npx intersite check --full` runs it on its own whenever the branch name or a commit message says fix. Then:
 

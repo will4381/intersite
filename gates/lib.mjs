@@ -37,15 +37,37 @@ export function annotation(prefix, title, { file, line }, text) {
   return `::error ${where}::${escape(text)}`;
 }
 
+/** @type {Map<string, string> | undefined} */
+let remembered;
+
+/**
+ * Remembers what git answers for the rest of this process: `intersite check`'s gate workers call it, since the
+ * working tree does not change while the gates read it, so the gates share one diff and one file list instead of
+ * asking git again each. Nothing else calls it: a process that edits files between gates must not.
+ */
+export function rememberGit() {
+  remembered = new Map();
+}
+
+/** `fn`'s answer, remembered under `key` after `rememberGit()`. @param {string} key @param {() => string} fn */
+const recall = (key, fn) => {
+  if (!remembered) return fn();
+  if (!remembered.has(key)) remembered.set(key, fn());
+  return /** @type {string} */ (remembered.get(key));
+};
+
 /**
  * @param {string} cwd
  * @param {string[]} args
- * @param {NodeJS.ProcessEnv} [env]
+ * @param {NodeJS.ProcessEnv} [env] a git run with its own environment (a throwaway index) is never remembered
  */
 export function git(cwd, args, env) {
-  const run = spawnSync("git", args, { cwd, encoding: "utf8", env, maxBuffer: 1 << 30 });
-  if (run.status !== 0) throw new GateError(`git ${args.join(" ")} failed: ${run.stderr.trim().split("\n")[0]}`);
-  return run.stdout;
+  const ask = () => {
+    const run = spawnSync("git", args, { cwd, encoding: "utf8", env, maxBuffer: 1 << 30 });
+    if (run.status !== 0) throw new GateError(`git ${args.join(" ")} failed: ${run.stderr.trim().split("\n")[0]}`);
+    return run.stdout;
+  };
+  return env ? ask() : recall(JSON.stringify([cwd, args]), ask);
 }
 
 /** JavaScript and TypeScript source files. */
@@ -142,26 +164,52 @@ export const listFiles = (cwd, spec = WORK_TREE) => [...new Set(git(cwd, ["ls-fi
  * @param {string[]} [spec]
  */
 export function workingDiff(cwd, argsList, spec = projectSpec(cwd)) {
+  if (remembered) {
+    // One throwaway index for the process, each diff of it asked once.
+    const env = { ...process.env, GIT_INDEX_FILE: keptIndex(cwd, spec) };
+    return argsList.map((args) => recall(JSON.stringify(["diff", cwd, spec, args]), () => git(cwd, ["diff", "--cached", "--no-color", "--no-ext-diff", "--relative", ...args, "--", ...spec], env)));
+  }
   const dir = mkdtempSync(join(tmpdir(), "intersite-index-"));
   const forget = onInterrupt(() => rmSync(dir, { recursive: true, force: true }));
   try {
-    const index = join(dir, "index");
-    const real = resolve(cwd, git(cwd, ["rev-parse", "--git-path", "index"]).trim());
-    // Starting from a copy of the real index reuses its stat cache, so unchanged files are not rehashed.
-    // The copy keeps the real index's timestamp: git rehashes a file only when its mtime is not older than the index,
-    // so a newer-looking copy would hide a same-size edit made in the same second as the last commit.
-    if (existsSync(real)) {
-      copyFileSync(real, index);
-      const { atime, mtime } = statSync(real);
-      utimesSync(index, atime, mtime);
-    }
-    const env = { ...process.env, GIT_INDEX_FILE: index };
-    git(cwd, ["add", "-A", "--", ...spec], env);
+    const env = { ...process.env, GIT_INDEX_FILE: fillIndex(cwd, spec, dir) };
     return argsList.map((args) => git(cwd, ["diff", "--cached", "--no-color", "--no-ext-diff", "--relative", ...args, "--", ...spec], env));
   } finally {
     forget();
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/**
+ * A throwaway index in `dir` holding the working tree under `spec`. It starts as a copy of the real index, reusing its
+ * stat cache so unchanged files are not rehashed, and keeps the real index's timestamp: git rehashes a file only when
+ * its mtime is not older than the index, so a newer-looking copy would hide a same-size edit made in the same second as
+ * the last commit.
+ * @param {string} cwd @param {string[]} spec @param {string} dir @returns {string} the index's path
+ */
+function fillIndex(cwd, spec, dir) {
+  const index = join(dir, "index");
+  const real = resolve(cwd, git(cwd, ["rev-parse", "--git-path", "index"]).trim());
+  if (existsSync(real)) {
+    copyFileSync(real, index);
+    const { atime, mtime } = statSync(real);
+    utimesSync(index, atime, mtime);
+  }
+  git(cwd, ["add", "-A", "--", ...spec], { ...process.env, GIT_INDEX_FILE: index });
+  return index;
+}
+
+/** @type {Map<string, string>} the index each project's working tree was read into, kept while git is remembered */
+const kept = new Map();
+/** @param {string} cwd @param {string[]} spec */
+function keptIndex(cwd, spec) {
+  const key = JSON.stringify([cwd, spec]);
+  if (!kept.has(key)) {
+    const dir = mkdtempSync(join(tmpdir(), "intersite-index-"));
+    if (!kept.size) process.once("exit", () => kept.forEach((index) => rmSync(dirname(index), { recursive: true, force: true })));
+    kept.set(key, fillIndex(cwd, spec, dir));
+  }
+  return /** @type {string} */ (kept.get(key));
 }
 
 /**
@@ -349,16 +397,25 @@ export function onInterrupt(cleanup) {
  * so a `node --test` command run from inside a test run does not silently skip.
  * @param {string} cmd
  * @param {string} cwd
- * @param {{ timeout?: number, output?: "ignore" | "stderr", env?: Record<string, string> }} [options] timeout in
- *   seconds; `env` adds to the environment
- * @returns {Promise<{ code: number | null, timedOut: boolean }>}
+ * @param {{ timeout?: number, output?: "ignore" | "stderr" | "keep", env?: Record<string, string> }} [options] timeout in
+ *   seconds; `env` adds to the environment. `stderr` passes what the command prints on to stderr and `keep` does not;
+ *   both return the end of it as `text`
+ * @returns {Promise<{ code: number | null, timedOut: boolean, text: string }>}
  */
 export function sh(cmd, cwd, { timeout = 0, output = "stderr", env: more = {} } = {}) {
   const env = { ...process.env, ...more };
   delete env.NODE_TEST_CONTEXT;
-  const out = output === "stderr" ? 2 : "ignore";
+  const out = output === "ignore" ? "ignore" : "pipe";
   const child = spawn(cmd, { cwd, env, shell: true, detached: true, stdio: ["ignore", out, out] });
   const forget = onInterrupt(() => killGroup(child.pid));
+  let text = "";
+  // ponytail: keeps the last 64 KB, where runners print their failures; more if a runner's summary comes first
+  const keep = (/** @type {Buffer} */ chunk) => {
+    if (output === "stderr") process.stderr.write(chunk);
+    text = (text + chunk).slice(-65_536);
+  };
+  child.stdout?.on("data", keep);
+  child.stderr?.on("data", keep);
   return new Promise((done) => {
     let timedOut = false;
     const timer = timeout
@@ -372,7 +429,8 @@ export function sh(cmd, cwd, { timeout = 0, output = "stderr", env: more = {} } 
       // Grandchildren the shell left behind would keep writing into a worktree about to be removed.
       killGroup(child.pid);
       forget();
-      done({ code, timedOut });
+      // What it printed is read to the end before answering.
+      child.on("close", () => done({ code, timedOut, text }));
     });
   });
 }

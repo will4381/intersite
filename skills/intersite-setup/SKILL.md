@@ -114,7 +114,9 @@ must return a user from a different account; signing up a fresh one as the app d
 every request needs whoever sends it (an API version) or that must differ per request (an idempotency key: use the
 case ID, so `twice` resends the same one) go in `headers({ caseId, method, route })`. Implement `resolveId` by mapping
 an ID's prefix to a seeded record of that kind, or, when replay runs on a copy of the database the traffic was
-recorded against, return the ID unchanged. Implement `reset` if there is a reseed command. Never use real user
+recorded against, return the ID unchanged. Implement `reset` if there is a reseed command, and `state({ target })` if
+the test database can be read (row counts, balances, statuses as JSON): invariants then get it from before and after
+each session, and `twice` checks a repeated PUT, DELETE, webhook or keyed write changes nothing. Never use real user
 credentials: only seeded test accounts.
 
 Optional: have the server send `Server-Timing: queries;desc=<n>` per request (count queries in the database

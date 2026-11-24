@@ -519,7 +519,11 @@ fn compare_tsconfig(before: &Value, now: &Value, out: &mut Vec<Weakening>) {
 // ---------- package.json scripts ----------
 
 static CHECK_SCRIPT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:test|tests|check|lint|typecheck|type-check|types|tsc|ci|verify|validate)(?::[\w:-]+)?$").unwrap());
-static FORGIVING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\|\|\s*(?:true\b|exit\s+0\b|:\s*(?:$|[;&|)]))|;\s*exit\s+0\b|--passWithNoTests\b|--pass-with-no-tests\b|--no-error-on-unmatched-pattern\b|\bcontinue-on-error\b").unwrap());
+/// What makes a check command pass more easily: its failure swallowed, no tests counted as a pass, or fewer tests or
+/// files run (only those changed or related, matching a name, minus an exclusion), or warnings hidden from a limit.
+static FORGIVING: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\|\|\s*(?:true\b|exit\s+0\b|:\s*(?:$|[;&|)]))|;\s*exit\s+0\b|--passWithNoTests\b|--pass-with-no-tests\b|--no-error-on-unmatched-pattern\b|\bcontinue-on-error\b|--(?:changed|onlyChanged|only-changed|findRelatedTests|lastCommit|testNamePattern|test-name-pattern|grep|exclude|ignore-pattern|quiet)\b").unwrap()
+});
 static TRIVIAL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*(?:echo\b[^&|;]*|exit\s+0|true|:)?\s*$").unwrap());
 static PATH_TOKEN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[\w.@-]*(?:/|\*)[^\s]*$|^[\w.-]+\.(?:[cm]?[jt]sx?|swift|json)$|^(?:src|lib|app|apps|packages|test|tests|spec|e2e|server|client|components|pages|api|core|shared)$").unwrap());
 
@@ -929,7 +933,7 @@ pub fn hook(request: &Request) -> Result<Answer, String> {
             lost.push(format!("assertions {} → {}", was.1, is.1));
         }
         if is.2 > was.2 {
-            lost.push(format!("skips and todos {} → {}", was.2, is.2));
+            lost.push(format!("skipped, focused or inverted tests {} → {}", was.2, is.2));
         }
         if !lost.is_empty() {
             findings.push(Finding { file: path.into(), line: 0, target: format!("test-integrity:{path}"), message: lost.join(", ") });
@@ -997,6 +1001,9 @@ mod tests {
         assert_eq!(whats("package.json", before, r#"{ "scripts": { "test": "vitest run src lib || true", "lint": "eslint . --max-warnings 0", "build": "tsc" } }"#), ["script `test` gained `|| true`"]);
         assert_eq!(whats("package.json", before, r#"{ "scripts": { "test": "vitest run src", "lint": "eslint .", "build": "tsc" } }"#), ["script `test` no longer runs on `lib`", "script `lint` no longer runs on `--max-warnings`"]);
         assert_eq!(whats("package.json", before, r#"{ "scripts": { "test": "echo skipped", "lint": "eslint . --max-warnings 0" } }"#), ["script `test` became `echo skipped`"]);
+        // Running only the tests a change touched, or one name, or hiding warnings from the limit, runs less.
+        assert_eq!(whats("package.json", before, r#"{ "scripts": { "test": "vitest run src lib --changed", "lint": "eslint . --max-warnings 0 --quiet", "build": "tsc" } }"#), ["script `test` gained `--changed`", "script `lint` gained `--quiet`"]);
+        assert_eq!(whats("package.json", before, r#"{ "scripts": { "test": "vitest run src lib --testNamePattern billing", "lint": "eslint . --max-warnings 0", "build": "tsc" } }"#), ["script `test` gained `--testNamePattern`"]);
         assert!(whats("package.json", before, r#"{ "scripts": { "test": "vitest run src lib --coverage", "lint": "oxlint . --max-warnings 0 && eslint . --max-warnings 0", "build": "tsc -b" } }"#).is_empty());
         // Split into steps that still run the same commands.
         let workspace = r#"{ "scripts": { "test": "npm run test --workspace frontend" } }"#;

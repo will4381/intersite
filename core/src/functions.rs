@@ -40,9 +40,72 @@ pub struct Site {
     pub rank: u8,
 }
 
+/// A statement or filter a semantic mutant removes, after the faults that matter most in a web backend: an access check,
+/// a tenant filter, an idempotency or state-transition guard, a cache invalidation, a fallback for an error.
+pub struct Cut {
+    pub start: u32,
+    pub end: u32,
+    pub to: String,
+    pub line: u32,
+    /// What it protects: `access`, `tenant`, `idempotency`, `transition`, `invalidation`, `check`, `guard`, `error`.
+    pub label: &'static str,
+}
+
+impl Cut {
+    /// Semantic cuts are tried before operator flips; a plain guard or an error fallback after them.
+    pub fn first(&self) -> bool {
+        !matches!(self.label, "guard" | "error")
+    }
+}
+
 pub struct Shape {
     pub funcs: Vec<Func>,
     pub sites: Vec<Site>,
+    pub cuts: Vec<Cut>,
+}
+
+/// What a guard's condition is about, by the words in it.
+fn guard_label(test: &str) -> &'static str {
+    static ACCESS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)user|session|auth|role|admin|permission|owner|\bcan[A-Z_]|allowed|authori[sz]ed|member|tenant|\borg|access|signed|forbidden").unwrap());
+    static ONCE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)existing|already|processed|duplicate|idempot|seen|handled|exists|replay").unwrap());
+    static STATE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)status|state\b|stage|phase").unwrap());
+    if ACCESS.is_match(test) {
+        "access"
+    } else if ONCE.is_match(test) {
+        "idempotency"
+    } else if STATE.is_match(test) {
+        "transition"
+    } else {
+        "guard"
+    }
+}
+
+/// A call made only for what it does, by its name: a check that throws, or a cache invalidation.
+fn call_label(callee: &str) -> Option<&'static str> {
+    static INVALIDATE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)^(?:revalidate(?:Path|Tag)|invalidate\w*|refetchQueries|resetQueries|removeQueries|updateTag|expireTag|purge\w*|bust\w*)$|(?:cache|redis|kv|memo)\w*\.(?:del|delete|invalidate|clear|expire|unlink)$").unwrap()
+    });
+    static CHECK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:require|assert|ensure|check|verify|authori[sz]e|authenticate|protect|guard)(?:[A-Z]\w*)?$").unwrap());
+    static ACCESS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)auth|user|role|admin|permission|owner|access|member|tenant|org|signature|session|login|can[A-Z]").unwrap());
+    let last = callee.rsplit('.').next().unwrap_or(callee);
+    if INVALIDATE.is_match(callee) || INVALIDATE.is_match(last) {
+        return Some("invalidation");
+    }
+    CHECK.is_match(last).then(|| if ACCESS.is_match(last) || matches!(last, "authorize" | "authorise" | "authenticate" | "protect") { "access" } else { "check" })
+}
+
+/// A key or column that scopes a query to its owner: `orgId`, `tenant_id`, `userId`, `workspace`.
+static TENANT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?:org|organi[sz]ation|tenant|team|workspace|account|company|owner|user|created_?[bB]y|author|customer|merchant|shop|store|project)(?:_?[iI][dD])?$").unwrap()
+});
+
+/// Whether a statement leaves the function: `throw`, `return`, or a block ending in one.
+fn exits(s: &Statement<'_>) -> bool {
+    match s {
+        Statement::ThrowStatement(_) | Statement::ReturnStatement(_) => true,
+        Statement::BlockStatement(b) => b.body.last().is_some_and(|last| matches!(last, Statement::ThrowStatement(_) | Statement::ReturnStatement(_))),
+        _ => false,
+    }
 }
 
 /// Calls whose arguments are never worth mutating: logging, telemetry and error reporting (Google's arid nodes).
@@ -62,6 +125,7 @@ struct Walker<'s> {
     names: HashMap<u32, (String, bool)>,
     funcs: Vec<Func>,
     sites: Vec<Site>,
+    cuts: Vec<Cut>,
     frames: Vec<Frame>,
     depth: u32,
     arid: u32,
@@ -98,6 +162,27 @@ impl<'s> Walker<'s> {
             let line = self.line(start);
             self.sites.push(Site { start, from, to, line, rank });
         }
+    }
+
+    fn cut(&mut self, start: u32, end: u32, to: String, label: &'static str) {
+        if self.arid == 0 && self.types == 0 && !self.frames.is_empty() {
+            let line = self.line(start);
+            self.cuts.push(Cut { start, end, to, line, label });
+        }
+    }
+
+    /// Cuts one item of a comma-separated list (an object's properties, a call's arguments) with its comma.
+    fn cut_item(&mut self, spans: &[Span], i: usize, label: &'static str) {
+        let (start, end) = match (i + 1 < spans.len(), i > 0) {
+            (true, _) => (spans[i].start, spans[i + 1].start),
+            (false, true) => (spans[i - 1].end, spans[i].end),
+            (false, false) => (spans[i].start, spans[i].end),
+        };
+        self.cut(start, end, String::new(), label);
+    }
+
+    fn text(&self, span: Span) -> &'s str {
+        &self.src[span.start as usize..span.end as usize]
     }
 
     /// The operator's offset between its two operands, found in the text between them.
@@ -139,6 +224,32 @@ impl<'s> Walker<'s> {
                 self.nested(|w| w.visit_statement(other));
             }
             None => {}
+        }
+    }
+
+    /// A query's tenant filter as a mutant drops it: Supabase or knex `.eq("org_id", x)`, Drizzle `eq(t.orgId, x)` inside
+    /// `and(...)`, or a `.where(eq(t.orgId, x))` that is the whole filter.
+    fn tenant_filter(&mut self, it: &CallExpression<'_>) {
+        let scopes = |e: &Expression<'_>| -> bool {
+            let Expression::CallExpression(c) = e else { return false };
+            matches!(&c.callee, Expression::Identifier(id) if id.name == "eq")
+                && c.arguments.first().and_then(|a| a.as_expression()).is_some_and(|a| matches!(a, Expression::StaticMemberExpression(m) if TENANT.is_match(&m.property.name)))
+        };
+        if let Expression::StaticMemberExpression(m) = &it.callee {
+            let column = |i: usize| it.arguments.get(i).and_then(|a| a.as_expression()).and_then(|a| if let Expression::StringLiteral(s) = a { Some(s.value.as_str()) } else { None });
+            let chain_filter = matches!(m.property.name.as_str(), "eq" | "match" | "is" | "where" | "andWhere") && column(0).is_some_and(|c| TENANT.is_match(c));
+            let lone_where = m.property.name == "where" && it.arguments.len() == 1 && it.arguments[0].as_expression().is_some_and(scopes);
+            if chain_filter || lone_where {
+                self.cut(m.object.span().end, it.span.end, String::new(), "tenant");
+            }
+        }
+        if matches!(&it.callee, Expression::Identifier(id) if id.name == "and") && it.arguments.len() > 1 {
+            let spans: Vec<Span> = it.arguments.iter().map(|a| a.span()).collect();
+            for (i, a) in it.arguments.iter().enumerate() {
+                if a.as_expression().is_some_and(scopes) {
+                    self.cut_item(&spans, i, "tenant");
+                }
+            }
         }
     }
 
@@ -210,6 +321,16 @@ impl<'a> Visit<'a> for Walker<'_> {
         if let Some(k) = it.key.static_name() {
             self.name(&it.value, k.to_string(), false);
         }
+        if let (Some("where"), Expression::ObjectExpression(o)) = (it.key.static_name().as_deref(), &it.value) {
+            let spans: Vec<Span> = o.properties.iter().map(|p| p.span()).collect();
+            for (i, p) in o.properties.iter().enumerate() {
+                if let ObjectPropertyKind::ObjectProperty(p) = p {
+                    if p.key.static_name().is_some_and(|k| TENANT.is_match(&k)) {
+                        self.cut_item(&spans, i, "tenant");
+                    }
+                }
+            }
+        }
         walk::walk_object_property(self, it);
     }
 
@@ -227,6 +348,7 @@ impl<'a> Visit<'a> for Walker<'_> {
                 self.add(false);
             }
         }
+        self.tenant_filter(it);
         let arid = ARID.is_match(callee);
         self.arid += arid as u32;
         walk::walk_call_expression(self, it);
@@ -246,7 +368,26 @@ impl<'a> Visit<'a> for Walker<'_> {
     }
 
     fn visit_if_statement(&mut self, it: &IfStatement<'a>) {
+        if it.alternate.is_none() && exits(&it.consequent) {
+            let label = guard_label(self.text(it.test.span()));
+            self.cut(it.span.start, it.span.end, String::new(), label);
+        }
         self.if_chain(it, false);
+    }
+
+    fn visit_expression_statement(&mut self, it: &ExpressionStatement<'a>) {
+        let call = match &it.expression {
+            Expression::CallExpression(c) => Some(c),
+            Expression::AwaitExpression(a) => match &a.argument {
+                Expression::CallExpression(c) => Some(c),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(label) = call.and_then(|c| call_label(&self.text(c.callee.span()).split_whitespace().collect::<String>())) {
+            self.cut(it.span.start, it.span.end, String::new(), label);
+        }
+        walk::walk_expression_statement(self, it);
     }
 
     fn visit_conditional_expression(&mut self, it: &ConditionalExpression<'a>) {
@@ -289,6 +430,11 @@ impl<'a> Visit<'a> for Walker<'_> {
     }
 
     fn visit_catch_clause(&mut self, it: &CatchClause<'a>) {
+        // A catch that answers with a fallback: rethrowing instead shows whether any test reaches that fallback.
+        let falls_back = it.body.body.iter().any(|s| matches!(s, Statement::ReturnStatement(_)) || matches!(s, Statement::ExpressionStatement(e) if matches!(e.expression, Expression::AssignmentExpression(_))));
+        if let (true, Some(BindingPattern::BindingIdentifier(id))) = (falls_back, it.param.as_ref().map(|p| &p.pattern)) {
+            self.cut(it.body.span.start, it.body.span.end, format!("{{ throw {}; }}", id.name), "error");
+        }
         self.add(true);
         self.nested(|w| walk::walk_catch_clause(w, it));
     }
@@ -375,9 +521,9 @@ pub fn read(path: &str, src: &str) -> Option<Shape> {
     if parsed.panicked {
         return None;
     }
-    let mut w = Walker { src, lines: Lines::new(src), names: HashMap::new(), funcs: vec![], sites: vec![], frames: vec![], depth: 0, arid: 0, types: 0, chain: false };
+    let mut w = Walker { src, lines: Lines::new(src), names: HashMap::new(), funcs: vec![], sites: vec![], cuts: vec![], frames: vec![], depth: 0, arid: 0, types: 0, chain: false };
     w.visit_program(&parsed.program);
-    Some(Shape { funcs: w.funcs, sites: w.sites })
+    Some(Shape { funcs: w.funcs, sites: w.sites, cuts: w.cuts })
 }
 
 /// A UTF-16 offset, as JavaScript counts, for a byte offset.
@@ -404,6 +550,43 @@ mod tests {
         // A callback nests: the `if` inside it costs 2 for the outer function. Recursion costs 1.
         let src = "export function walk(list) {\n  list.forEach((x) => { if (x) walk(x); });\n}\napp.get('/x', (req) => { if (req) return 1; });\n";
         assert_eq!(complexity(src), vec![("walk".into(), 3), ("app.get callback".into(), 1)]);
+    }
+
+    #[test]
+    fn finds_the_checks_filters_and_guards_a_semantic_mutant_removes() {
+        let src = "export async function update(req, id, data) {
+  const user = await getUser(req);
+  if (!user) throw new Response('no', { status: 401 });
+  await requireRole(user, 'admin');
+  const existing = await db.events.findFirst({ where: { key: data.key } });
+  if (existing) return existing;
+  const job = await prisma.job.findFirst({ where: { id, orgId: user.orgId } });
+  if (job.status !== 'open') return null;
+  await supabase.from('jobs').update(data).eq('id', id).eq('org_id', user.orgId);
+  await db.update(jobs).set(data).where(and(eq(jobs.id, id), eq(jobs.orgId, user.orgId)));
+  revalidatePath('/jobs');
+  try { await notify(job); } catch (error) { return null; }
+  console.log(user.id);
+  if (!user) console.warn('never');
+}
+";
+        let shape = read("a.ts", src).unwrap();
+        let cuts: Vec<(u32, &str, &str)> = shape.cuts.iter().map(|c| (c.line, c.label, &src[c.start as usize..c.end as usize])).collect();
+        assert_eq!(
+            cuts,
+            vec![
+                (3, "access", "if (!user) throw new Response('no', { status: 401 });"),
+                (4, "access", "await requireRole(user, 'admin');"),
+                (6, "idempotency", "if (existing) return existing;"),
+                (7, "tenant", ", orgId: user.orgId"),
+                (8, "transition", "if (job.status !== 'open') return null;"),
+                (9, "tenant", ".eq('org_id', user.orgId)"),
+                (10, "tenant", ", eq(jobs.orgId, user.orgId)"),
+                (11, "invalidation", "revalidatePath('/jobs');"),
+                (12, "error", "{ return null; }"),
+            ]
+        );
+        assert_eq!(shape.cuts[8].to, "{ throw error; }");
     }
 
     #[test]

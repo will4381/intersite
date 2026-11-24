@@ -23,6 +23,7 @@ mod coverage;
 mod functions;
 mod js;
 mod naming;
+mod outcome;
 mod search;
 mod similar;
 mod special;
@@ -35,9 +36,11 @@ mod schemas;
 mod secrets;
 mod sql;
 mod stats;
+mod structure;
 mod tamper;
 mod style;
 mod text;
+mod things;
 mod trace;
 mod twins;
 mod units;
@@ -160,6 +163,8 @@ fn main() {
         "columns" => columns::run(&request),
         "secrets" => secrets::run(&request),
         "auth" => auth::run(&request),
+        "structure" => structure::run(&request),
+        "outcome" => outcome::run(&request),
         other => Err(format!("unknown command {other}")),
     };
     match answer {
