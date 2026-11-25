@@ -100,7 +100,7 @@ export const defaults = {
     dailyCap: { ok: 5000, other: 5000 },
   },
   lint: {
-    packs: ["tests","slop","security","state","async","perf","react","next","design","types","validation","naming","globals","ui","orm","query","workers","supabase","server","start","effect","payments","auth","swift"],
+    packs: ["tests","slop","security","state","async","perf","react","react-native","next","design","types","validation","naming","globals","ui","orm","query","workers","supabase","server","start","effect","payments","auth","swift"],
     /** @type {Record<string, string | unknown[]>} */
     rules: {},
     /** @type {import("../lint/catalog.mjs").JsonRule[]} */

@@ -100,7 +100,7 @@ replay can fill and submit the form. Turn on the `actions` pack so new elements 
 
 ```yaml
 lint:
-  packs: [tests, slop, security, state, async, perf, react, next, design, types, validation, naming, globals, ui, orm, query, workers, supabase, server, start, payments, auth, swift, actions]
+  packs: [tests, slop, security, state, async, perf, react, react-native, next, design, types, validation, naming, globals, ui, orm, query, workers, supabase, server, start, effect, payments, auth, swift, actions]
 ```
 
 Then baseline the existing ones with `npx intersite lint --write=init`, after checking that `npx intersite lint`

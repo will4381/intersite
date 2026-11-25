@@ -1,0 +1,16 @@
+# React Native: work that drops frames on the phone, each measured on an iPhone first (2026-10 and 11). Same
+# format as core.yml. Rules a selector cannot express live in lint/rules/react-native/.
+rules:
+  - id: no-js-thread-animation
+    pack: react-native
+    needs: 'useNativeDriver'
+    # react-native-web has no native driver, so a web file may turn it off.
+    ignore: ["**/*.web.*"]
+    selector: "Property[key.name='useNativeDriver'][value.value=false]"
+    message: "useNativeDriver: false runs this animation on the JavaScript thread, one frame at a time, so it stutters whenever JavaScript is busy (a reply arriving, a screen rendering). Animate transform or opacity with useNativeDriver: true, or move it to Reanimated. If it animates what the native driver cannot (a colour, a border), say why on the line above."
+    bad:
+      - "Animated.timing(height, { toValue: 1, duration: 200, useNativeDriver: false }).start();"
+      - "export const spring = (v: Animated.Value) => Animated.spring(v, { toValue: 0, useNativeDriver: false });"
+    good:
+      - "Animated.timing(opacity, { toValue: 1, duration: 200, useNativeDriver: true }).start();"
+      - "export const spring = (v: Animated.Value) => Animated.spring(v, { toValue: 0, useNativeDriver: Platform.OS !== 'web' });"
