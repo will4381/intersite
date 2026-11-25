@@ -19,7 +19,7 @@
   },
   "scripts": {
     "test": "npm run test:rust && npm run test:js",
-    "test:js": "GITHUB_ACTIONS= INTERSITE_OFFLINE=1 node --test \"test/**/*.test.mjs\"",
+    "test:js": "GITHUB_ACTIONS= INTERSITE_OFFLINE=1 node --test ${TEST_SHARD:+--test-shard=$TEST_SHARD} \"test/**/*.test.mjs\"",
     "test:rust": "cargo test --release --quiet --manifest-path core/Cargo.toml",
     "lint": "node bin/intersite.mjs lint",
     "check": "node bin/intersite.mjs check",

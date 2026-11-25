@@ -5,6 +5,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import lint from "../../cli/lint.mjs";
+import { quietExperimentalWarnings } from "../../gates/lib.mjs";
+
+// lint() runs in this process, so it hides Node 22's experimental-glob warning as bin/intersite.mjs does.
+quietExperimentalWarnings();
 
 const oxlint = fileURLToPath(new URL("../../node_modules/.bin/oxlint", import.meta.url));
 
