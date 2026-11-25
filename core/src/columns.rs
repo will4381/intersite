@@ -429,7 +429,10 @@ struct Uses {
     drizzle: Vec<(String, Obj, u32)>,
     named: Vec<NamedUse>,
     idents: HashSet<String>,
-    sql: Vec<(u32, String)>,
+    /// Each SQL string's line, text and `${…}` sources (see `js::SqlSite`).
+    sql: Vec<(u32, String, Vec<String>)>,
+    /// `const keys = attributionVisitorKeys`: a local name for another variable.
+    aliases: HashMap<String, String>,
     /// Identifier-like strings held in a variable, property or array (`const TABLE = "orders"`) or a REST path: a
     /// table named that way is used in a way not followed here.
     strings: HashSet<String>,
@@ -699,6 +702,9 @@ impl<'a> Visit<'a> for UseWalker {
         if let Some(v) = it.init.as_ref().and_then(name_like) {
             self.out.strings.insert(v);
         }
+        if let (Some(name), Some(Expression::Identifier(target))) = (it.id.get_binding_identifier(), it.init.as_ref()) {
+            self.out.aliases.insert(name.name.to_string(), target.name.to_string());
+        }
         walk::walk_variable_declarator(self, it);
     }
 
@@ -782,7 +788,7 @@ fn uses(file: &str, src: &str) -> Uses {
     })
     .unwrap_or_default();
     if let Some(facts) = js::facts(file, src) {
-        out.sql = facts.sql.into_iter().map(|s| (s.line, s.text)).collect();
+        out.sql = facts.sql.into_iter().map(|s| (s.line, s.text, s.params)).collect();
     }
     if src.contains("Row:") {
         out.typed = TYPED.captures_iter(src).map(|m| m[1].to_lowercase()).collect();
@@ -806,6 +812,7 @@ fn ident(name: &str) -> String {
 // SQL text: writes, references and trigger-set columns, by pattern (statements inside function bodies included).
 
 const NAME: &str = r#"((?:"[^"]+"|[\w$]+)(?:\.(?:"[^"]+"|[\w$]+))?)"#;
+static PARAM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\$(\d+)\b").unwrap());
 static INSERT: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"(?i)\binsert\s+into\s+{NAME}\s*(?:as\s+\w+\s*)?(\(([^()]*)\))?")).unwrap());
 static UPDATE: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"(?is)\bupdate\s+(?:only\s+)?{NAME}(?:\s+(?:as\s+)?(\w+))?\s+set\s+(.*?)(?:\bwhere\b|\breturning\b|\bfrom\b|;|$)")).unwrap());
 static COPY: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"(?i)\bcopy\s+{NAME}\s*\(([^()]*)\)\s*from")).unwrap());
@@ -980,6 +987,21 @@ impl Model {
         self.by_code.get(var).and_then(|n| self.tables.get(n)).filter(|t| t.source == 1)
     }
 
+    /// SQL with each `$n` that stands for a Drizzle table (`sql\`insert into ${keys} …\``, `keys` the table or a
+    /// local name for it) written as that table's name, as Drizzle renders it.
+    fn with_tables(&self, text: &str, params: &[String], aliases: &HashMap<String, String>) -> String {
+        let table = |p: &String| self.drizzle_table(aliases.get(p).unwrap_or(p));
+        if !params.iter().any(|p| table(p).is_some()) {
+            return text.to_string();
+        }
+        PARAM
+            .replace_all(text, |m: &regex::Captures| {
+                let table = m[1].parse::<usize>().ok().and_then(|n| params.get(n.wrapping_sub(1))).and_then(table);
+                table.map_or_else(|| m[0].to_string(), |t| t.name.clone())
+            })
+            .into_owned()
+    }
+
     /// Everything a set of files writes and references.
     fn written(&self, files: &[(&str, &Uses)]) -> Written {
         let mut out = Written::default();
@@ -1020,8 +1042,8 @@ impl Model {
                     }
                 }
             }
-            for (line, text) in &u.sql {
-                sql_writes(text, &mut out, file, *line);
+            for (line, text, params) in &u.sql {
+                sql_writes(&self.with_tables(text, params, &u.aliases), &mut out, file, *line);
             }
             let passed = u.call_strings.iter().filter(|(s, n)| dynamic && **n > u.from_calls.get(*s).copied().unwrap_or(0)).map(|(s, _)| s);
             for string in u.strings.iter().chain(passed) {
@@ -1096,8 +1118,17 @@ enum Read {
     Other(HashSet<String>),
 }
 
+/// Whether a file may define Drizzle tables: `pgTable(`, `createTable(`, or a named schema's `appSchema.table(`.
+fn defines_tables(src: &str) -> bool {
+    src.contains("Table(") || src.contains(".table(")
+}
+
+/// Whether a code file may define or use tables, so it is worth parsing. Any case: SQL is written both ways.
 fn hint(src: &str) -> bool {
-    ["from(", "insert(", "update(", "upsert(", "values(", ".set(", ".create", "query.", "select", "SELECT", "INSERT", "UPDATE", "Table(", "Row:", "/rest/v1/"].iter().any(|h| src.contains(h))
+    let lower = src.to_lowercase();
+    ["from(", "insert", "update", "upsert(", "values", ".set(", ".create", "query.", "select", "table(", "row:", "/rest/v1/"]
+        .iter()
+        .any(|h| lower.contains(h))
 }
 
 /// Reports a table or column the code names that the model does not have.
@@ -1214,7 +1245,7 @@ pub fn run(request: &Request) -> Result<Answer, String> {
             if !hint(&src) {
                 return auth.then(|| Read::Code(file.clone(), Uses::default(), vec![], true));
             }
-            let tables = if src.contains("Table(") || src.contains(".table(") { drizzle_model(file, &src) } else { vec![] };
+            let tables = if defines_tables(&src) { drizzle_model(file, &src) } else { vec![] };
             Some(Read::Code(file.clone(), uses(file, &src), tables, auth))
         })
         .collect();
@@ -1363,8 +1394,8 @@ pub fn run(request: &Request) -> Result<Answer, String> {
                 }
             }
         }
-        for (line, sql) in &u.sql {
-            for s in statements(file, *line, sql, true).iter().filter(|s| request.changed(file, s.line)) {
+        for (line, sql, params) in &u.sql {
+            for s in statements(file, *line, &model.with_tables(sql, params, &u.aliases), true).iter().filter(|s| request.changed(file, s.line)) {
                 unknown.sql(file, s);
             }
         }
@@ -1510,6 +1541,32 @@ mod tests {
         ], None, &[]);
         assert_eq!(targets(&got), vec!["columns:users.nick"]);
         assert!(got[0].message.contains("remove `nick` from the table"), "{}", got[0].message);
+    }
+
+    #[test]
+    fn a_table_on_a_named_postgres_schema_is_read_and_raw_sql_naming_it_writes_it() {
+        let migration = "create table app.events (id uuid primary key, credited_via text, note text);\n";
+        let schema = "import { pgSchema, text, uuid } from 'drizzle-orm/pg-core';\nexport const appSchema = pgSchema('app');\nexport const events = appSchema.table('events', {\n  id: uuid('id').primaryKey(),\n  creditedVia: text('credited_via'),\n  note: text('note'),\n});\n";
+        let got = run_files(
+            "named-schema",
+            &[
+                ("drizzle/0001_events.sql", migration),
+                ("src/schema/events.ts", schema),
+                ("src/events.ts", "import { events } from './schema/events';\nexport const add = (via: string) => db.insert(events).values({ id: '1', creditedVia: via });\n"),
+            ],
+            None,
+            &[],
+        );
+        assert_eq!(targets(&got), vec!["columns:events.note"]);
+        // Raw SQL that interpolates the table writes it too.
+        let raw = "import { events } from './schema/events';\nexport const note = (n: string) => {\n  const t = events;\n  return db.execute(sql`insert into ${t} (id, note) values ('1', ${n})`);\n};\n";
+        let got = run_files(
+            "named-schema-raw",
+            &[("drizzle/0001_events.sql", migration), ("src/schema/events.ts", schema), ("src/raw.ts", raw)],
+            None,
+            &[],
+        );
+        assert_eq!(targets(&got), vec!["columns:events.credited_via"]);
     }
 
     #[test]

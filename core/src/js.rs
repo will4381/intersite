@@ -12,7 +12,10 @@ use crate::text::Lines;
 
 pub struct SqlSite {
     pub line: u32,
+    /// A template's `${…}` written as `$1`, `$2`, … in order.
     pub text: String,
+    /// The source of each `${…}`, for `$1` onwards: a Drizzle table interpolated as a table name is `keys`.
+    pub params: Vec<String>,
 }
 
 pub struct DbInLoop {
@@ -123,11 +126,15 @@ impl<'s> Walker<'s> {
         }
     }
 
-    fn sql(&mut self, offset: u32, text: String) {
+    fn sql(&mut self, offset: u32, text: String, params: Vec<String>) {
         if self.seen_sql.insert(offset) {
             let line = self.line(offset);
-            self.facts.sql.push(SqlSite { line, text });
+            self.facts.sql.push(SqlSite { line, text, params });
         }
+    }
+
+    fn params(&self, t: &TemplateLiteral) -> Vec<String> {
+        t.expressions.iter().map(|e| self.text(e).to_string()).collect()
     }
 
     fn db_call(&mut self, offset: u32, call: &str) {
@@ -253,12 +260,12 @@ impl<'a, 's> Visit<'a> for Walker<'s> {
         if ["query", "execute", "$queryRawUnsafe", "$executeRawUnsafe", "raw", "prepare", "unsafe", "exec", "run", "all", "get"].contains(&method) {
             if let Some(first) = it.arguments.first().and_then(|a| a.as_expression()) {
                 let text = match first {
-                    Expression::StringLiteral(s) => Some(s.value.as_str().to_string()),
-                    Expression::TemplateLiteral(t) => Some(template_sql(t)),
+                    Expression::StringLiteral(s) => Some((s.value.as_str().to_string(), vec![])),
+                    Expression::TemplateLiteral(t) => Some((template_sql(t), self.params(t))),
                     _ => None,
                 };
-                if let Some(text) = text.filter(|t| looks_like_sql(t)) {
-                    self.sql(first.span().start, text);
+                if let Some((text, params)) = text.filter(|(t, _)| looks_like_sql(t)) {
+                    self.sql(first.span().start, text, params);
                 }
             }
         }
@@ -299,7 +306,8 @@ impl<'a, 's> Visit<'a> for Walker<'s> {
         if ["sql", "SQL", "$queryRaw", "$executeRaw", "$queryRawUnsafe", "raw", "unsafe", "query"].contains(&method) {
             let text = template_sql(&it.quasi);
             if looks_like_sql(&text) {
-                self.sql(it.quasi.span.start, text);
+                let params = self.params(&it.quasi);
+                self.sql(it.quasi.span.start, text, params);
             }
             if method.starts_with('$') {
                 self.db_call(it.span.start, &tag);
@@ -321,14 +329,15 @@ impl<'a, 's> Visit<'a> for Walker<'s> {
 
     fn visit_string_literal(&mut self, it: &StringLiteral<'a>) {
         if looks_like_sql(it.value.as_str()) {
-            self.sql(it.span.start, it.value.as_str().to_string());
+            self.sql(it.span.start, it.value.as_str().to_string(), vec![]);
         }
     }
 
     fn visit_template_literal(&mut self, it: &TemplateLiteral<'a>) {
         let text = template_sql(it);
         if looks_like_sql(&text) {
-            self.sql(it.span.start, text);
+            let params = self.params(it);
+            self.sql(it.span.start, text, params);
         }
         walk::walk_template_literal(self, it);
     }
