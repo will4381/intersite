@@ -569,7 +569,7 @@ fn number_finding(v: &Seen, inv: &Inventory, refs: &HashMap<String, usize>) -> O
     // The scale: existing values of this category and unit, most used first (ties keep first-seen order).
     let mut list: Vec<(usize, &Value)> =
         inv.order.iter().map(|id| inv.values[id]).filter(|(_, e)| e.cat == v.v.cat && e.unit == v.v.unit).collect();
-    list.sort_by(|a, b| b.0.cmp(&a.0));
+    list.sort_by_key(|a| std::cmp::Reverse(a.0));
     let total: usize = list.iter().map(|e| e.0).sum();
     let steps: Vec<(usize, &Value)> = list.iter().filter(|e| e.0 >= 2).copied().collect();
     let covered: usize = steps.iter().take(12).map(|e| e.0).sum();

@@ -228,11 +228,12 @@ fn ws_url(url: &str) -> Result<String, String> {
     if url.starts_with("ws://") {
         return Ok(url.to_string());
     }
-    let version: Value = ureq::get(&format!("{}/json/version", url.trim_end_matches('/')))
+    let fail = |error: String| format!("cannot reach replay.browserUrl {url}: {error}");
+    let answer = ureq::get(&format!("{}/json/version", url.trim_end_matches('/')))
         .timeout(Duration::from_secs(10))
         .call()
-        .and_then(|answer| answer.into_json().map_err(Into::into))
-        .map_err(|error| format!("cannot reach replay.browserUrl {url}: {error}"))?;
+        .map_err(|error| fail(error.to_string()))?;
+    let version: Value = answer.into_json().map_err(|error| fail(error.to_string()))?;
     version["webSocketDebuggerUrl"].as_str().map(String::from).ok_or_else(|| format!("{url}/json/version names no webSocketDebuggerUrl"))
 }
 

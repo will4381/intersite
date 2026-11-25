@@ -20,6 +20,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      # One pinned Rust, so a new release's lints never fail CI before they reach a laptop. Raise it on purpose.
+      - run: rustup toolchain install 1.91.0 --profile minimal --component clippy,rustfmt && rustup default 1.91.0
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: core

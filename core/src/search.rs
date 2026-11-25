@@ -71,7 +71,7 @@ pub fn run(request: &Request) -> Result<Answer, String> {
         .map(|u| (aroma::overlap(&u.set, &q.set), u))
         .filter(|c| c.0 > 0)
         .collect();
-    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    candidates.sort_by_key(|a| std::cmp::Reverse(a.0));
     candidates.truncate(CANDIDATES);
     let want = aroma::counts(&q.bag);
     let query_lines: Vec<u32> = q.leaves.iter().map(|l| l.line).collect();

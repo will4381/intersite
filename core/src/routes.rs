@@ -760,11 +760,7 @@ impl<'a> Visit<'a> for Collector<'_> {
                         }
                     }
                 }
-                "createRoute" | "createRootRouteWithContext" if self.src.contains("@tanstack/") => {
-                    if i.name == "createRoute" {
-                        self.facts.opaque = true;
-                    }
-                }
+                "createRoute" if self.src.contains("@tanstack/") => self.facts.opaque = true,
                 _ => {}
             },
             Expression::StaticMemberExpression(m) => {

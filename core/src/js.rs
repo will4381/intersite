@@ -170,8 +170,7 @@ impl<'s> Walker<'s> {
         let mut methods = Vec::new();
         let mut table = None;
         let mut call = top;
-        loop {
-            let Some(m) = call.callee.as_member_expression() else { break };
+        while let Some(m) = call.callee.as_member_expression() {
             let Some(name) = m.static_property_name() else { break };
             methods.push(name);
             if name == "from" {

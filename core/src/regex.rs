@@ -46,8 +46,8 @@ impl Set {
 
     fn not(self) -> Set {
         let mut s = self;
-        for i in 0..128 {
-            s.ascii[i] = !s.ascii[i];
+        for b in &mut s.ascii {
+            *b = !*b;
         }
         s.other = !s.other;
         s
