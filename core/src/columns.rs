@@ -14,7 +14,9 @@ use oxc_ast_visit::{walk, Visit};
 use oxc_span::GetSpan;
 use rayon::prelude::*;
 use regex::Regex;
-use sqlparser::ast::{visit_relations, AlterColumnOperation, AlterTableOperation, AssignmentTarget, ObjectType, RenameTableNameKind, Statement, TableFactor};
+use sqlparser::ast::{
+    visit_relations, AlterColumnOperation, AlterTableOperation, AssignmentTarget, ObjectType, RenameTableNameKind, Statement, TableFactor,
+};
 use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow;
 use std::sync::LazyLock;
@@ -22,6 +24,9 @@ use std::sync::LazyLock;
 use crate::sql::{bare, statements};
 use crate::text::{self, Lines};
 use crate::{js, Answer, Finding, Request};
+
+/// Names with the line each is on.
+type Named = Vec<(String, u32)>;
 
 #[derive(Clone, Debug)]
 struct Column {
@@ -60,7 +65,10 @@ impl Table {
     /// names fields exactly.
     fn column(&self, key: &str) -> Option<&Column> {
         let lower = key.to_lowercase();
-        self.columns.iter().find(|c| c.key == key || c.name == key).or_else(|| self.columns.iter().find(|c| self.source == 0 && c.name.to_lowercase() == lower))
+        self.columns
+            .iter()
+            .find(|c| c.key == key || c.name == key)
+            .or_else(|| self.columns.iter().find(|c| self.source == 0 && c.name.to_lowercase() == lower))
     }
 
     /// The column a key of Prisma or Drizzle code means: its field name exactly.
@@ -72,7 +80,9 @@ impl Table {
 // ---------------------------------------------------------------------------------------------------------------
 // The model: SQL migrations, Prisma, Drizzle.
 
-static CREATED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)\bcreate\s+(?:or\s+replace\s+)?(?:(?:temp|temporary|unlogged|foreign|materialized)\s+)?(table|view)\s+(?:if\s+not\s+exists\s+)?((?:"[^"]+"|[\w$]+)(?:\.(?:"[^"]+"|[\w$]+))?)"#).unwrap());
+static CREATED: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)\bcreate\s+(?:or\s+replace\s+)?(?:(?:temp|temporary|unlogged|foreign|materialized)\s+)?(table|view)\s+(?:if\s+not\s+exists\s+)?((?:"[^"]+"|[\w$]+)(?:\.(?:"[^"]+"|[\w$]+))?)"#).unwrap()
+});
 
 /// The line of `column` inside the CREATE TABLE starting at `from` (1-based), or `from`.
 fn column_line(lines: &[&str], from: u32, column: &str) -> u32 {
@@ -118,10 +128,12 @@ fn sql_model(files: &[(String, String)]) -> (HashMap<String, Table>, HashSet<Str
             match &s.statement {
                 // IF NOT EXISTS on a table that exists does nothing; a schema dump beside the migrations does not
                 // override them either.
-                Statement::CreateTable(ct) if tables.contains_key(&bare(&ct.name.to_string())) && (ct.if_not_exists || !file.contains("migrations/")) => {}
+                Statement::CreateTable(ct)
+                    if tables.contains_key(&bare(&ct.name.to_string())) && (ct.if_not_exists || !file.contains("migrations/")) => {}
                 Statement::CreateTable(ct) => {
                     let name = bare(&ct.name.to_string());
-                    let mut columns: Vec<Column> = ct.columns.iter().map(|c| sql_column(c, file, column_line(&lines, s.line, &bare(&c.name.to_string())))).collect();
+                    let mut columns: Vec<Column> =
+                        ct.columns.iter().map(|c| sql_column(c, file, column_line(&lines, s.line, &bare(&c.name.to_string())))).collect();
                     for c in &ct.constraints {
                         let text = c.to_string().to_uppercase();
                         if text.contains("PRIMARY KEY") {
@@ -139,7 +151,9 @@ fn sql_model(files: &[(String, String)]) -> (HashMap<String, Table>, HashSet<Str
                 Statement::AlterTable(at) => {
                     let mut name = bare(&at.name.to_string());
                     for op in &at.operations {
-                        if let AlterTableOperation::RenameTable { table_name: RenameTableNameKind::To(to) | RenameTableNameKind::As(to) } = op {
+                        if let AlterTableOperation::RenameTable { table_name: RenameTableNameKind::To(to) | RenameTableNameKind::As(to) } =
+                            op
+                        {
                             let to = bare(&to.to_string());
                             known.insert(to.clone());
                             if let Some(mut t) = tables.remove(&name) {
@@ -223,7 +237,9 @@ fn prisma_model(file: &str, src: &str) -> Vec<Table> {
     // `model User {`: a declaration opens a block on its line, so a field named `model` (`model String?`) is not one.
     let block = |line: &str, kind: &str| {
         let line = line.split("//").next().unwrap_or("").trim();
-        line.strip_prefix(kind).filter(|_| line.ends_with('{')).map(|r| r.split_whitespace().next().unwrap_or("").trim_end_matches('{').to_string())
+        line.strip_prefix(kind)
+            .filter(|_| line.ends_with('{'))
+            .map(|r| r.split_whitespace().next().unwrap_or("").trim_end_matches('{').to_string())
     };
     let models: HashSet<String> = src.lines().filter_map(|l| block(l, "model ")).collect();
     let mut out = Vec::new();
@@ -233,7 +249,15 @@ fn prisma_model(file: &str, src: &str) -> Vec<Table> {
         let line = raw.split("//").next().unwrap_or("").trim();
         let n = i as u32 + 1;
         if let Some(name) = block(raw, "model ") {
-            current = Some(Table { name: name.to_lowercase(), model: name, source: 2, complete: true, file: file.to_string(), line: n, ..Default::default() });
+            current = Some(Table {
+                name: name.to_lowercase(),
+                model: name,
+                source: 2,
+                complete: true,
+                file: file.to_string(),
+                line: n,
+                ..Default::default()
+            });
             ignored = false;
             continue;
         }
@@ -285,25 +309,63 @@ fn prisma_model(file: &str, src: &str) -> Vec<Table> {
 }
 
 /// Drizzle's column modifiers that fill a value without code.
-const DRIZZLE_FILLED: [&str; 10] = ["default", "defaultNow", "defaultRandom", "$defaultFn", "$default", "$onUpdate", "$onUpdateFn", "generatedAlwaysAs", "generatedAlwaysAsIdentity", "generatedByDefaultAsIdentity"];
+const DRIZZLE_FILLED: [&str; 10] = [
+    "default",
+    "defaultNow",
+    "defaultRandom",
+    "$defaultFn",
+    "$default",
+    "$onUpdate",
+    "$onUpdateFn",
+    "generatedAlwaysAs",
+    "generatedAlwaysAsIdentity",
+    "generatedByDefaultAsIdentity",
+];
 
 /// Drizzle's column types: any other base call is an enum, a custom type or a helper of the project's.
-const DRIZZLE_TYPES: [&str; 30] = ["text", "varchar", "char", "integer", "int", "bigint", "smallint", "tinyint", "mediumint", "serial", "bigserial", "smallserial", "boolean", "timestamp", "date", "time", "datetime", "interval", "json", "jsonb", "uuid", "numeric", "decimal", "real", "doublePrecision", "double", "float", "blob", "inet", "citext"];
+const DRIZZLE_TYPES: [&str; 30] = [
+    "text",
+    "varchar",
+    "char",
+    "integer",
+    "int",
+    "bigint",
+    "smallint",
+    "tinyint",
+    "mediumint",
+    "serial",
+    "bigserial",
+    "smallserial",
+    "boolean",
+    "timestamp",
+    "date",
+    "time",
+    "datetime",
+    "interval",
+    "json",
+    "jsonb",
+    "uuid",
+    "numeric",
+    "decimal",
+    "real",
+    "doublePrecision",
+    "double",
+    "float",
+    "blob",
+    "inet",
+    "citext",
+];
 
 struct DrizzleTables<'s> {
     src: &'s str,
     lines: Lines,
     file: &'s str,
-    names: Vec<(String, u32)>,
+    names: Named,
     out: Vec<Table>,
 }
 
 fn string_arg<'b>(args: &'b [Argument<'_>], i: usize) -> Option<&'b str> {
-    match args.get(i)?.as_expression()?.get_inner_expression() {
-        Expression::StringLiteral(s) => Some(s.value.as_str()),
-        Expression::TemplateLiteral(t) if t.expressions.is_empty() => t.quasis.first()?.value.cooked.as_ref().map(|c| c.as_str()),
-        _ => None,
-    }
+    js::string(args.get(i)?.as_expression()?.get_inner_expression(), false)
 }
 
 /// A column builder chain, `text("nick").notNull().default("")`: its base call and the modifier names.
@@ -332,7 +394,10 @@ impl<'a> Visit<'a> for DrizzleTables<'_> {
     fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
         let callee = &self.src[it.callee.span().start as usize..it.callee.span().end as usize];
         let last = callee.rsplit('.').next().unwrap_or(callee);
-        let table_call = (last.ends_with("Table") && !last.starts_with("use") && !last.starts_with("create") || last == "table" || last == "createTable") && !callee.contains('(');
+        let table_call = (last.ends_with("Table") && !last.starts_with("use") && !last.starts_with("create")
+            || last == "table"
+            || last == "createTable")
+            && !callee.contains('(');
         let owner = self.names.last().filter(|(_, at)| *at <= it.span.start).map(|(n, _)| n.clone()).unwrap_or_default();
         if let (true, Some(db_name), false) = (table_call, string_arg(&it.arguments, 0), owner.is_empty()) {
             let fields = it.arguments.get(1).and_then(|a| a.as_expression()).and_then(|e| match e.get_inner_expression() {
@@ -344,7 +409,15 @@ impl<'a> Visit<'a> for DrizzleTables<'_> {
                 _ => None,
             });
             if let Some(obj) = fields {
-                let mut table = Table { name: db_name.to_lowercase(), model: owner, source: 1, complete: true, file: self.file.to_string(), line: self.lines.line(it.span.start as usize), ..Default::default() };
+                let mut table = Table {
+                    name: db_name.to_lowercase(),
+                    model: owner,
+                    source: 1,
+                    complete: true,
+                    file: self.file.to_string(),
+                    line: self.lines.line(it.span.start as usize),
+                    ..Default::default()
+                };
                 for p in &obj.properties {
                     let ObjectPropertyKind::ObjectProperty(p) = p else {
                         table.complete = false;
@@ -354,7 +427,11 @@ impl<'a> Visit<'a> for DrizzleTables<'_> {
                         table.complete = false;
                         continue;
                     };
-                    let base_name = self.src[base.callee.span().start as usize..base.callee.span().end as usize].rsplit('.').next().unwrap_or("").to_string();
+                    let base_name = self.src[base.callee.span().start as usize..base.callee.span().end as usize]
+                        .rsplit('.')
+                        .next()
+                        .unwrap_or("")
+                        .to_string();
                     // A helper of the project's own (`createdAt()`) hides what it builds: count it as filled.
                     let helper = !DRIZZLE_TYPES.contains(&base_name.as_str()) && base.arguments.is_empty();
                     let name = string_arg(&base.arguments, 0).unwrap_or(&key).to_string();
@@ -406,7 +483,7 @@ struct PrismaCall {
     accessor: String,
     write: bool,
     data: Vec<Obj>,
-    wheres: Vec<(String, u32)>,
+    wheres: Named,
     /// Every key anywhere in the call's argument: relation names reached through include, select and where.
     keys: Vec<String>,
 }
@@ -417,9 +494,9 @@ struct NamedUse {
     line: u32,
     written: Option<Obj>,
     /// Columns named by select strings, filters and match objects.
-    columns: Vec<(String, u32)>,
+    columns: Named,
     /// Tables reached through embedded resources in a select string.
-    embedded: Vec<(String, Vec<(String, u32)>)>,
+    embedded: Vec<(String, Named)>,
 }
 
 #[derive(Default, Debug)]
@@ -447,10 +524,38 @@ struct Uses {
 }
 
 const PRISMA_WRITES: [&str; 7] = ["create", "createMany", "createManyAndReturn", "update", "updateMany", "updateManyAndReturn", "upsert"];
-const PRISMA_READS: [&str; 11] = ["findMany", "findFirst", "findUnique", "findFirstOrThrow", "findUniqueOrThrow", "delete", "deleteMany", "count", "aggregate", "groupBy", "updateMany"];
-const NESTED: [&str; 11] = ["create", "createMany", "connect", "connectOrCreate", "update", "updateMany", "upsert", "set", "disconnect", "delete", "deleteMany"];
-const FILTERS: [&str; 18] = ["eq", "neq", "gt", "gte", "lt", "lte", "like", "ilike", "is", "in", "contains", "containedBy", "order", "filter", "not", "textSearch", "likeAllOf", "likeAnyOf"];
-const NOT_TABLES: [&str; 14] = ["Array", "Buffer", "Object", "Uint8Array", "Promise", "Set", "Map", "String", "Rx", "rxjs", "Observable", "Iterator", "Readable", "Stream"];
+const PRISMA_READS: [&str; 11] = [
+    "findMany",
+    "findFirst",
+    "findUnique",
+    "findFirstOrThrow",
+    "findUniqueOrThrow",
+    "delete",
+    "deleteMany",
+    "count",
+    "aggregate",
+    "groupBy",
+    "updateMany",
+];
+const NESTED: [&str; 11] =
+    ["create", "createMany", "connect", "connectOrCreate", "update", "updateMany", "upsert", "set", "disconnect", "delete", "deleteMany"];
+const FILTERS: [&str; 6] = ["order", "filter", "not", "textSearch", "likeAllOf", "likeAnyOf"];
+const NOT_TABLES: [&str; 14] = [
+    "Array",
+    "Buffer",
+    "Object",
+    "Uint8Array",
+    "Promise",
+    "Set",
+    "Map",
+    "String",
+    "Rx",
+    "rxjs",
+    "Observable",
+    "Iterator",
+    "Readable",
+    "Stream",
+];
 
 struct UseWalker {
     lines: Lines,
@@ -464,7 +569,9 @@ impl UseWalker {
 
     fn objects(&self, e: &Expression) -> Vec<Obj> {
         match e.get_inner_expression() {
-            Expression::ArrayExpression(a) => a.elements.iter().map(|el| el.as_expression().map_or(Obj::Opaque, |e| self.object(e))).collect(),
+            Expression::ArrayExpression(a) => {
+                a.elements.iter().map(|el| el.as_expression().map_or(Obj::Opaque, |e| self.object(e))).collect()
+            }
             other => vec![self.object(other)],
         }
     }
@@ -483,9 +590,19 @@ impl UseWalker {
                     let objs = match op.as_ref() {
                         "create" => self.objects(&q.value),
                         "createMany" | "updateMany" => prop(&q.value, "data").map(|d| self.objects(d)).unwrap_or_default(),
-                        "connectOrCreate" => self.list(&q.value).iter().filter_map(|x| prop(x, "create")).flat_map(|c| self.objects(c)).collect(),
-                        "upsert" => self.list(&q.value).iter().flat_map(|x| ["create", "update"].iter().filter_map(|k| prop(x, k)).flat_map(|c| self.objects(c)).collect::<Vec<_>>()).collect(),
-                        "update" => self.list(&q.value).iter().map(|x| prop(x, "data").map_or_else(|| self.object(x), |d| self.object(d))).collect(),
+                        "connectOrCreate" => {
+                            self.list(&q.value).iter().filter_map(|x| prop(x, "create")).flat_map(|c| self.objects(c)).collect()
+                        }
+                        "upsert" => self
+                            .list(&q.value)
+                            .iter()
+                            .flat_map(|x| {
+                                ["create", "update"].iter().filter_map(|k| prop(x, k)).flat_map(|c| self.objects(c)).collect::<Vec<_>>()
+                            })
+                            .collect(),
+                        "update" => {
+                            self.list(&q.value).iter().map(|x| prop(x, "data").map_or_else(|| self.object(x), |d| self.object(d))).collect()
+                        }
                         _ => vec![],
                     };
                     nested.push((op.to_string(), objs));
@@ -503,14 +620,14 @@ impl UseWalker {
         }
     }
 
-    fn keys(&self, e: &Expression, out: &mut Vec<String>) {
+    fn keys(e: &Expression, out: &mut Vec<String>) {
         if let Expression::ObjectExpression(o) = e.get_inner_expression() {
             for p in &o.properties {
                 if let ObjectPropertyKind::ObjectProperty(p) = p {
                     if let Some(k) = p.key.static_name() {
                         out.push(k.to_string());
                     }
-                    self.keys(&p.value, out);
+                    Self::keys(&p.value, out);
                 }
             }
         }
@@ -524,7 +641,11 @@ impl UseWalker {
             Some(arg) => {
                 if write {
                     let picked: Vec<&Expression> = ["data", "create", "update"].iter().filter_map(|k| prop(arg, k)).collect();
-                    call.data = if matches!(arg.get_inner_expression(), Expression::ObjectExpression(_)) { picked.iter().flat_map(|d| self.objects(d)).collect() } else { vec![Obj::Opaque] };
+                    call.data = if matches!(arg.get_inner_expression(), Expression::ObjectExpression(_)) {
+                        picked.iter().flat_map(|d| self.objects(d)).collect()
+                    } else {
+                        vec![Obj::Opaque]
+                    };
                 }
                 if let Some(Expression::ObjectExpression(w)) = prop(arg, "where").map(|w| w.get_inner_expression()) {
                     for p in &w.properties {
@@ -535,7 +656,7 @@ impl UseWalker {
                         }
                     }
                 }
-                self.keys(arg, &mut call.keys);
+                Self::keys(arg, &mut call.keys);
             }
             None if write => call.data = vec![Obj::Opaque],
             None => {}
@@ -549,11 +670,13 @@ impl UseWalker {
         let mut use_ = NamedUse { table: table.to_string(), line, written: None, columns: vec![], embedded: vec![] };
         let first = it.arguments.first().and_then(|a| a.as_expression());
         match method {
-            "insert" | "upsert" | "update" => use_.written = Some(first.map_or(Obj::Opaque, |e| match self.objects(e).as_slice() {
-                [] => Obj::Opaque,
-                [one] => one.clone(),
-                many => merge(many),
-            })),
+            "insert" | "upsert" | "update" => {
+                use_.written = Some(first.map_or(Obj::Opaque, |e| match self.objects(e).as_slice() {
+                    [] => Obj::Opaque,
+                    [one] => one.clone(),
+                    many => merge(many),
+                }))
+            }
             "select" => {
                 if let Some(cols) = string_arg(&it.arguments, 0) {
                     let (columns, embedded) = select_columns(cols, line);
@@ -566,7 +689,7 @@ impl UseWalker {
                     use_.columns = f.into_iter().map(|f| (f.key, f.line)).collect();
                 }
             }
-            m if FILTERS.contains(&m) => {
+            m if js::COMPARISONS.contains(&m) || FILTERS.contains(&m) => {
                 if let Some(col) = string_arg(&it.arguments, 0).filter(|c| c.chars().all(|ch| ch.is_alphanumeric() || ch == '_')) {
                     use_.columns.push((col.to_string(), line));
                 }
@@ -592,7 +715,9 @@ fn merge(objs: &[Obj]) -> Obj {
 /// A string literal that could be a table's name.
 fn name_like(e: &Expression) -> Option<String> {
     match e.get_inner_expression() {
-        Expression::StringLiteral(s) if s.value.len() >= 3 && s.value.chars().all(|c| c.is_alphanumeric() || c == '_') => Some(s.value.to_string()),
+        Expression::StringLiteral(s) if s.value.len() >= 3 && s.value.chars().all(|c| c.is_alphanumeric() || c == '_') => {
+            Some(s.value.to_string())
+        }
         _ => None,
     }
 }
@@ -608,7 +733,7 @@ fn prop<'b, 'a>(e: &'b Expression<'a>, key: &str) -> Option<&'b Expression<'a>> 
 
 /// The columns a PostgREST select string names, and the tables it embeds with theirs:
 /// `id, name, author:profiles(name), posts!inner(id)`.
-fn select_columns(text: &str, line: u32) -> (Vec<(String, u32)>, Vec<(String, Vec<(String, u32)>)>) {
+fn select_columns(text: &str, line: u32) -> (Named, Vec<(String, Named)>) {
     let mut columns = Vec::new();
     let mut embedded = Vec::new();
     let mut depth = 0;
@@ -656,12 +781,21 @@ fn from_call<'b>(call: &'b CallExpression<'_>) -> Option<Option<&'b str>> {
         "from" => {
             let object = m.object().get_inner_expression();
             // `supabase.storage.from("avatars")` is a storage bucket, not a table.
-            let other = object.as_member_expression().and_then(|o| o.static_property_name()) == Some("storage") || match object {
-                Expression::Identifier(id) => NOT_TABLES.contains(&id.name.as_str()),
-                Expression::CallExpression(inner) => inner.callee.get_inner_expression().as_member_expression().and_then(|m| m.static_property_name()) == Some("schema"),
-                _ => false,
-            };
-            Some(if other { None } else { string_arg(&call.arguments, 0).filter(|t| t.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') && t.chars().all(|c| c.is_alphanumeric() || c == '_')) })
+            let other = object.as_member_expression().and_then(|o| o.static_property_name()) == Some("storage")
+                || match object {
+                    Expression::Identifier(id) => NOT_TABLES.contains(&id.name.as_str()),
+                    Expression::CallExpression(inner) => {
+                        inner.callee.get_inner_expression().as_member_expression().and_then(|m| m.static_property_name()) == Some("schema")
+                    }
+                    _ => false,
+                };
+            Some(if other {
+                None
+            } else {
+                string_arg(&call.arguments, 0).filter(|t| {
+                    t.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') && t.chars().all(|c| c.is_alphanumeric() || c == '_')
+                })
+            })
         }
         _ => None,
     }
@@ -744,7 +878,9 @@ impl<'a> Visit<'a> for UseWalker {
                 // prisma.user.create({ data }), tx.orderItem.findMany(...)
                 if PRISMA_WRITES.contains(&method) || PRISMA_READS.contains(&method) {
                     if let Some(inner) = object.as_member_expression() {
-                        if let (Some(accessor), false) = (inner.static_property_name(), matches!(inner.object().get_inner_expression(), Expression::CallExpression(_))) {
+                        if let (Some(accessor), false) =
+                            (inner.static_property_name(), matches!(inner.object().get_inner_expression(), Expression::CallExpression(_)))
+                        {
                             if accessor.starts_with(|c: char| c.is_ascii_lowercase()) {
                                 self.prisma(accessor, method, it);
                             }
@@ -753,16 +889,25 @@ impl<'a> Visit<'a> for UseWalker {
                 }
                 // db.insert(users).values({...}), db.update(users).set({...}), .onConflictDoUpdate({ set })
                 let drizzle = match method {
-                    "values" => drizzle_table(object, "insert").map(|t| (t, it.arguments.first().and_then(|a| a.as_expression()).map(|e| merge(&self.objects(e))))),
-                    "set" => drizzle_table(object, "update").map(|t| (t, it.arguments.first().and_then(|a| a.as_expression()).map(|e| self.object(e)))),
-                    "onConflictDoUpdate" | "onDuplicateKeyUpdate" => drizzle_table(object, "insert").map(|t| (t, it.arguments.first().and_then(|a| a.as_expression()).and_then(|e| prop(e, "set")).map(|s| self.object(s)))),
+                    "values" => drizzle_table(object, "insert")
+                        .map(|t| (t, it.arguments.first().and_then(|a| a.as_expression()).map(|e| merge(&self.objects(e))))),
+                    "set" => drizzle_table(object, "update")
+                        .map(|t| (t, it.arguments.first().and_then(|a| a.as_expression()).map(|e| self.object(e)))),
+                    "onConflictDoUpdate" | "onDuplicateKeyUpdate" => drizzle_table(object, "insert").map(|t| {
+                        (t, it.arguments.first().and_then(|a| a.as_expression()).and_then(|e| prop(e, "set")).map(|s| self.object(s)))
+                    }),
                     _ => None,
                 };
                 if let Some((table, written)) = drizzle {
                     let line = self.line(it.span.start);
                     self.out.drizzle.push((table.to_string(), written.unwrap_or(Obj::Opaque), line));
                 }
-                if method == "from" && from_call(it) == Some(None) && string_arg(&it.arguments, 0).is_none() && it.arguments.len() == 1 && !matches!(m.object().get_inner_expression(), Expression::Identifier(id) if NOT_TABLES.contains(&id.name.as_str())) {
+                if method == "from"
+                    && from_call(it) == Some(None)
+                    && string_arg(&it.arguments, 0).is_none()
+                    && it.arguments.len() == 1
+                    && !matches!(m.object().get_inner_expression(), Expression::Identifier(id) if NOT_TABLES.contains(&id.name.as_str()))
+                {
                     self.out.dynamic_from = true;
                 }
                 if method == "from" {
@@ -813,11 +958,17 @@ fn ident(name: &str) -> String {
 
 const NAME: &str = r#"((?:"[^"]+"|[\w$]+)(?:\.(?:"[^"]+"|[\w$]+))?)"#;
 static PARAM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\$(\d+)\b").unwrap());
-static INSERT: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"(?i)\binsert\s+into\s+{NAME}\s*(?:as\s+\w+\s*)?(\(([^()]*)\))?")).unwrap());
-static UPDATE: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"(?is)\bupdate\s+(?:only\s+)?{NAME}(?:\s+(?:as\s+)?(\w+))?\s+set\s+(.*?)(?:\bwhere\b|\breturning\b|\bfrom\b|;|$)")).unwrap());
+static INSERT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(&format!(r"(?i)\binsert\s+into\s+{NAME}\s*(?:as\s+\w+\s*)?(\(([^()]*)\))?")).unwrap());
+static UPDATE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(r"(?is)\bupdate\s+(?:only\s+)?{NAME}(?:\s+(?:as\s+)?(\w+))?\s+set\s+(.*?)(?:\bwhere\b|\breturning\b|\bfrom\b|;|$)"))
+        .unwrap()
+});
 static COPY: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"(?i)\bcopy\s+{NAME}\s*\(([^()]*)\)\s*from")).unwrap());
-static REFERENCE: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"(?i)\b(?:from|join|into|update)\s+(?:only\s+)?{NAME}")).unwrap());
-static NEW_SET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?im)(?:^|;|\bthen\b|\bbegin\b|\belse\b|\bloop\b)\s*new\.("?\w+"?)\s*:?="#).unwrap());
+static REFERENCE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(&format!(r"(?i)\b(?:from|join|into|update)\s+(?:only\s+)?{NAME}")).unwrap());
+static NEW_SET: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?im)(?:^|;|\bthen\b|\bbegin\b|\belse\b|\bloop\b)\s*new\.("?\w+"?)\s*:?="#).unwrap());
 static CTE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\b(\w+)\s+as\s*(?:materialized\s*)?\(").unwrap());
 
 /// What some SQL writes and names, with the place of each write.
@@ -864,7 +1015,9 @@ fn sql_writes(text: &str, out: &mut Written, file: &str, first_line: u32) {
         for part in parts {
             let Some((left, _)) = part.split_once('=') else { continue };
             let left = left.trim().trim_start_matches('(').trim_end_matches(')');
-            for c in left.split(',').map(|c| bare(c.trim())).filter(|c| !c.is_empty() && c.chars().all(|ch| ch.is_alphanumeric() || ch == '_')) {
+            for c in
+                left.split(',').map(|c| bare(c.trim())).filter(|c| !c.is_empty() && c.chars().all(|ch| ch.is_alphanumeric() || ch == '_'))
+            {
                 out.write(&table, &c, file, at(m.get(0).unwrap().start()));
             }
         }
@@ -1059,28 +1212,6 @@ impl Model {
     }
 }
 
-/// Edit distance counting a swap of two neighbours as one edit (`nmae` is one from `name`), for "did you mean".
-fn distance(a: &str, b: &str) -> usize {
-    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
-    let mut d = vec![vec![0usize; b.len() + 1]; a.len() + 1];
-    for (i, row) in d.iter_mut().enumerate() {
-        row[0] = i;
-    }
-    for j in 0..=b.len() {
-        d[0][j] = j;
-    }
-    for i in 1..=a.len() {
-        for j in 1..=b.len() {
-            let cost = usize::from(a[i - 1] != b[j - 1]);
-            d[i][j] = (d[i - 1][j] + 1).min(d[i][j - 1] + 1).min(d[i - 1][j - 1] + cost);
-            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
-                d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1);
-            }
-        }
-    }
-    d[a.len()][b.len()]
-}
-
 /// The known name closest to `name`, when it is close enough to be a typo of it (or its plural).
 fn near<'n>(name: &str, known: impl Iterator<Item = &'n str>) -> Option<&'n str> {
     let lower = name.to_lowercase();
@@ -1088,8 +1219,9 @@ fn near<'n>(name: &str, known: impl Iterator<Item = &'n str>) -> Option<&'n str>
         .filter(|k| *k != name && k.len() >= 3)
         .map(|k| {
             let kl = k.to_lowercase();
-            let alike = kl == lower || format!("{kl}s") == lower || format!("{lower}s") == kl || kl.replace('_', "") == lower.replace('_', "");
-            (if alike { 0 } else { distance(&lower, &kl) }, k)
+            let alike =
+                kl == lower || format!("{kl}s") == lower || format!("{lower}s") == kl || kl.replace('_', "") == lower.replace('_', "");
+            (if alike { 0 } else { crate::text::distance(&lower, &kl) }, k)
         })
         .filter(|(d, k)| *d == 0 || (*d <= 2 && k.len() >= 6 && lower.len() >= 6) || (*d == 1 && k.len() >= 4))
         .min_by_key(|(d, _)| *d)
@@ -1100,21 +1232,54 @@ fn near<'n>(name: &str, known: impl Iterator<Item = &'n str>) -> Option<&'n str>
 // The gate.
 
 /// Sample code, not the product: its names are made up on purpose.
-static SAMPLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|/)(?:fixtures?|__fixtures__|mocks?|__mocks__|stories|storybook|examples?)/|\.(?:stories|story|fixture|mock)\.[cm]?[jt]sx?$").unwrap());
-static TEST: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|/)(?:tests?|__tests__|e2e|spec)/|\.(?:test|spec)\.[cm]?[jt]sx?$").unwrap());
+static SAMPLE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?:^|/)(?:fixtures?|__fixtures__|mocks?|__mocks__|stories|storybook|examples?)/|\.(?:stories|story|fixture|mock)\.[cm]?[jt]sx?$",
+    )
+    .unwrap()
+});
+static TEST: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:^|/)(?:tests?|__tests__|e2e|spec)/|\.(?:test|spec)\.[cm]?[jt]sx?$").unwrap());
 static CODE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.(?:[cm]?[jt]sx?|vue|svelte|astro)$").unwrap());
-static OTHER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.(?:py|go|rb|swift|kt|kts|java|php|cs|ex|exs|dart|rs|scala|xs|lua)$").unwrap());
+static OTHER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\.(?:py|go|rb|swift|kt|kts|java|php|cs|ex|exs|dart|rs|scala|xs|lua)$").unwrap());
 /// Schemas a project does not own: Supabase's auth and storage, Postgres' catalogs.
-const FOREIGN_SCHEMAS: [&str; 12] = ["auth", "storage", "pg_catalog", "information_schema", "extensions", "cron", "net", "vault", "realtime", "supabase_functions", "graphql", "pgsodium"];
+const FOREIGN_SCHEMAS: [&str; 12] = [
+    "auth",
+    "storage",
+    "pg_catalog",
+    "information_schema",
+    "extensions",
+    "cron",
+    "net",
+    "vault",
+    "realtime",
+    "supabase_functions",
+    "graphql",
+    "pgsodium",
+];
 
 const AUTH_LIBRARIES: [&str; 6] = ["better-auth", "next-auth", "@auth/", "lucia", "@lucia-auth", "auth-astro"];
-const AUTH_TABLES: [&str; 12] = ["user", "account", "session", "verification", "verification_token", "verificationtoken", "jwk", "passkey", "two_factor", "twofactor", "authenticator", "apikey"];
+const AUTH_TABLES: [&str; 12] = [
+    "user",
+    "account",
+    "session",
+    "verification",
+    "verification_token",
+    "verificationtoken",
+    "jwk",
+    "passkey",
+    "two_factor",
+    "twofactor",
+    "authenticator",
+    "apikey",
+];
 
 enum Read {
     Sql(String, String),
     Prisma(String, String),
     /// A code file: its uses, its Drizzle tables, and whether it uses an auth library that writes its own tables.
-    Code(String, Uses, Vec<Table>, bool),
+    Code(String, Box<Uses>, Vec<Table>, bool),
     Other(HashSet<String>),
 }
 
@@ -1161,24 +1326,50 @@ impl Unknowns<'_> {
         if t.column(column).is_some() || t.relations.iter().any(|r| r.0 == column) {
             return;
         }
-        let guess = near(column, t.columns.iter().map(|c| c.name.as_str())).or_else(|| near(column, t.columns.iter().map(|c| c.key.as_str())));
-        let coverage = self.referenced_columns.get(&lower).filter(|r| r.len() >= 3).map_or(0.0, |r| r.iter().filter(|c| t.column(c).is_some()).count() as f64 / r.len() as f64);
+        let guess =
+            near(column, t.columns.iter().map(|c| c.name.as_str())).or_else(|| near(column, t.columns.iter().map(|c| c.key.as_str())));
+        let coverage = self
+            .referenced_columns
+            .get(&lower)
+            .filter(|r| r.len() >= 3)
+            .map_or(0.0, |r| r.iter().filter(|c| t.column(c).is_some()).count() as f64 / r.len() as f64);
         if guess.is_none() && coverage < 0.8 {
             return;
         }
         let hint = guess.map_or(String::new(), |g| format!(" (did you mean {g}?)"));
-        self.findings.push(Finding { file: file.into(), line, target: format!("{file}:unknown:{lower}.{column}"), message: format!("{file}:{line} {} has no column {column}{hint}: use a column the schema has, or add it in a migration", t.name) });
+        self.findings.push(Finding {
+            file: file.into(),
+            line,
+            target: format!("{file}:unknown:{lower}.{column}"),
+            message: format!(
+                "{file}:{line} {} has no column {column}{hint}: use a column the schema has, or add it in a migration",
+                t.name
+            ),
+        });
     }
 
     /// Prisma `data` and `where` keys and Drizzle insert keys, which must be fields of the model.
     fn key(&mut self, file: &str, line: u32, t: &Table, key: &str) {
-        if t.field(key).is_some() || t.relations.iter().any(|r| r.0 == key) || t.compound.iter().any(|c| c == key) || ["AND", "OR", "NOT"].contains(&key) {
+        if t.field(key).is_some()
+            || t.relations.iter().any(|r| r.0 == key)
+            || t.compound.iter().any(|c| c == key)
+            || ["AND", "OR", "NOT"].contains(&key)
+        {
             return;
         }
         let guess = near(key, t.columns.iter().map(|c| c.key.as_str()).chain(t.relations.iter().map(|r| r.0.as_str())));
         let hint = guess.map_or(String::new(), |g| format!(" (did you mean {g}?)"));
-        let (kind, fix) = if t.source == 2 { ("Prisma model", "add it to schema.prisma and migrate") } else { ("Drizzle table", "add it to the table and generate the migration") };
-        self.findings.push(Finding { file: file.into(), line, target: format!("{file}:unknown:{}.{key}", t.name), message: format!("{file}:{line} the {kind} {} has no field {key}{hint}: use one the schema has, or {fix}", t.model) });
+        let (kind, fix) = if t.source == 2 {
+            ("Prisma model", "add it to schema.prisma and migrate")
+        } else {
+            ("Drizzle table", "add it to the table and generate the migration")
+        };
+        self.findings.push(Finding {
+            file: file.into(),
+            line,
+            target: format!("{file}:unknown:{}.{key}", t.name),
+            message: format!("{file}:{line} the {kind} {} has no field {key}{hint}: use one the schema has, or {fix}", t.model),
+        });
     }
 
     fn sql(&mut self, file: &str, s: &crate::sql::Stmt) {
@@ -1223,7 +1414,15 @@ impl Unknowns<'_> {
     }
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Options {
+    /// The edited code files as they were on the base, by path.
+    before: std::collections::BTreeMap<String, String>,
+}
+
 pub fn run(request: &Request) -> Result<Answer, String> {
+    let Options { before } = request.options()?;
     let reads: Vec<Read> = request
         .files
         .par_iter()
@@ -1236,17 +1435,19 @@ pub fn run(request: &Request) -> Result<Answer, String> {
                 return Some(Read::Prisma(file.clone(), src));
             }
             if OTHER.is_match(file) {
-                return Some(Read::Other(src.split(|c: char| !c.is_alphanumeric() && c != '_').filter(|w| w.len() > 2).map(str::to_lowercase).collect()));
+                return Some(Read::Other(
+                    src.split(|c: char| !c.is_alphanumeric() && c != '_').filter(|w| w.len() > 2).map(str::to_lowercase).collect(),
+                ));
             }
             if !CODE.is_match(file) || TEST.is_match(file) {
                 return None;
             }
             let auth = AUTH_LIBRARIES.iter().any(|l| src.contains(l));
             if !hint(&src) {
-                return auth.then(|| Read::Code(file.clone(), Uses::default(), vec![], true));
+                return auth.then(|| Read::Code(file.clone(), Box::default(), vec![], true));
             }
             let tables = if defines_tables(&src) { drizzle_model(file, &src) } else { vec![] };
-            Some(Read::Code(file.clone(), uses(file, &src), tables, auth))
+            Some(Read::Code(file.clone(), Box::new(uses(file, &src)), tables, auth))
         })
         .collect();
     let mut sql_files: Vec<(String, String)> = Vec::new();
@@ -1279,9 +1480,13 @@ pub fn run(request: &Request) -> Result<Answer, String> {
         tables.insert(t.name.clone(), t);
     }
     if tables.is_empty() {
-        return Ok(Answer { findings: vec![], summary: "no database schema found".into(), data: None });
+        return Ok(Answer::new(vec![], "no database schema found".into()));
     }
-    let by_code: HashMap<String, String> = tables.values().filter(|t| !t.model.is_empty()).map(|t| (if t.source == 2 { lower_first(&t.model) } else { t.model.clone() }, t.name.clone())).collect();
+    let by_code: HashMap<String, String> = tables
+        .values()
+        .filter(|t| !t.model.is_empty())
+        .map(|t| (if t.source == 2 { lower_first(&t.model) } else { t.model.clone() }, t.name.clone()))
+        .collect();
     let by_model: HashMap<String, String> = tables.values().filter(|t| t.source == 2).map(|t| (t.model.clone(), t.name.clone())).collect();
     let mut relation_targets: HashMap<String, Vec<String>> = HashMap::new();
     for t in tables.values() {
@@ -1327,17 +1532,28 @@ pub fn run(request: &Request) -> Result<Answer, String> {
                 _ => format!("ALTER TABLE {} DROP COLUMN {} in a new migration", t.name, c.name),
             };
             let message = if whole {
-                format!("{}:{} nothing writes {}.{}, so it is NULL in every row: set it where {} rows are created or updated, or {drop}", c.file, c.line, t.name, c.name, t.name)
+                format!(
+                    "{}:{} nothing writes {}.{}, so it is NULL in every row: set it where {} rows are created or updated, or {drop}",
+                    c.file, c.line, t.name, c.name, t.name
+                )
             } else {
                 format!("{}:{} adds {}.{}, but no code writes it, so it stays NULL in every row: set it where {} rows are created or updated, or leave it out. Do not give it a placeholder default to quiet this", c.file, c.line, t.name, c.name, t.name)
             };
             findings.push(Finding { file: c.file.clone(), line: c.line, target: format!("columns:{}.{}", t.name, c.name), message });
         }
-        if writes_anything && !written.refs.contains(&t.name) && !written.literal.contains(&t.name) && !written.opaque.contains(&t.name) && request.changed(&t.file, t.line) {
+        if writes_anything
+            && !written.refs.contains(&t.name)
+            && !written.literal.contains(&t.name)
+            && !written.opaque.contains(&t.name)
+            && request.changed(&t.file, t.line)
+        {
             let message = if whole {
                 format!("{}:{} nothing in the code reads or writes table {}: use it, or drop it in a new migration", t.file, t.line, t.name)
             } else {
-                format!("{}:{} adds table {}, but no code reads or writes it: use it in this change, or leave it out", t.file, t.line, t.name)
+                format!(
+                    "{}:{} adds table {}, but no code reads or writes it: use it in this change, or leave it out",
+                    t.file, t.line, t.name
+                )
             };
             findings.push(Finding { file: t.file.clone(), line: t.line, target: format!("columns:{}", t.name), message });
         }
@@ -1357,7 +1573,11 @@ pub fn run(request: &Request) -> Result<Answer, String> {
             }
         }
     }
-    let table_coverage = if referenced_tables.len() >= 5 { referenced_tables.iter().filter(|t| known.contains(*t)).count() as f64 / referenced_tables.len() as f64 } else { 0.0 };
+    let table_coverage = if referenced_tables.len() >= 5 {
+        referenced_tables.iter().filter(|t| known.contains(*t)).count() as f64 / referenced_tables.len() as f64
+    } else {
+        0.0
+    };
     let mut unknown = Unknowns { model: &model, known: &known, table_coverage, referenced_columns, findings: vec![] };
     for (file, u) in code.iter().filter(|(f, _)| !SAMPLE.is_match(f)) {
         for n in &u.named {
@@ -1381,7 +1601,12 @@ pub fn run(request: &Request) -> Result<Answer, String> {
         }
         for call in &u.prisma {
             let Some(t) = model.prisma_table(&call.accessor) else { continue };
-            let fields = call.data.iter().filter_map(|o| if let Obj::Fields(f) = o { Some(f) } else { None }).flatten().map(|f| (f.key.as_str(), f.line));
+            let fields = call
+                .data
+                .iter()
+                .filter_map(|o| if let Obj::Fields(f) = o { Some(f) } else { None })
+                .flatten()
+                .map(|f| (f.key.as_str(), f.line));
             for (key, line) in fields.chain(call.wheres.iter().map(|(k, l)| (k.as_str(), *l))).filter(|(_, l)| request.changed(file, *l)) {
                 unknown.key(file, line, t, key);
             }
@@ -1395,7 +1620,9 @@ pub fn run(request: &Request) -> Result<Answer, String> {
             }
         }
         for (line, sql, params) in &u.sql {
-            for s in statements(file, *line, &model.with_tables(sql, params, &u.aliases), true).iter().filter(|s| request.changed(file, s.line)) {
+            for s in
+                statements(file, *line, &model.with_tables(sql, params, &u.aliases), true).iter().filter(|s| request.changed(file, s.line))
+            {
                 unknown.sql(file, s);
             }
         }
@@ -1403,16 +1630,21 @@ pub fn run(request: &Request) -> Result<Answer, String> {
     findings.append(&mut unknown.findings);
 
     // (c): the change removed the last write of a column.
-    if let Some(before) = request.options.get("before").and_then(|b| b.as_object()) {
-        let olds: Vec<(String, Uses)> = before.iter().filter_map(|(f, t)| Some((f.clone(), uses(f, t.as_str()?)))).collect();
+    if !before.is_empty() {
+        let olds: Vec<(String, Uses)> = before.iter().map(|(f, t)| (f.clone(), uses(f, t))).collect();
         let pairs: Vec<(&str, &Uses)> = olds.iter().map(|(f, u)| (f.as_str(), u)).collect();
         let old = model.written(&pairs);
-        let mut gone: Vec<(&(String, String), &(String, u32))> = old.cols.iter().filter(|(k, _)| !written.cols.contains_key(*k)).collect();
+        let mut gone: Vec<_> = old.cols.iter().filter(|(k, _)| !written.cols.contains_key(*k)).collect();
         gone.sort();
         // A table no code writes any more is one finding, not one per column.
         let mut tables_gone = HashSet::new();
         for ((table, _), (file, line)) in &gone {
-            if !written.literal.contains(table) && !written.opaque.contains(table) && old.literal.contains(table) && model.tables.get(table).is_some_and(|t| t.file.starts_with(&request.prefix)) && tables_gone.insert(table.clone()) {
+            if !written.literal.contains(table)
+                && !written.opaque.contains(table)
+                && old.literal.contains(table)
+                && model.tables.get(table).is_some_and(|t| t.file.starts_with(&request.prefix))
+                && tables_gone.insert(table.clone())
+            {
                 findings.push(Finding {
                     file: file.clone(),
                     line: *line,
@@ -1422,8 +1654,15 @@ pub fn run(request: &Request) -> Result<Answer, String> {
             }
         }
         for ((table, column), (file, line)) in gone.into_iter().filter(|((t, _), _)| !tables_gone.contains(t)) {
-            let Some(c) = model.tables.get(table).and_then(|t| t.columns.iter().find(|c| &c.name.to_lowercase() == column)) else { continue };
-            if written.opaque.contains(table) || !c.nullable || c.filled || written.trigger.contains(column) || !c.file.starts_with(&request.prefix) {
+            let Some(c) = model.tables.get(table).and_then(|t| t.columns.iter().find(|c| &c.name.to_lowercase() == column)) else {
+                continue;
+            };
+            if written.opaque.contains(table)
+                || !c.nullable
+                || c.filled
+                || written.trigger.contains(column)
+                || !c.file.starts_with(&request.prefix)
+            {
                 continue;
             }
             findings.push(Finding {
@@ -1437,8 +1676,15 @@ pub fn run(request: &Request) -> Result<Answer, String> {
 
     findings.sort_by(|a, b| (&a.file, a.line, &a.target).cmp(&(&b.file, b.line, &b.target)));
     findings.dedup_by(|a, b| a.target == b.target);
-    let summary = format!("{} tables and {} columns checked against {} files that use them", model.tables.len(), model.tables.values().map(|t| t.columns.len()).sum::<usize>(), code.len());
-    Ok(Answer { findings, summary, data: None })
+    Ok(Answer::new(
+        findings,
+        format!(
+            "{} tables and {} columns checked against {} files that use them",
+            model.tables.len(),
+            model.tables.values().map(|t| t.columns.len()).sum::<usize>(),
+            code.len()
+        ),
+    ))
 }
 
 #[cfg(test)]
@@ -1451,7 +1697,7 @@ mod tests {
             command: "columns".into(),
             root: text::temp_tree(&format!("columns-{name}"), files),
             files: files.iter().map(|(p, _)| p.to_string()).collect(),
-            added: added.map(|a| a.iter().map(|(f, l)| (f.to_string(), l.to_vec())).collect()),
+            added: added.map(|a| a.iter().map(|(f, l)| (f.to_string(), l.iter().copied().collect())).collect()),
             prefix: String::new(),
             database_url: None,
             options: serde_json::json!({ "before": before.iter().map(|(f, t)| (f.to_string(), serde_json::Value::String(t.to_string()))).collect::<serde_json::Map<_, _>>() }),
@@ -1484,11 +1730,16 @@ mod tests {
             ("src/profile.ts", "export const save = (row: Row) => supabase.from('profiles').insert(row);\nexport const note = () => db.query(\"INSERT INTO audit (note) VALUES ('x')\");\n"),
         ], None, &[]);
         assert_eq!(targets(&opaque), Vec::<String>::new());
-        let swift = run_files("swift", &[
-            ("db/migrations/001.sql", PROFILES),
-            ("src/profile.ts", "export const save = (name: string) => supabase.from('profiles').insert({ id: 1, name });\n"),
-            ("ios/Audit.swift", "let rows = try await client.from(\"audit\").select().execute()\n"),
-        ], None, &[]);
+        let swift = run_files(
+            "swift",
+            &[
+                ("db/migrations/001.sql", PROFILES),
+                ("src/profile.ts", "export const save = (name: string) => supabase.from('profiles').insert({ id: 1, name });\n"),
+                ("ios/Audit.swift", "let rows = try await client.from(\"audit\").select().execute()\n"),
+            ],
+            None,
+            &[],
+        );
         assert_eq!(targets(&swift), vec!["columns:profiles.nickname", "columns:profiles.updated_by"]);
     }
 
@@ -1535,10 +1786,18 @@ mod tests {
     #[test]
     fn drizzle_inserts_count_by_key_and_a_project_helper_column_is_left_alone() {
         let schema = "export const users = pgTable('users', {\n  id: uuid('id').primaryKey().defaultRandom(),\n  email: text('email').notNull(),\n  nick: text('nick'),\n  createdAt: createdAt(),\n});\n";
-        let got = run_files("drizzle", &[
-            ("src/schema.ts", schema),
-            ("src/users.ts", "import { users } from './schema';\nexport const add = (email: string) => db.insert(users).values({ email });\n"),
-        ], None, &[]);
+        let got = run_files(
+            "drizzle",
+            &[
+                ("src/schema.ts", schema),
+                (
+                    "src/users.ts",
+                    "import { users } from './schema';\nexport const add = (email: string) => db.insert(users).values({ email });\n",
+                ),
+            ],
+            None,
+            &[],
+        );
         assert_eq!(targets(&got), vec!["columns:users.nick"]);
         assert!(got[0].message.contains("remove `nick` from the table"), "{}", got[0].message);
     }
@@ -1572,11 +1831,16 @@ mod tests {
     #[test]
     fn an_auth_library_writes_its_own_tables() {
         let schema = "export const user = pgTable('user', {\n  id: text('id').primaryKey(),\n  image: text('image'),\n});\nexport const notes = pgTable('notes', {\n  id: text('id').primaryKey(),\n  body: text('body'),\n});\n";
-        let got = run_files("auth", &[
-            ("src/schema.ts", schema),
-            ("src/auth.ts", "import { betterAuth } from 'better-auth';\nexport const auth = betterAuth({});\n"),
-            ("src/notes.ts", "import { notes } from './schema';\nexport const add = () => db.insert(notes).values({ id: '1' });\n"),
-        ], None, &[]);
+        let got = run_files(
+            "auth",
+            &[
+                ("src/schema.ts", schema),
+                ("src/auth.ts", "import { betterAuth } from 'better-auth';\nexport const auth = betterAuth({});\n"),
+                ("src/notes.ts", "import { notes } from './schema';\nexport const add = () => db.insert(notes).values({ id: '1' });\n"),
+            ],
+            None,
+            &[],
+        );
         assert_eq!(targets(&got), vec!["columns:notes.body"]);
     }
 
@@ -1588,7 +1852,8 @@ mod tests {
         let added = run_files("added", &files, Some(&[("db/migrations/001.sql", &[3])]), &[]);
         assert_eq!(targets(&added), vec!["columns:orders.gift_note"]);
         assert!(added[0].message.contains("adds orders.gift_note, but no code writes it"), "{}", added[0].message);
-        let before = "export const ship = (id: string) => db.query('UPDATE orders SET note = $1, shipped_at = now() WHERE id = $2', ['x', id]);\n";
+        let before =
+            "export const ship = (id: string) => db.query('UPDATE orders SET note = $1, shipped_at = now() WHERE id = $2', ['x', id]);\n";
         let removed = run_files("removed", &files, Some(&[("src/orders.ts", &[])]), &[("src/orders.ts", before)]);
         assert_eq!(targets(&removed), vec!["columns:last-write:orders.shipped_at"]);
     }

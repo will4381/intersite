@@ -47,7 +47,7 @@ export function pieces(node, sourceCode, depth = 0) {
  * True when a value written into a string is fixed by the code, not by a caller: a literal, a number, an UPPER_CASE
  * constant, an import or something read off one (`users.name.name`, `this.table`), a placeholder list, or a `const`
  * set to one of those.
- * @param {any} node @param {any} sourceCode @param {number} [depth]
+ * @param {any} node @param {any} sourceCode @param {number} [depth] @returns {boolean}
  */
 export function isCodeValue(node, sourceCode, depth = 0) {
   node = unwrap(node);
@@ -80,7 +80,7 @@ export function isCodeValue(node, sourceCode, depth = 0) {
   }
 }
 
-/** An UPPER_CASE constant, an import, or a `const` set to a code value or placeholder list. @param {any} node @param {any} sourceCode @param {number} depth */
+/** An UPPER_CASE constant, an import, or a `const` set to a code value or placeholder list. @param {any} node @param {any} sourceCode @param {number} depth @returns {boolean} */
 function isCodeName(node, sourceCode, depth) {
   if (UPPER.test(node.name)) return true;
   if (resolveVariable(node, sourceCode)?.defs[0]?.type === "ImportBinding") return true;
@@ -122,7 +122,7 @@ export const rule = defineRule({
       const options = unwrap(arg)?.type === "ConditionalExpression" ? [unwrap(arg).consequent, unwrap(arg).alternate] : [arg];
       for (const option of options) {
         const parts = option && pieces(option, context.sourceCode);
-        if (!parts || !looksRight(parts.map((p) => ("text" in p ? p.text : " ? ")).join(""))) continue;
+        if (!parts || !looksRight(parts.map((/** @type {{ text: string } | { expr: any }} */ p) => ("text" in p ? p.text : " ? ")).join(""))) continue;
         const value = firstDynamic(parts, context.sourceCode, quotedOnly);
         if (value) return context.report({ node: value, messageId: "sql", data: { value: context.sourceCode.getText(value).slice(0, 40) } });
       }

@@ -50,13 +50,13 @@ test("legitimate config work passes: a new alias, a stricter rule, a new CI step
 });
 
 test("dropping a gate from intersite.json and growing the gates baseline are reported", async () => {
-  const r = repo({ ...base, "intersite-gates-baseline.json": JSON.stringify({ unused: ["src/a.ts"] }) });
+  const r = repo({ ...base, ".intersite/baseline.json": JSON.stringify({ gates: { unused: ["src/a.ts"] } }) });
   r.write({
     "intersite.json": JSON.stringify({ project: "t", gates: { base: "base", run: ["test-integrity", "duplicates"] } }),
-    "intersite-gates-baseline.json": JSON.stringify({ unused: ["src/a.ts", "src/b.ts"] }),
+    ".intersite/baseline.json": JSON.stringify({ gates: { unused: ["src/a.ts", "src/b.ts"] } }),
   });
   const { code, out } = await run(r.cwd, ["tamper"]);
   assert.equal(code, 1);
   assert.ok(lines(out).some((l) => l.startsWith("intersite.json: gates.run no longer runs similar")), out.join("\n"));
-  assert.ok(lines(out).some((l) => l.startsWith("intersite-gates-baseline.json: baseline grew from 1 to 2 recorded findings")), out.join("\n"));
+  assert.ok(lines(out).some((l) => l.startsWith(".intersite/baseline.json: baseline grew from 1 to 2 recorded findings")), out.join("\n"));
 });

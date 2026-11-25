@@ -1,6 +1,7 @@
 // @ts-check
 // The snapshot diff: each baseline answer's status and JSON body, normalised so two runs of the same code on the same
 // data are identical, then compared between two local runs (before and after a migration, backfill or refactor).
+import { isObject } from "../shared/shape.mjs";
 
 /** @typedef {{ status: number, body: unknown }} Answer */
 /** @typedef {Record<string, Answer>} Snapshot caseId -> normalised answer */
@@ -92,9 +93,6 @@ function show(value) {
   const text = value === undefined ? "(none)" : JSON.stringify(value);
   return text.length > VALUE ? `${text.slice(0, VALUE - 1)}…` : text;
 }
-
-/** @param {unknown} value @returns {value is Record<string, unknown>} */
-const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 
 /**
  * Pushes where `after` departs from `before` to `context.out`. Arrays compare by position, except when every element

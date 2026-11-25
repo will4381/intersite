@@ -53,17 +53,23 @@ fn key_of(key: &PropertyKey) -> Option<String> {
 
 /// The static keys of an object literal, or None when one is computed or spread (the full set is unknown).
 fn object_keys(obj: &ObjectExpression) -> Option<BTreeSet<String>> {
-    obj.properties.iter().map(|p| match p {
-        ObjectPropertyKind::ObjectProperty(p) if !p.computed => key_of(&p.key),
-        _ => None,
-    }).collect()
+    obj.properties
+        .iter()
+        .map(|p| match p {
+            ObjectPropertyKind::ObjectProperty(p) if !p.computed => key_of(&p.key),
+            _ => None,
+        })
+        .collect()
 }
 
 fn signature_keys(members: &[TSSignature]) -> Option<BTreeSet<String>> {
-    members.iter().map(|m| match m {
-        TSSignature::TSPropertySignature(p) if !p.computed => key_of(&p.key),
-        _ => None,
-    }).collect()
+    members
+        .iter()
+        .map(|m| match m {
+            TSSignature::TSPropertySignature(p) if !p.computed => key_of(&p.key),
+            _ => None,
+        })
+        .collect()
 }
 
 impl<'a> Visit<'a> for Collector<'_> {
@@ -76,7 +82,8 @@ impl<'a> Visit<'a> for Collector<'_> {
 
     fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
         let callee = &self.src[it.callee.span().start as usize..it.callee.span().end as usize];
-        if let Some((_, derive)) = SCHEMA_CALLS.iter().find(|(c, _)| callee == *c || callee.ends_with(&format!(".{c}")) && c.contains('.')) {
+        if let Some((_, derive)) = SCHEMA_CALLS.iter().find(|(c, _)| callee == *c || callee.ends_with(&format!(".{c}")) && c.contains('.'))
+        {
             // A Drizzle table takes its name first and its columns second.
             let fields = it.arguments.iter().filter_map(|a| a.as_expression()).find_map(|e| match e {
                 Expression::ObjectExpression(o) => Some(o),
@@ -137,12 +144,16 @@ pub fn run(request: &Request) -> Result<Answer, String> {
     let (schemas, types): (Vec<&Located>, Vec<&Located>) = all.iter().partition(|(_, s)| s.derive.is_some());
     // Within one package: another package may not be able to import the schema, and mirrors it on purpose.
     let mut packages = std::collections::HashMap::new();
-    let schemas: Vec<(&Located, String)> = schemas.into_iter().map(|x| (x, crate::decisions::package_of(&request.root, &x.0, &mut packages))).collect();
+    let schemas: Vec<(&Located, String)> =
+        schemas.into_iter().map(|x| (x, crate::graph::package_of(&request.root, &x.0, &mut packages))).collect();
     let mut findings = Vec::new();
     let mut seen = BTreeSet::new();
     for (tfile, t) in &types {
-        let package = crate::decisions::package_of(&request.root, tfile, &mut packages);
-        let Some((sfile, s)) = schemas.iter().filter(|(_, p)| *p == package).map(|(x, _)| (&x.0, &x.1)).find(|(_, s)| s.keys == t.keys) else { continue };
+        let package = crate::graph::package_of(&request.root, tfile, &mut packages);
+        let Some((sfile, s)) = schemas.iter().filter(|(_, p)| *p == package).map(|(x, _)| (&x.0, &x.1)).find(|(_, s)| s.keys == t.keys)
+        else {
+            continue;
+        };
         if !(request.changed(tfile, t.line) || request.changed(sfile, s.line)) || !seen.insert((tfile.clone(), t.name.clone())) {
             continue;
         }
@@ -154,7 +165,7 @@ pub fn run(request: &Request) -> Result<Answer, String> {
             message: format!("{tfile}:{} {} restates by hand the {} keys of {} at {sfile}:{}, so the two drift the first time one changes and nothing checks one against the other: derive it, type {} = {derive}", t.line, t.name, t.keys.len(), s.name, s.line, t.name),
         });
     }
-    Ok(Answer { findings, summary: format!("{} schemas and {} object types compared", schemas.len(), types.len()), data: None })
+    Ok(Answer::new(findings, format!("{} schemas and {} object types compared", schemas.len(), types.len())))
 }
 
 #[cfg(test)]

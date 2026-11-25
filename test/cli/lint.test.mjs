@@ -18,10 +18,10 @@ test("a path that does not exist is a usage error, not a clean run", async () =>
 });
 
 test("a corrupt baseline is one line saying how to recover", async () => {
-  const cwd = fixture({ "intersite.json": { project: "fresh" }, "src/a.ts": "export const a = 1;\n", "intersite-baseline.json": "{ not json" });
+  const cwd = fixture({ "intersite.json": { project: "fresh" }, "src/a.ts": "export const a = 1;\n", ".intersite/baseline.json": "{ not json" });
   assert.deepEqual(await runLint(cwd), {
     code: 2,
-    out: "intersite lint: intersite-baseline.json is not valid JSON: restore it from git, or run `intersite lint --write=init` to record today's findings again",
+    out: "intersite lint: .intersite/baseline.json is not valid JSON: restore it from git, or run `intersite lint --write=init` to record today's findings again",
   });
   assert.equal((await runLint(cwd, ["--write=init"])).code, 0, "the recovery the message names works");
   assert.equal((await runLint(cwd)).code, 0);

@@ -4,9 +4,39 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  check:
-    runs-on: macos-latest
+  # The Rust engine, built and unit-tested once per OS; the test shards download the binary instead of each compiling it.
+  engine:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+      - if: matrix.os == 'ubuntu-latest'
+        run: cargo fmt --check --manifest-path core/Cargo.toml && cargo clippy --release --all-targets --manifest-path core/Cargo.toml -- -D warnings
+      - run: npm run test:rust
+      - run: npm run build:core
+      - uses: actions/upload-artifact@v4
+        with:
+          name: engine-${{ matrix.os }}
+          path: core/target/release/intersite-core
+          retention-days: 1
+
+  # Intersite's own gates and checks (the JSDoc type check among them) on what this push or pull request changed.
+  self:
+    needs: engine
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -16,6 +46,54 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: brew install swiftlint
-      - run: npm test
-      - run: npm run check -- --base origin/main
+      - uses: actions/download-artifact@v4
+        with:
+          name: engine-ubuntu-latest
+          path: core/target/release
+      - run: chmod +x core/target/release/intersite-core
+      - name: npm run check
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then BASE=HEAD~1; fi
+          npm run check -- --base "$BASE"
+
+  test:
+    needs: engine
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        shard: [1, 2, 3]
+        include:
+          - os: ubuntu-latest
+            node: "22.15"
+          - os: macos-latest
+            node: 24
+    runs-on: ${{ matrix.os }}
+    env:
+      CI: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: engine-${{ matrix.os }}
+          path: core/target/release
+      - run: chmod +x core/target/release/intersite-core
+      # The runner image ships Postgres and Swift; put initdb on PATH and fetch SwiftLint's Linux build.
+      - if: matrix.os == 'ubuntu-latest'
+        run: |
+          ls -d /usr/lib/postgresql/*/bin | tail -1 >> "$GITHUB_PATH"
+          curl -sSfL -o /tmp/swiftlint.zip https://github.com/realm/SwiftLint/releases/download/0.65.1/swiftlint_linux_amd64.zip
+          echo "caeed6f4a679c35539ffaf124f6c4ab4a8416917f7d8796279dc52b74026059d  /tmp/swiftlint.zip" | sha256sum -c -
+          sudo unzip -q /tmp/swiftlint.zip -d /usr/local/bin
+      - if: matrix.os == 'macos-latest'
+        run: |
+          brew install swiftlint postgresql@17
+          echo "$(brew --prefix postgresql@17)/bin" >> "$GITHUB_PATH"
+      - run: npm run test:js -- --test-shard=${{ matrix.shard }}/3

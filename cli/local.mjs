@@ -1,8 +1,7 @@
 // @ts-check
-import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { collectorTokens, loadConfig, useServedCollector } from "../shared/config.mjs";
+import { collectorTokens, intersiteDir, loadConfig, useServedCollector } from "../shared/config.mjs";
 
 const LOCAL = /^(?:localhost|127\.0\.0\.1)$/;
 
@@ -30,7 +29,7 @@ export async function ensureLocalCollector(cwd) {
   if (up) return nothing;
 
   const { startNodeCollector } = await import("../collector/node.mjs");
-  mkdirSync(join(cwd, ".intersite"), { recursive: true });
+  intersiteDir(cwd);
   const tokens = collectorTokens(config);
   // A free port of its own, not the configured one: two commands at once must not share a collector that the first to
   // finish would stop under the other. SQLite lets each open the same file.

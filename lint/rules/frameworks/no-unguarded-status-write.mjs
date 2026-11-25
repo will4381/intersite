@@ -51,7 +51,7 @@ export const rule = defineRule({
         if (callee.type !== "MemberExpression" || callee.property.name !== "set" || values?.type !== "ObjectExpression") return;
         if (callee.object.type !== "CallExpression" || callee.object.callee.property?.name !== "update") return;
         const keys = stateKeys(values);
-        const member = node.parent;
+        const member = /** @type {any} */ (node.parent);
         if (!keys.length || member?.type !== "MemberExpression" || member.property.name !== "where" || member.parent?.type !== "CallExpression") return;
         if (!guards(member.parent.arguments[0], keys)) context.report({ node, messageId: "unguarded", data: { key: keys[0] } });
       },

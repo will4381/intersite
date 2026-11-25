@@ -8,7 +8,7 @@ import { loadConfig, TEST_PATHS } from "../../shared/config.mjs";
 import { repo } from "./repo.mjs";
 
 /** @param {string} cwd */
-const check = async (cwd) => (await naming({ cwd, base: "base", testPaths: TEST_PATHS, testCmd: "", setup: "", duplicateLines: 6, mutants: 0, timeout: 0, entryPaths: [], artifacts: [] })).findings;
+const check = async (cwd) => (await naming({ cwd, base: "base", testPaths: TEST_PATHS, testCmd: "", setup: "", duplicateLines: 6, mutants: 0, timeout: 0, entryPaths: [], artifacts: [], protected: [] })).findings;
 
 /** Components that each default-export a function named after their file. @param {string} dir @param {string[]} names */
 const components = (dir, names) => Object.fromEntries(names.map((n) => [`${dir}/${n}.tsx`, `export default function ${n}() { return null; }\n`]));

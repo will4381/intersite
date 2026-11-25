@@ -13,6 +13,7 @@ import { fixture } from "../lint/fixture.mjs";
 
 /** Runs init in `cwd` and returns what it printed. @param {string} cwd */
 async function run(cwd) {
+  /** @type {string[]} */
   const lines = [];
   const original = console.log;
   console.log = (line) => lines.push(line);
@@ -32,13 +33,13 @@ test("init writes the config, adapter and agent rules, and a second run changes 
 
   assert.equal(
     await run(cwd),
-    "ok init: wrote intersite.yml, intersite.adapter.mjs, AGENTS.md, .claude/skills/intersite/SKILL.md, .claude/skills/intersite-bug/SKILL.md, " +
-      ".claude/skills/intersite-rule/SKILL.md, .claude/skills/intersite-setup/SKILL.md, .claude/settings.json, .gitignore; install oxlint and @oxlint/plugins, then run `intersite lint --write=init`",
+    "ok init: wrote intersite.yml, .intersite/adapter.mjs, AGENTS.md, .claude/skills/intersite/SKILL.md, .claude/skills/intersite-bug/SKILL.md, " +
+      ".claude/skills/intersite-rule/SKILL.md, .claude/skills/intersite-setup/SKILL.md, .claude/settings.json, .intersite/.gitignore; install oxlint and @oxlint/plugins, then run `intersite lint --write=init`",
   );
   assert.match(readFileSync(join(cwd, ".claude/skills/intersite/SKILL.md"), "utf8"), /^---\nname: intersite\n/);
   assert.equal(loadConfig(cwd).project, "acme-web-app");
-  assert.match(readFileSync(join(cwd, "intersite.adapter.mjs"), "utf8"), /export async function signIn/);
-  assert.equal(readFileSync(join(cwd, ".gitignore"), "utf8"), "node_modules/\n.intersite/\n");
+  assert.match(readFileSync(join(cwd, ".intersite/adapter.mjs"), "utf8"), /export async function signIn/);
+  assert.equal(readFileSync(join(cwd, ".gitignore"), "utf8"), "node_modules/", "the project's own .gitignore is left alone");
   const agents = readFileSync(join(cwd, "AGENTS.md"), "utf8");
   assert.ok(agents.startsWith("# Rules\n\nBe kind.\n\n<!-- intersite:start -->\n## Testing with Intersite"));
   assert.ok(agents.endsWith("<!-- intersite:end -->\n"));
@@ -52,7 +53,7 @@ test("init refreshes only its own block in AGENTS.md and keeps the project's edi
   writeFileSync(join(cwd, "intersite.json"), JSON.stringify({ project: "kept" }));
   writeFileSync(join(cwd, "AGENTS.md"), "Top.\n\n<!-- intersite:start -->\nold rules\n<!-- intersite:end -->\n\nBottom.\n");
 
-  assert.match(await run(cwd), /^ok init: wrote intersite\.adapter\.mjs, AGENTS\.md, \.claude\/skills\/intersite\/SKILL\.md, /);
+  assert.match(await run(cwd), /^ok init: wrote \.intersite\/adapter\.mjs, AGENTS\.md, \.claude\/skills\/intersite\/SKILL\.md, /);
   assert.equal(loadConfig(cwd).project, "kept");
   const agents = readFileSync(join(cwd, "AGENTS.md"), "utf8");
   assert.ok(agents.startsWith("Top.\n\n<!-- intersite:start -->\n## Testing with Intersite"));
@@ -71,12 +72,32 @@ test("with no intersite.yml every default applies and the project is named after
   assert.equal(loadConfig(cwd).project, "cafe-creme");
 });
 
-test("in a git repository with no .gitignore, init creates one so recorded cases are never committed", async () => {
+test("init leaves one file beside the project: .intersite keeps what is generated out of git and commits the baseline and adapter", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "intersite-init-git-"));
   execFileSync("git", ["init", "-q"], { cwd });
   await run(cwd);
-  assert.equal(readFileSync(join(cwd, ".gitignore"), "utf8"), ".intersite/\n");
+  assert.equal(existsSync(join(cwd, ".gitignore")), false);
+  const ignored = (/** @type {string} */ path) => { try { execFileSync("git", ["check-ignore", "-q", path], { cwd }); return true; } catch { return false; } };
+  assert.deepEqual(["cases.db", "ledger.jsonl", "oxlintrc.json", "baseline.json", "adapter.mjs", ".gitignore"].map((f) => [f, ignored(`.intersite/${f}`)]), [
+    ["cases.db", true], ["ledger.jsonl", true], ["oxlintrc.json", true], ["baseline.json", false], ["adapter.mjs", false], [".gitignore", false],
+  ]);
   assert.equal(await run(cwd), "ok init: already set up");
+});
+
+test("init moves an older project's files into .intersite and takes out the .gitignore line that hid them", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "intersite-init-move-"));
+  execFileSync("git", ["init", "-q"], { cwd });
+  writeFileSync(join(cwd, "intersite.yml"), "project: old\n");
+  writeFileSync(join(cwd, ".gitignore"), "node_modules/\n.intersite/\n");
+  writeFileSync(join(cwd, "intersite-baseline.json"), JSON.stringify({ "src/a.ts": { "intersite/no-empty-catch": 1 } }));
+  writeFileSync(join(cwd, "intersite-gates-baseline.json"), JSON.stringify({ unused: ["src/b.ts"] }));
+  writeFileSync(join(cwd, "intersite.adapter.mjs"), "export async function signIn() { return { cookie: 'mine' }; }\n");
+  assert.match(await run(cwd), /^ok init: wrote \.intersite\/baseline\.json \(from intersite-baseline\.json, intersite-gates-baseline\.json\), \.intersite\/adapter\.mjs \(from intersite\.adapter\.mjs\), /);
+  assert.deepEqual(JSON.parse(readFileSync(join(cwd, ".intersite/baseline.json"), "utf8")), { lint: { "src/a.ts": { "intersite/no-empty-catch": 1 } }, gates: { unused: ["src/b.ts"] } });
+  assert.match(readFileSync(join(cwd, ".intersite/adapter.mjs"), "utf8"), /mine/);
+  assert.deepEqual(["intersite-baseline.json", "intersite-gates-baseline.json", "intersite.adapter.mjs"].filter((f) => existsSync(join(cwd, f))), []);
+  assert.equal(readFileSync(join(cwd, ".gitignore"), "utf8"), "node_modules/\n");
+  assert.equal(loadConfig(cwd).replay.adapter, "./.intersite/adapter.mjs");
 });
 
 test("installing intersite itself does not fail the first check: init acknowledges it for new-deps", async () => {
@@ -91,22 +112,21 @@ test("installing intersite itself does not fail the first check: init acknowledg
   assert.equal((await runGate(cwd, ["new-deps"])).code, 0);
 });
 
-test("init leaves .gitignore alone when a parent .gitignore already covers .intersite", async () => {
+test("init says so when a parent .gitignore ignores .intersite as a whole, and leaves that file alone", async () => {
   const top = mkdtempSync(join(tmpdir(), "intersite-init-mono-"));
   execFileSync("git", ["init", "-q"], { cwd: top });
-  writeFileSync(join(top, ".gitignore"), "/.intersite/\n**/.intersite/\n");
+  writeFileSync(join(top, ".gitignore"), "**/.intersite/\n");
   const cwd = join(top, "apps/web");
   mkdirSync(cwd, { recursive: true });
-  await run(cwd);
-  assert.equal(existsSync(join(cwd, ".gitignore")), false);
-  assert.equal(readFileSync(join(top, ".gitignore"), "utf8"), "/.intersite/\n**/.intersite/\n");
+  assert.match(await run(cwd), /; a \.gitignore ignores \.intersite\/ as a whole, which keeps \.intersite\/baseline\.json out of git: remove that line$/);
+  assert.equal(readFileSync(join(top, ".gitignore"), "utf8"), "**/.intersite/\n");
 });
 
 test("in a package of a monorepo, init writes the agent rules and skills once at the repository top", async () => {
   const top = mkdtempSync(join(tmpdir(), "intersite-init-pkg-"));
   execFileSync("git", ["init", "-q"], { cwd: top });
   for (const pkg of ["apps/api", "apps/web"]) mkdirSync(join(top, pkg), { recursive: true });
-  assert.match(await run(join(top, "apps/api")), /wrote intersite\.yml, intersite\.adapter\.mjs, \.\.\/\.\.\/AGENTS\.md, \.\.\/\.\.\/\.claude\/skills\/intersite\/SKILL\.md/);
+  assert.match(await run(join(top, "apps/api")), /wrote intersite\.yml, \.intersite\/adapter\.mjs, \.\.\/\.\.\/AGENTS\.md, \.\.\/\.\.\/\.claude\/skills\/intersite\/SKILL\.md/);
   assert.doesNotMatch(await run(join(top, "apps/web")), /AGENTS|skills/);
   assert.equal(existsSync(join(top, "apps/api/AGENTS.md")) || existsSync(join(top, "apps/web/.claude")), false);
   assert.match(readFileSync(join(top, ".claude/skills/intersite/SKILL.md"), "utf8"), /^---\nname: intersite\n/);
@@ -129,6 +149,7 @@ test("init adds the edit hook to the project's Claude settings once, keeping the
 
 test("init takes no arguments: an unknown flag is a usage error, not silently ignored", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "intersite-init-flag-"));
+  /** @type {string[]} */
   const errors = [];
   const original = console.error;
   console.error = (line) => errors.push(line);
@@ -143,8 +164,8 @@ test("init takes no arguments: an unknown flag is a usage error, not silently ig
 
 test("with oxlint installed, init records the baseline and still prints one line", async () => {
   const cwd = fixture({ "package.json": { name: "linted" }, "src/a.ts": "try { run(); } catch {}\n" });
-  assert.match(await run(cwd), /^ok init: wrote intersite\.yml, .*, intersite-baseline\.json$/);
-  assert.deepEqual(JSON.parse(readFileSync(join(cwd, "intersite-baseline.json"), "utf8")), { "src/a.ts": { "intersite/no-empty-catch": 1 } });
+  assert.match(await run(cwd), /^ok init: wrote intersite\.yml, .*, \.intersite\/baseline\.json$/);
+  assert.deepEqual(JSON.parse(readFileSync(join(cwd, ".intersite/baseline.json"), "utf8")).lint, { "src/a.ts": { "intersite/no-empty-catch": 1 } });
 });
 
 test("a broken intersite.yml is one line naming the file and the problem", () => {
@@ -162,15 +183,15 @@ test("in a Swift-only project init records the baseline through SwiftLint and do
   const cwd = mkdtempSync(join(tmpdir(), "intersite-init-swift-"));
   mkdirSync(join(cwd, "App"));
   writeFileSync(join(cwd, "App/Settings.swift"), "import SwiftUI\n\nlet decoded = try! JSONDecoder().decode(Int.self, from: Data())\n");
-  assert.match(await run(cwd), /^ok init: wrote .*, intersite-baseline\.json$/);
-  assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(cwd, "intersite-baseline.json"), "utf8"))), ["App/Settings.swift"]);
+  assert.match(await run(cwd), /^ok init: wrote .*, \.intersite\/baseline\.json$/);
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(cwd, ".intersite/baseline.json"), "utf8")).lint), ["App/Settings.swift"]);
 });
 
 test("init --no-replay writes replay: false and neither the adapter nor the replay skill", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "intersite-init-noreplay-"));
-  assert.equal(await init(["--no-replay"], { cwd, quiet: true }), 0);
+  assert.equal(await init(["--no-replay"], { cwd }), 0);
   assert.equal(loadConfig(cwd).replay.enabled, false);
-  assert.ok(!existsSync(join(cwd, "intersite.adapter.mjs")));
+  assert.ok(!existsSync(join(cwd, ".intersite/adapter.mjs")));
   assert.ok(!existsSync(join(cwd, ".claude/skills/intersite-bug/SKILL.md")));
   assert.ok(existsSync(join(cwd, ".claude/skills/intersite-rule/SKILL.md")));
 });

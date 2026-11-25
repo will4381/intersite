@@ -13,7 +13,7 @@ export const rule = defineRule({
   },
   createOnce(context) {
     return {
-      "ClassDeclaration, ClassExpression"(node) {
+      "ClassDeclaration, ClassExpression"(/** @type {any} */ node) {
         // A subclass, a decorated class or an implementation of an interface takes part in a contract a function cannot.
         if (node.superClass || node.implements?.length || node.decorators?.length || node.abstract || node.declare) return;
         const members = node.body.body;

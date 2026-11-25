@@ -51,10 +51,12 @@ export const rule = defineRule({
       ThrowStatement(node) {
         const thrown = node.argument;
         // new Error(...), Error(...), new errors.NotFound(...)
+        /** @type {any} */
         const callee = thrown.type === "NewExpression" || thrown.type === "CallExpression" ? thrown.callee : undefined;
         const errorName = callee?.type === "Identifier" ? callee.name : callee?.type === "MemberExpression" ? callee.property.name : "";
         if (!errorName?.endsWith("Error")) return;
         // The nearest catch clause or promise `.catch(error => ...)` handler, unless another function boundary comes first.
+        /** @type {any} */
         let clause = node.parent;
         while (clause && clause.type !== "CatchClause" && !clause.type.endsWith("FunctionExpression") && clause.type !== "FunctionDeclaration") clause = clause.parent;
         const param = clause?.type === "CatchClause" ? clause.param : isCatchHandler(clause) ? clause.params[0] : undefined;

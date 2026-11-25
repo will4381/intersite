@@ -43,10 +43,10 @@ export const rule = defineRule({
       TSTypeAliasDeclaration(node) {
         if (!node.declare && node.typeAnnotation.type === "TSTypeLiteral") abstractions.set(node.id.name, { node, kind: "type" });
       },
-      "ClassDeclaration[abstract=true]"(node) {
+      "ClassDeclaration[abstract=true]"(/** @type {any} */ node) {
         if (node.id && !node.declare) abstractions.set(node.id.name, { node, kind: "abstract class" });
       },
-      "ClassDeclaration, ClassExpression"(node) {
+      "ClassDeclaration, ClassExpression"(/** @type {any} */ node) {
         const name = node.id?.name ?? "an anonymous class";
         for (const clause of node.implements ?? []) if (clause.expression.type === "Identifier") implement(clause.expression.name, name);
         if (node.superClass?.type === "Identifier") implement(node.superClass.name, name);

@@ -43,7 +43,8 @@ import { compareSnapshots, describe, idMatcher, normalise } from "./snapshot.mjs
  * One pass over a session in one mode. `known` holds every ID sent or answered so far; `mine` the IDs the owner's
  * writes produced, `theirs` those another account's writes produced.
  * @typedef {{ mode: Mode, steps: Step[], send: ReturnType<typeof sender>, auth: ReturnType<typeof signer>, pattern: RegExp,
- *   known: Set<string>, mine: Set<string>, theirs: Set<string>, headersFor: (request: Case["request"], item: Case) => Promise<Record<string, string>> }} Pass
+ *   known: Set<string>, mine: Set<string>, theirs: Set<string>, headersFor: (request: Case["request"], item: Case) => Promise<Record<string, string>>,
+ *   ids: Map<string, string>, snapshot: import("./snapshot.mjs").Run | undefined }} Pass
  */
 
 const DAY = 86_400_000;
@@ -83,7 +84,7 @@ export function answers(url) {
  * Replay each session against `target` in every mode and compare with what was recorded.
  * `concurrency` sessions run at once, except when the adapter has `reset` (shared state), when they run one at a time.
  * @param {{ sessions: { session: string, cases: Case[] }[], target: string, adapter: Adapter, modes: Mode[], idPattern: string,
- *   fetch?: typeof fetch, shiftDates?: boolean, now?: number, concurrency?: number, uiTarget?: string, headed?: boolean,
+ *   fetch?: typeof globalThis.fetch, shiftDates?: boolean, now?: number, concurrency?: number, uiTarget?: string, headed?: boolean,
  *   browser?: string, browserUrl?: string, snapshots?: boolean, crossTenantIgnore?: Accepted[] }} options
  * @returns {Promise<SessionResult[]>}
  */
@@ -155,64 +156,72 @@ async function replayPass(mode, cases, result, context) {
 /** The steps of one pass. Returns the skip reason when an ID could not be resolved. @param {Mode} mode @param {Case[]} cases @param {SessionResult} result @param {Context} context */
 async function replayOnce(mode, cases, result, context) {
   const { adapter, pattern } = context;
-  /** @type {Map<string, string>} recorded ID -> replayed ID */
-  const ids = new Map();
+  /** @type {Set<string>} */
+  const mine = new Set();
   /** @type {Pass} */
   const pass = {
-    mode, steps: result.steps, send: sender(context), auth: signer(context), pattern, known: new Set(), mine: new Set(), theirs: new Set(),
+    mode, steps: result.steps, send: sender(context), auth: signer(context), pattern, known: new Set(), mine, theirs: new Set(),
     headersFor: async (/** @type {Case["request"]} */ request, /** @type {Case} */ item) => (await adapter.headers?.({ caseId: item.id, method: request.method, route: request.route })) ?? {},
+    ids: new Map(),
+    snapshot: context.snapshots && mode === "baseline" ? { created: mine, numbers: new Map(), from: Date.now() } : undefined,
   };
-  const snapshot = context.snapshots && mode === "baseline" ? { created: pass.mine, numbers: new Map(), from: Date.now() } : undefined;
   const unsigned = await signInFailure(cases, pass);
-  if (unsigned) {
-    for (const item of cases) if (counts(mode, item, pattern)) record(pass, item, "skipped", unsigned);
-    return unsigned;
-  }
+  if (unsigned) return skipEach(cases, pass, unsigned);
 
   for (const [index, item] of cases.entries()) {
-    const { method } = item.request;
-    const kind = item.actor.kind;
-    const prepared = await prepare(item, ids, context);
-    if (prepared.skip !== undefined) {
-      for (const rest of cases.slice(index)) if (counts(mode, rest, pattern)) record(pass, rest, "skipped", prepared.skip);
-      return prepared.skip;
-    }
-    const { request } = prepared;
-    const omitted = /** @type {{ $omitted?: string } | null} */ (request.body)?.$omitted;
-    // Capture kept no body (an upload, a form post, one too large): sending the placeholder would fail for that alone.
-    if (omitted !== undefined) {
-      if (counts(mode, item, pattern)) record(pass, item, "skipped", `the request body was not recorded (${omitted}), so it cannot be sent again`);
-      continue;
-    }
-    mapIds(request, pattern, (id) => (pass.known.add(id), id));
-
-    // Another account's request goes first, so a leaky DELETE is not hidden by the owner's DELETE. A route public by
-    // design is not sent as another account at all.
-    const open = publicByDesign(context, item);
-    if (mode === "cross-tenant" && !open) await asOtherAccount(item, request, pass);
-
-    const headers = await pass.auth(kind, false);
-    // In race, a write that must repeat safely is sent twice at once, as a retrying client or a provider would.
-    const racing = mode === "race" && method !== "GET" && mustRepeatSafely(request, await pass.headersFor(request, item));
-    const [first, twin] = await Promise.all([pass.send(request, item, headers), racing ? pass.send(request, item, headers) : undefined]);
-    learnIds(item, first.json, ids);
-    if (twin) record(pass, item, ...raceVerdict(first, twin, pattern));
-    if (context.contract && (mode === "baseline" || mode === "contract")) {
-      const sent = Object.entries(headers).filter(([name]) => CREDENTIAL_HEADER.test(name)).map(([, value]) => value);
-      (result.live ??= {})[item.id] = { status: first.status, json: first.json, text: first.text, contentType: first.contentType, sent };
-    }
-    const foreign = noteIds(first.json, method, pass, pass.mine).find((id) => pass.theirs.has(id));
-    if (foreign && !open) record(pass, item, "failed", `this session's response contains ${foreign}, created by another account`, first.exchange);
-
-    if (mode === "baseline") {
-      const reason = baselineReason(item, first);
-      record(pass, item, reason ? "failed" : "passed", reason, first.exchange);
-      if (Object.keys(first.counters).length) /** @type {Step} */ (pass.steps.at(-1)).counters = first.counters;
-      if (snapshot) (result.snapshot ??= {})[item.id] = { status: first.status, body: normalise(first.json ?? null, snapshot) };
-    }
-    if (mode === "twice" && method !== "GET") await repeat(item, request, first, pass, context);
+    const prepared = await prepare(item, pass.ids, context);
+    if (prepared.skip !== undefined) return skipEach(cases.slice(index), pass, prepared.skip);
+    await replayCase(item, prepared.request, pass, result, context);
   }
   return undefined;
+}
+
+/** Records each case this mode counts as skipped, and returns the reason. @param {Case[]} cases @param {Pass} pass @param {string} reason */
+function skipEach(cases, pass, reason) {
+  for (const item of cases) if (counts(pass.mode, item, pass.pattern)) record(pass, item, "skipped", reason);
+  return reason;
+}
+
+/**
+ * Sends one prepared case in the pass's mode and records its steps.
+ * @param {Case} item @param {Case["request"]} request @param {Pass} pass @param {SessionResult} result @param {Context} context
+ */
+async function replayCase(item, request, pass, result, context) {
+  const { mode, pattern, snapshot } = pass;
+  const { method } = item.request;
+  const omitted = /** @type {{ $omitted?: string } | null} */ (request.body)?.$omitted;
+  // Capture kept no body (an upload, a form post, one too large): sending the placeholder would fail for that alone.
+  if (omitted !== undefined) {
+    if (counts(mode, item, pattern)) record(pass, item, "skipped", `the request body was not recorded (${omitted}), so it cannot be sent again`);
+    return;
+  }
+  mapIds(request, pattern, (id) => (pass.known.add(id), id));
+
+  // Another account's request goes first, so a leaky DELETE is not hidden by the owner's DELETE. A route public by
+  // design is not sent as another account at all.
+  const open = publicByDesign(context, item);
+  if (mode === "cross-tenant" && !open) await asOtherAccount(item, request, pass);
+
+  const headers = await pass.auth(item.actor.kind, false);
+  // In race, a write that must repeat safely is sent twice at once, as a retrying client or a provider would.
+  const racing = mode === "race" && method !== "GET" && mustRepeatSafely(request, await pass.headersFor(request, item));
+  const [first, twin] = await Promise.all([pass.send(request, item, headers), racing ? pass.send(request, item, headers) : undefined]);
+  learnIds(item, first.json, pass.ids);
+  if (twin) record(pass, item, ...raceVerdict(first, twin, pattern));
+  if (context.contract && (mode === "baseline" || mode === "contract")) {
+    const sent = Object.entries(headers).filter(([name]) => CREDENTIAL_HEADER.test(name)).map(([, value]) => value);
+    (result.live ??= {})[item.id] = { status: first.status, json: first.json, text: first.text, contentType: first.contentType, sent };
+  }
+  const foreign = noteIds(first.json, method, pass, pass.mine).find((id) => pass.theirs.has(id));
+  if (foreign && !open) record(pass, item, "failed", `this session's response contains ${foreign}, created by another account`, first.exchange);
+
+  if (mode === "baseline") {
+    const reason = baselineReason(item, first);
+    record(pass, item, reason ? "failed" : "passed", reason, first.exchange);
+    if (Object.keys(first.counters).length) /** @type {Step} */ (pass.steps.at(-1)).counters = first.counters;
+    if (snapshot) (result.snapshot ??= {})[item.id] = { status: first.status, body: normalise(first.json ?? null, snapshot) };
+  }
+  if (mode === "twice" && method !== "GET") await repeat(item, request, first, pass, context);
 }
 
 /**

@@ -12,6 +12,17 @@ import { DEFAULT_BASE, loadConfig } from "../shared/config.mjs";
 export class GateError extends Error {}
 
 /**
+ * Leaves Node's ExperimentalWarning off stderr (Node 22 prints one for fs.glob, path.matchesGlob and node:sqlite), so
+ * every command keeps its one-line output; other warnings still print. Each thread has its own warning listener.
+ */
+export function quietExperimentalWarnings() {
+  process.removeAllListeners("warning");
+  process.on("warning", (warning) => {
+    if (warning.name !== "ExperimentalWarning") process.stderr.write(`${warning.name}: ${warning.message}\n`);
+  });
+}
+
+/**
  * @typedef {{ cwd: string, base: string, testPaths: string[], testCmd: string, setup: string,
  *   duplicateLines: number, mutants: number, timeout: number, entryPaths: string[], artifacts: string[],
  *   protected: { paths: string[], needs?: string[], why?: string }[], layers?: { name: string, paths: string[] }[],
@@ -115,14 +126,31 @@ export function resolveBase(cwd, base) {
   return mb.stdout.trim();
 }
 
+/**
+ * Every `Intersite-Ack: <gate>: <why>` trailer on the commits `range` names (`<base>..HEAD`, or `--all`).
+ * @param {string} cwd @param {string} range @returns {{ sha: string, gate: string, why: string }[]}
+ */
+export function ackTrailers(cwd, range) {
+  return git(cwd, ["log", range, "--format=%H%x09%(trailers:key=Intersite-Ack,valueonly,separator=%x1f)"]).split("\n").flatMap((line) => {
+    const [sha, values = ""] = line.split("\t");
+    return values.split("\x1f").flatMap((value) => {
+      const gate = value.split(":")[0].trim();
+      return gate ? [{ sha, gate, why: value.slice(value.indexOf(":") + 1).trim() }] : [];
+    });
+  });
+}
+
 /** @param {string} cwd */
 export const topLevel = (cwd) => git(cwd, ["rev-parse", "--show-toplevel"]).trim();
 
 /** The project's folder relative to the repository top, with a trailing slash, or "" at the top. @param {string} cwd */
 export const projectPrefix = (cwd) => git(cwd, ["rev-parse", "--show-prefix"]).trim();
 
-/** Installed packages and Intersite's own data, which a project with no .gitignore leaves untracked: never a change. */
-const NOT_WORK = [":(top,exclude,glob)**/node_modules/**", ":(top,exclude,glob)**/.intersite/**"];
+/**
+ * Installed packages, which a project with no .gitignore leaves untracked: never a change. Intersite's own generated
+ * files are kept out by `.intersite/.gitignore`, so its baseline still is one.
+ */
+const NOT_WORK = [":(top,exclude,glob)**/node_modules/**"];
 /** The whole repository. Run from the project folder, git names its files relative to it (`../../packages/ui/x.ts`). */
 export const WORK_TREE = [":(top)", ...NOT_WORK];
 /** The names shared/config.mjs reads a project's config from. */

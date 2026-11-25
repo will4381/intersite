@@ -17,10 +17,10 @@ export const rule = defineRule({
     return {
       // Generated files (declaration files, OpenAPI schemas, database types, worker bindings) keep their generator's names.
       before: () => !/\.d\.[cm]?ts$/.test(context.filename) && !isGenerated(context),
-      "TSTypeAliasDeclaration, TSInterfaceDeclaration, TSEnumDeclaration, ClassDeclaration"(node) {
+      "TSTypeAliasDeclaration, TSInterfaceDeclaration, TSEnumDeclaration, ClassDeclaration"(/** @type {any} */ node) {
         const name = node.id?.name;
         if (!name || !/^[a-z]|[a-z0-9]_[A-Za-z]/.test(name)) return;
-        const fixed = name.split(/_+/).filter(Boolean).map((w) => w[0].toUpperCase() + w.slice(1)).join("");
+        const fixed = name.split(/_+/).filter(Boolean).map((/** @type {string} */ w) => w[0].toUpperCase() + w.slice(1)).join("");
         context.report({ node: node.id, messageId: "found", data: { name, fixed } });
       },
     };

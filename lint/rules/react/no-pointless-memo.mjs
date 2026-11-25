@@ -1,7 +1,7 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { enclosingFunction, mentions, walk } from "../shared.mjs";
+import { enclosingFunction, mentions, returned, walk } from "../shared.mjs";
 import { isHookCall } from "./hooks.mjs";
 
 /** What a file must spell for this rule to have anything to report (see `mentions`). */
@@ -30,8 +30,6 @@ const trivial = (n) => {
   }
 };
 
-/** What a callback returns: its expression body, or the argument of a body that is one return. @param {any} fn */
-const returned = (fn) => (fn.body.type !== "BlockStatement" ? fn.body : fn.body.body.length === 1 && fn.body.body[0].type === "ReturnStatement" ? fn.body.body[0].argument : undefined);
 
 export const id = "no-pointless-memo";
 export const pack = "react";
@@ -50,7 +48,7 @@ export const rule = defineRule({
     return {
       before: () => mentions(context, NEEDS),
       CallExpression(node) {
-        const [callback, deps] = node.arguments;
+        const [callback, deps] = /** @type {any[]} */ (node.arguments);
         if (!callback?.type.endsWith("FunctionExpression") || deps?.type !== "ArrayExpression") return;
         if (isHookCall(node, /^useMemo$/)) {
           const value = returned(callback);

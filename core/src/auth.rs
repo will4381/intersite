@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::LazyLock;
 
 use crate::text::{self, Lines};
-use crate::{Answer, Finding, Request};
+use crate::{js, Answer, Finding, Request};
 
 /// Calls that establish who is calling, by name (lint's `no-unguarded-server-action` idea, widened to middleware).
 static IDENTITY: LazyLock<Regex> = LazyLock::new(|| {
@@ -34,19 +34,71 @@ static NOT_IDENTITY: LazyLock<Regex> = LazyLock::new(|| {
 });
 static CLIENT_FACTORY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)client$|admin\w*client|service").unwrap());
 /// Clients whose queries run as the signed-in user, so row-level security is the check.
-const SESSION_CLIENTS: [&str; 5] = ["createServerClient", "createRouteHandlerClient", "createServerComponentClient", "createServerActionClient", "createMiddlewareClient"];
+const SESSION_CLIENTS: [&str; 5] =
+    ["createServerClient", "createRouteHandlerClient", "createServerComponentClient", "createServerActionClient", "createMiddlewareClient"];
 /// Names too generic to inherit identity from what they call.
-const GENERIC: [&str; 20] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "default", "handler", "main", "run", "execute", "middleware", "action", "loader", "load", "handle", "fn", "callback", "next"];
+const GENERIC: [&str; 20] = [
+    "GET",
+    "POST",
+    "PUT",
+    "PATCH",
+    "DELETE",
+    "HEAD",
+    "OPTIONS",
+    "default",
+    "handler",
+    "main",
+    "run",
+    "execute",
+    "middleware",
+    "action",
+    "loader",
+    "load",
+    "handle",
+    "fn",
+    "callback",
+    "next",
+];
 /// Request properties that hold the caller once a middleware has checked them.
-const CALLER_PROPS: [&str; 18] = ["user", "session", "auth", "userId", "currentUser", "viewer", "claims", "identity", "isAuthenticated", "isLoggedIn", "jwtPayload", "customer", "staff", "member", "tenant", "principal", "actor", "account"];
-static CALLER_OBJECT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:req|request|ctx|context|locals|event|c|ev|e|res\.locals)$|\.locals$").unwrap());
+const CALLER_PROPS: [&str; 18] = [
+    "user",
+    "session",
+    "auth",
+    "userId",
+    "currentUser",
+    "viewer",
+    "claims",
+    "identity",
+    "isAuthenticated",
+    "isLoggedIn",
+    "jwtPayload",
+    "customer",
+    "staff",
+    "member",
+    "tenant",
+    "principal",
+    "actor",
+    "account",
+];
+static CALLER_OBJECT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?:req|request|ctx|context|locals|event|c|ev|e|res\.locals)$|\.locals$").unwrap());
 /// Comparing against these is a secret or signature check (cron jobs, webhooks, API keys).
 static SECRET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)secret|signature|api_?key|authorization|bearer").unwrap());
-static SECRET_HEADER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(?:authorization|x-api-key|x-[\w-]*(?:secret|token|signature|key))$").unwrap());
+static SECRET_HEADER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)^(?:authorization|x-api-key|x-[\w-]*(?:secret|token|signature|key))$").unwrap());
 /// Writes lint's `no-unguarded-server-action` reports in a server action that asks for no identity (not repeated here).
-static CHANGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:update|updateMany|upsert|delete|deleteMany|destroy|remove|updateOne|deleteOne|findByIdAndUpdate|findOneAndUpdate|findByIdAndDelete|findOneAndDelete)$").unwrap());
-static DATABASE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:db|database|prisma|supabase|sb|admin|tx|trx|transaction|knex|drizzle|sql|client|orm|em|repo|repository|collection|[A-Z]\w*)$").unwrap());
-static LINT_IDENTITY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)auth|session|user|viewer|current|require|protect|guard|role|permission|admin|signed|login|claims|verif|owner|member|access|clerk").unwrap());
+static CHANGE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?:update|updateMany|upsert|delete|deleteMany|destroy|remove|updateOne|deleteOne|findByIdAndUpdate|findOneAndUpdate|findByIdAndDelete|findOneAndDelete)$").unwrap()
+});
+static DATABASE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^(?:db|database|prisma|supabase|sb|admin|tx|trx|transaction|knex|drizzle|sql|client|orm|em|repo|repository|collection|[A-Z]\w*)$",
+    )
+    .unwrap()
+});
+static LINT_IDENTITY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)auth|session|user|viewer|current|require|protect|guard|role|permission|admin|signed|login|claims|verif|owner|member|access|clerk").unwrap()
+});
 /// Endpoints whose path says they are public by design: sign-in flows, webhooks, health, crawlers, invitations.
 static PUBLIC: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)(?:^|[/._\-\[(:\s])(?:auth|authenticate|login|logout|signin|sign-in|signout|sign-out|signup|sign-up|register|registration|callback|oauth|sso|saml|webhooks?|hooks?|public|health|healthz|healthcheck|status|ping|og|opengraph|robots|sitemap|manifest|\.well-known|unsubscribe|invites?|invitation|verify|verification|confirm|reset|forgot|password|magic|otp|cron|crons|stripe|inngest|trigger|qstash|svix|feed|rss|favicon|version|metrics|ready|readiness|live|liveness|contact|newsletter|subscribe|waitlist|share|embed|preview|refresh|csrf)s?(?:$|[/._\-\])\s])").unwrap()
@@ -55,15 +107,24 @@ static NEXT_ROUTE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|/)app/(?
 static PAGES_API: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|/)pages/api/.+\.[cm]?[jt]sx?$").unwrap());
 static MIDDLEWARE_FILE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|/)(?:middleware|proxy)\.[cm]?[jt]s$").unwrap());
 static PUBLIC_MATCHER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)public|ignored|unprotected|open").unwrap());
-static ROUTER_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:app|router|routes?|server|hono|fastify|[a-z]\w*Router|[a-z]\w*App|[a-z]\w*Routes)$").unwrap());
-static ROUTER_MAKER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:Router|Hono|OpenAPIHono|express|fastify|Fastify|Elysia|createRouter|Koa)$").unwrap());
+static ROUTER_NAME: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?:app|router|routes?|server|hono|fastify|[a-z]\w*Router|[a-z]\w*App|[a-z]\w*Routes)$").unwrap());
+static ROUTER_MAKER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?:Router|Hono|OpenAPIHono|express|fastify|Fastify|Elysia|createRouter|Koa)$").unwrap());
 static CLIENT_NAME: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^(?:axios|ky|http|https|fetch|request|got|superagent|supertest|client|apiclient|instance|agent|cy|page|map|cache|params|searchparams|headers|cookies|formdata|url|store|storage|redis|kv|this|rest|graphql)$").unwrap()
 });
-static IO_ROOT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:db|database|prisma|supabase|sb|tx|trx|knex|drizzle|sql|pool|client|redis|kv|ctx|axios|ky|stripe|resend|s3|storage)$").unwrap());
-static SAID_PUBLIC:LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\bpublic|public\b|(?-i:[a-z]Public[A-Z])|\bunauthenticated\b|\banonymous\b|\bunauthed\b|\bno auth\b|\bwithout auth|\btoken-gated\b|\bno login\b").unwrap());
-static DEV_ONLY:LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"NODE_ENV\s*===?\s*["'](?:development|test)["']|["'](?:development|test)["']\s*===?\s*\S*NODE_ENV|\bisDev(?:elopment)?\b|import\.meta\.env\.DEV\b"#).unwrap());
-static BARE_PROCEDURE:LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(?:public\w*|base\w*)procedure$|^procedure$").unwrap());
+static IO_ROOT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?:db|database|prisma|supabase|sb|tx|trx|knex|drizzle|sql|pool|client|redis|kv|ctx|axios|ky|stripe|resend|s3|storage)$")
+        .unwrap()
+});
+static SAID_PUBLIC: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\bpublic|public\b|(?-i:[a-z]Public[A-Z])|\bunauthenticated\b|\banonymous\b|\bunauthed\b|\bno auth\b|\bwithout auth|\btoken-gated\b|\bno login\b").unwrap()
+});
+static DEV_ONLY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"NODE_ENV\s*===?\s*["'](?:development|test)["']|["'](?:development|test)["']\s*===?\s*\S*NODE_ENV|\bisDev(?:elopment)?\b|import\.meta\.env\.DEV\b"#).unwrap()
+});
+static BARE_PROCEDURE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(?:public\w*|base\w*)procedure$|^procedure$").unwrap());
 const METHODS: [&str; 7] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 const VERBS: [&str; 9] = ["get", "post", "put", "patch", "delete", "del", "all", "options", "head"];
 /// Fewer endpoints of a kind than this is no convention.
@@ -135,11 +196,7 @@ fn last_name(e: &Expression) -> String {
 }
 
 fn string_value(e: &Expression) -> Option<String> {
-    match e.get_inner_expression() {
-        Expression::StringLiteral(s) => Some(s.value.to_string()),
-        Expression::TemplateLiteral(t) if t.expressions.is_empty() => t.quasis.first().map(|q| q.value.raw.to_string()),
-        _ => None,
-    }
+    js::string(e.get_inner_expression(), true).map(str::to_string)
 }
 
 /// The strings in a string or an array of strings.
@@ -214,8 +271,10 @@ impl<'a> Visit<'a> for BodyWalk<'_> {
     }
 
     fn visit_binary_expression(&mut self, it: &BinaryExpression<'a>) {
-        if matches!(it.operator, BinaryOperator::StrictEquality | BinaryOperator::StrictInequality | BinaryOperator::Equality | BinaryOperator::Inequality)
-            && SECRET.is_match(&self.src[it.span.start as usize..it.span.end as usize])
+        if matches!(
+            it.operator,
+            BinaryOperator::StrictEquality | BinaryOperator::StrictInequality | BinaryOperator::Equality | BinaryOperator::Inequality
+        ) && SECRET.is_match(&self.src[it.span.start as usize..it.span.end as usize])
         {
             self.facts.secret = true;
         }
@@ -313,7 +372,8 @@ fn route_path(file: &str, marker: &str) -> String {
     let inner = format!("/{marker}/");
     let at = file.rfind(&inner).map(|i| i + inner.len()).or_else(|| file.starts_with(&inner[1..]).then_some(inner.len() - 1)).unwrap_or(0);
     let dir = file[at..].rsplit_once('/').map_or("", |(d, _)| d);
-    let parts: Vec<&str> = dir.split('/').filter(|p| !p.is_empty() && !(p.starts_with('(') && p.ends_with(')')) && !p.starts_with('@')).collect();
+    let parts: Vec<&str> =
+        dir.split('/').filter(|p| !(p.is_empty() || p.starts_with('@') || (p.starts_with('(') && p.ends_with(')')))).collect();
     format!("/{}", parts.join("/"))
 }
 
@@ -408,7 +468,8 @@ impl<'s> Walker<'s> {
                         continue;
                     }
                     // Route options a framework enforces: `config: { permission: "x" }`, `preHandler`, `auth: "jwt"`.
-                    let off = matches!(p.value.get_inner_expression(), Expression::BooleanLiteral(b) if !b.value) || matches!(p.value.get_inner_expression(), Expression::NullLiteral(_));
+                    let off = matches!(p.value.get_inner_expression(), Expression::BooleanLiteral(b) if !b.value)
+                        || matches!(p.value.get_inner_expression(), Expression::NullLiteral(_));
                     if IDENTITY.is_match(&key) && !NOT_IDENTITY.is_match(&key) && !off {
                         facts.callees.push(format!("@{key}"));
                     }
@@ -441,7 +502,16 @@ impl<'s> Walker<'s> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn endpoint(&self, kind: &'static str, label: String, key: String, path: String, span: Span, e: Option<&Expression>, f: Option<&Function>) -> Endpoint {
+    fn endpoint(
+        &self,
+        kind: &'static str,
+        label: String,
+        key: String,
+        path: String,
+        span: Span,
+        e: Option<&Expression>,
+        f: Option<&Function>,
+    ) -> Endpoint {
         let (mut facts, mut refs) = (Facts::default(), Vec::new());
         if let Some(e) = e {
             self.handler(e, &mut facts, &mut refs);
@@ -478,14 +548,24 @@ impl<'s> Walker<'s> {
                                         for p in &o.properties {
                                             let ObjectPropertyKind::ObjectProperty(p) = p else { continue };
                                             let key = p.key.static_name().map_or("default".to_string(), |k| k.to_string());
-                                            let e = self.endpoint("form action", format!("form action {key} of {}", k.path), format!("actions.{key}"), format!("{}/{key}", k.path), p.span, Some(&p.value), None);
+                                            let e = self.endpoint(
+                                                "form action",
+                                                format!("form action {key} of {}", k.path),
+                                                format!("actions.{key}"),
+                                                format!("{}/{key}", k.path),
+                                                p.span,
+                                                Some(&p.value),
+                                                None,
+                                            );
                                             self.push(e);
                                         }
                                     }
                                     continue;
                                 }
                                 let inner = init.get_inner_expression();
-                                let is_async = matches!(inner, Expression::ArrowFunctionExpression(a) if a.r#async) || matches!(inner, Expression::FunctionExpression(f) if f.r#async) || matches!(inner, Expression::CallExpression(_));
+                                let is_async = matches!(inner, Expression::ArrowFunctionExpression(a) if a.r#async)
+                                    || matches!(inner, Expression::FunctionExpression(f) if f.r#async)
+                                    || matches!(inner, Expression::CallExpression(_));
                                 self.export_item(&k, &n, d.span, Some(init), None, is_async);
                             }
                         }
@@ -497,7 +577,15 @@ impl<'s> Walker<'s> {
                             let exported = s.exported.name().to_string();
                             if METHODS.contains(&exported.as_str()) {
                                 let local = s.local.name().to_string();
-                                let mut e = self.endpoint("route handler", format!("{exported} {}", k.path), exported.clone(), k.path.clone(), s.span, None, None);
+                                let mut e = self.endpoint(
+                                    "route handler",
+                                    format!("{exported} {}", k.path),
+                                    exported.clone(),
+                                    k.path.clone(),
+                                    s.span,
+                                    None,
+                                    None,
+                                );
                                 e.refs.push(local.clone());
                                 e.facts.callees.push(local);
                                 self.push(e);
@@ -507,9 +595,13 @@ impl<'s> Walker<'s> {
                 }
                 Statement::ExportDefaultDeclaration(ex) if k.pages_api => {
                     let e = match &ex.declaration {
-                        ExportDefaultDeclarationKind::FunctionDeclaration(f) => self.endpoint("route handler", k.path.clone(), "default".into(), k.path.clone(), ex.span, None, Some(f)),
+                        ExportDefaultDeclarationKind::FunctionDeclaration(f) => {
+                            self.endpoint("route handler", k.path.clone(), "default".into(), k.path.clone(), ex.span, None, Some(f))
+                        }
                         kind => match kind.as_expression() {
-                            Some(e) => self.endpoint("route handler", k.path.clone(), "default".into(), k.path.clone(), ex.span, Some(e), None),
+                            Some(e) => {
+                                self.endpoint("route handler", k.path.clone(), "default".into(), k.path.clone(), ex.span, Some(e), None)
+                            }
                             None => continue,
                         },
                     };
@@ -524,7 +616,11 @@ impl<'s> Walker<'s> {
                 let Statement::ExportNamedDeclaration(ex) = stmt else { continue };
                 let Some(Declaration::VariableDeclaration(v)) = &ex.declaration else { continue };
                 for d in &v.declarations {
-                    let (BindingPattern::BindingIdentifier(id), Some(Expression::ObjectExpression(o))) = (&d.id, d.init.as_ref().map(|e| e.get_inner_expression())) else { continue };
+                    let (BindingPattern::BindingIdentifier(id), Some(Expression::ObjectExpression(o))) =
+                        (&d.id, d.init.as_ref().map(|e| e.get_inner_expression()))
+                    else {
+                        continue;
+                    };
                     if id.name != "config" {
                         continue;
                     }
@@ -546,7 +642,15 @@ impl<'s> Walker<'s> {
             let e = self.endpoint("route handler", format!("{name} {}", k.path), name.to_string(), k.path.clone(), span, init, f);
             self.push(e);
         } else if k.remix && (name == "action" || name == "loader") {
-            let e = self.endpoint(if name == "action" { "action" } else { "loader" }, format!("{name} of {}", k.path), name.to_string(), k.path.clone(), span, init, f);
+            let e = self.endpoint(
+                if name == "action" { "action" } else { "loader" },
+                format!("{name} of {}", k.path),
+                name.to_string(),
+                k.path.clone(),
+                span,
+                init,
+                f,
+            );
             self.push(e);
         } else if k.convex && init.is_some() {
             let Some(Expression::CallExpression(c)) = init.map(|e| e.get_inner_expression()) else { return };
@@ -561,12 +665,28 @@ impl<'s> Walker<'s> {
             } else {
                 return;
             };
-            let mut e = self.endpoint(kind, format!("{} {name}", kind.to_lowercase()), name.to_string(), format!("{}/{name}", self.file), span, init, None);
+            let mut e = self.endpoint(
+                kind,
+                format!("{} {name}", kind.to_lowercase()),
+                name.to_string(),
+                format!("{}/{name}", self.file),
+                span,
+                init,
+                None,
+            );
             // A plain `mutation(...)` is the unguarded builder; a custom one (`authedMutation`) carries its own check.
             e.facts.callees.retain(|c| c != "mutation" && c != "query" && c != "action");
             self.push(e);
         } else if self.use_server_file && is_async && !name.is_empty() {
-            let mut e = self.endpoint("server action", format!("server action {name}"), name.to_string(), format!("{}/{name}", self.file), span, init, f);
+            let mut e = self.endpoint(
+                "server action",
+                format!("server action {name}"),
+                name.to_string(),
+                format!("{}/{name}", self.file),
+                span,
+                init,
+                f,
+            );
             e.lint_reports = e.facts.change && !e.facts.lint_identity;
             self.push(e);
         }
@@ -639,7 +759,18 @@ impl<'a> Visit<'a> for Walker<'_> {
                 Expression::CallExpression(c) => {
                     let mut names = Vec::new();
                     chain_names(&c.callee, &mut names);
-                    names.iter().any(|n| n == "use" || n == "middleware") || c.arguments.iter().any(|a| matches!(a.as_expression().map(|e| e.get_inner_expression()), Some(Expression::ArrowFunctionExpression(_) | Expression::FunctionExpression(_) | Expression::CallExpression(_) | Expression::ObjectExpression(_))))
+                    names.iter().any(|n| n == "use" || n == "middleware")
+                        || c.arguments.iter().any(|a| {
+                            matches!(
+                                a.as_expression().map(|e| e.get_inner_expression()),
+                                Some(
+                                    Expression::ArrowFunctionExpression(_)
+                                        | Expression::FunctionExpression(_)
+                                        | Expression::CallExpression(_)
+                                        | Expression::ObjectExpression(_)
+                                )
+                            )
+                        })
                 }
                 _ => false,
             };
@@ -677,7 +808,15 @@ impl<'a> Visit<'a> for Walker<'_> {
         let inline = it.body.as_ref().is_some_and(|b| b.directives.iter().any(|d| d.directive == "use server"));
         if inline && !self.use_server_file {
             let name = it.id.as_ref().map_or("inline".to_string(), |i| i.name.to_string());
-            let mut e = self.endpoint("server action", format!("server action {name}"), name.clone(), format!("{}/{name}", self.file), it.span, None, Some(it));
+            let mut e = self.endpoint(
+                "server action",
+                format!("server action {name}"),
+                name.clone(),
+                format!("{}/{name}", self.file),
+                it.span,
+                None,
+                Some(it),
+            );
             e.lint_reports = e.facts.change && !e.facts.lint_identity;
             self.push(e);
         }
@@ -694,7 +833,15 @@ impl<'a> Visit<'a> for Walker<'_> {
                 if (op == "mutation" || op == "query") && names.iter().any(|n| n.to_lowercase().ends_with("procedure")) {
                     let key = it.key.static_name().map_or(String::new(), |k| k.to_string());
                     let kind = if op == "mutation" { "tRPC mutation" } else { "tRPC query" };
-                    let mut e = self.endpoint(kind, format!("{kind} {key}"), key.clone(), format!("{}/{key}", self.file), it.span, Some(&it.value), None);
+                    let mut e = self.endpoint(
+                        kind,
+                        format!("{kind} {key}"),
+                        key.clone(),
+                        format!("{}/{key}", self.file),
+                        it.span,
+                        Some(&it.value),
+                        None,
+                    );
                     // `publicProcedure` and `t.procedure` are the unguarded bases; their names say nothing.
                     e.facts.callees.retain(|n| !BARE_PROCEDURE.is_match(n) && n != "t");
                     self.push(e);
@@ -713,15 +860,25 @@ impl<'a> Visit<'a> for Walker<'_> {
             let first = args.first().and_then(|a| string_value(a));
             let msw = self.imports.values().any(|s| s == "msw" || s.starts_with("msw/"));
             // A route registration: a path, then handlers, the last one a function or (on a router) a named handler.
-            if VERBS.contains(&verb) && args.len() >= 2 && first.as_deref().is_some_and(|p| p.starts_with('/')) && !msw && !CLIENT_NAME.is_match(&receiver) {
+            if VERBS.contains(&verb)
+                && args.len() >= 2
+                && first.as_deref().is_some_and(|p| p.starts_with('/'))
+                && !msw
+                && !CLIENT_NAME.is_match(&receiver)
+            {
                 let last = args[args.len() - 1];
-                let handler_like = matches!(last.get_inner_expression(), Expression::ArrowFunctionExpression(_) | Expression::FunctionExpression(_));
+                let handler_like =
+                    matches!(last.get_inner_expression(), Expression::ArrowFunctionExpression(_) | Expression::FunctionExpression(_));
                 let router = ROUTER_NAME.is_match(&receiver) || self.routers.contains(&receiver);
-                let named = matches!(last.get_inner_expression(), Expression::Identifier(_) | Expression::CallExpression(_) | Expression::StaticMemberExpression(_));
+                let named = matches!(
+                    last.get_inner_expression(),
+                    Expression::Identifier(_) | Expression::CallExpression(_) | Expression::StaticMemberExpression(_)
+                );
                 if handler_like || (router && named) {
                     let path = first.clone().unwrap_or_default();
                     let method = if verb == "del" { "DELETE".to_string() } else { verb.to_uppercase() };
-                    let mut e = self.endpoint("route handler", format!("{method} {path}"), format!("{method} {path}"), path, it.span, None, None);
+                    let mut e =
+                        self.endpoint("route handler", format!("{method} {path}"), format!("{method} {path}"), path, it.span, None, None);
                     for a in &args[1..] {
                         self.handler(a, &mut e.facts, &mut e.refs);
                     }
@@ -741,7 +898,11 @@ impl<'a> Visit<'a> for Walker<'_> {
                 let mut names = Vec::new();
                 for a in &args {
                     match a.get_inner_expression() {
-                        Expression::Identifier(id) if self.imports.contains_key(id.name.as_str()) || self.routers.contains(id.name.as_str()) => names.push(id.name.to_string()),
+                        Expression::Identifier(id)
+                            if self.imports.contains_key(id.name.as_str()) || self.routers.contains(id.name.as_str()) =>
+                        {
+                            names.push(id.name.to_string())
+                        }
                         _ if string_value(a).is_none() => self.handler(a, &mut facts, &mut refs),
                         _ => {}
                     }
@@ -751,7 +912,13 @@ impl<'a> Visit<'a> for Walker<'_> {
                 // Each name may be the router mounted, the others its middleware (`app.use("/v1", authRouter, routes)`).
                 for name in &names {
                     let callees = facts.callees.iter().chain(names.iter().filter(|n| *n != name)).cloned().collect();
-                    self.mounts.push(Mount { receiver: receiver.clone(), prefix: prefix.clone(), name: name.clone(), callees, at: it.span.start });
+                    self.mounts.push(Mount {
+                        receiver: receiver.clone(),
+                        prefix: prefix.clone(),
+                        name: name.clone(),
+                        callees,
+                        at: it.span.start,
+                    });
                 }
                 if verb == "use" || verb == "addHook" {
                     facts.callees.extend(names);
@@ -764,7 +931,15 @@ impl<'a> Visit<'a> for Walker<'_> {
                 chain_names(&it.callee, &mut names);
                 if names.iter().any(|n| n == "createServerFn") {
                     let name = self.binding.clone().unwrap_or_else(|| format!("at line {}", self.line(it.span.start)));
-                    let mut e = self.endpoint("server function", format!("server function {name}"), name.clone(), format!("{}/{name}", self.file), it.span, None, None);
+                    let mut e = self.endpoint(
+                        "server function",
+                        format!("server function {name}"),
+                        name.clone(),
+                        format!("{}/{name}", self.file),
+                        it.span,
+                        None,
+                        None,
+                    );
                     self.handler_call(it, &mut e.facts, &mut e.refs);
                     e.lint_reports = e.facts.change && !e.facts.lint_identity && !names.iter().any(|n| n == "middleware");
                     self.push(e);
@@ -805,10 +980,13 @@ fn walk_file(file: &str, src: &str) -> Option<FileFacts> {
             m.matchers = matchers;
         }
         let mounts = std::mem::take(&mut w.mounts);
-        w.out.mounts = mounts.into_iter().map(|m| {
-            let source = w.imports.get(&m.name).cloned();
-            (m, source)
-        }).collect();
+        w.out.mounts = mounts
+            .into_iter()
+            .map(|m| {
+                let source = w.imports.get(&m.name).cloned();
+                (m, source)
+            })
+            .collect();
         w.out.imports = std::mem::take(&mut w.imports);
         w.out
     })
@@ -861,29 +1039,16 @@ fn covers(patterns: &[String], path: &str) -> bool {
     patterns.iter().any(|p| matcher_regex(p).is_none_or(|re| re.is_match(&probe).unwrap_or(true)))
 }
 
-/// A file a relative import names, among the files read: `./routes/admin.js` may be `routes/admin.ts`.
-fn resolve(from: &str, source: &str, known: &HashSet<&str>) -> Option<String> {
-    if !source.starts_with('.') {
-        return None;
-    }
-    let dir = from.rsplit_once('/').map_or("", |(d, _)| d);
-    let mut parts: Vec<&str> = if dir.is_empty() { vec![] } else { dir.split('/').collect() };
-    for seg in source.split('/') {
-        match seg {
-            "." | "" => {}
-            ".." => {
-                parts.pop();
-            }
-            s => parts.push(s),
-        }
-    }
-    let base = parts.join("/");
-    let stem = base.strip_suffix(".js").or_else(|| base.strip_suffix(".mjs")).unwrap_or(&base).to_string();
-    let candidates = [base.clone(), format!("{stem}.ts"), format!("{stem}.tsx"), format!("{stem}.js"), format!("{stem}.mjs"), format!("{stem}.cjs"), format!("{base}/index.ts"), format!("{base}/index.js")];
-    candidates.into_iter().find(|c| known.contains(c.as_str()))
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Options {
+    /// Every endpoint with what guards it, as `data`, for tuning the convention on a real project; the CLI never asks.
+    #[serde(default)]
+    explain: bool,
 }
 
 pub fn run(request: &Request) -> Result<Answer, String> {
+    let Options { explain } = request.options()?;
     let files: Vec<FileFacts> = request.files.par_iter().filter_map(|f| walk_file(f, &text::read(&request.root, f)?)).collect();
 
     // Names that check identity: by name, then whatever calls them (a project's own `requireOrgMember()`).
@@ -904,7 +1069,11 @@ pub fn run(request: &Request) -> Result<Answer, String> {
             .filter(|(n, facts)| {
                 // A client factory checks only when it makes a session client (`createSupabaseServerClient` over
                 // `createServerClient`); an admin or service-role one bypasses checks, whatever else it calls.
-                let checks = if CLIENT_FACTORY.is_match(n) { facts.callees.iter().any(|c| SESSION_CLIENTS.contains(&c.as_str())) } else { facts.caller_read || facts.callees.iter().any(|c| identity.contains(c)) };
+                let checks = if CLIENT_FACTORY.is_match(n) {
+                    facts.callees.iter().any(|c| SESSION_CLIENTS.contains(&c.as_str()))
+                } else {
+                    facts.caller_read || facts.callees.iter().any(|c| identity.contains(c))
+                };
                 !GENERIC.contains(&n.as_str()) && !identity.contains(n) && checks
             })
             .map(|(n, _)| n.clone())
@@ -916,14 +1085,31 @@ pub fn run(request: &Request) -> Result<Answer, String> {
     }
     // Modules that install a guarding middleware (`router.use(apiKeyAuth)`): mounting one guards what follows.
     let known: HashSet<&str> = files.iter().map(|f| f.file.as_str()).collect();
-    let guarding_modules: HashSet<&str> = files.iter().filter(|f| f.use_guards.iter().any(|g| g.callees.iter().any(|c| identity.contains(c)))).map(|f| f.file.as_str()).collect();
+    let guarding_modules: HashSet<&str> = files
+        .iter()
+        .filter(|f| f.use_guards.iter().any(|g| g.callees.iter().any(|c| identity.contains(c))))
+        .map(|f| f.file.as_str())
+        .collect();
     let checks = |facts: &Facts, f: &FileFacts| -> Option<String> {
         // Named for what it does first (`getUser`), then a project helper that calls one (`loadDashboard`).
         let named = facts.callees.iter().find(|c| identity.contains(*c) && IDENTITY.is_match(c));
-        if let Some(name) = named.or_else(|| facts.callees.iter().find(|c| identity.contains(*c) || (c.as_str() == "createClient" && session_files.contains(f.file.as_str())))) {
-            return Some(match name.strip_prefix('@') { Some(option) => format!("a `{option}` route option"), None => format!("{name}()") });
+        if let Some(name) = named.or_else(|| {
+            facts
+                .callees
+                .iter()
+                .find(|c| identity.contains(*c) || (c.as_str() == "createClient" && session_files.contains(f.file.as_str())))
+        }) {
+            return Some(match name.strip_prefix('@') {
+                Some(option) => format!("a `{option}` route option"),
+                None => format!("{name}()"),
+            });
         }
-        let module = facts.callees.iter().find(|c| f.imports.get(*c).and_then(|s| resolve(&f.file, s, &known)).is_some_and(|t| guarding_modules.contains(t.as_str())));
+        let module = facts.callees.iter().find(|c| {
+            f.imports
+                .get(*c)
+                .and_then(|s| crate::graph::resolve_relative(&known, &f.file, s))
+                .is_some_and(|t| guarding_modules.contains(t.as_str()))
+        });
         if let Some(name) = module {
             return Some(format!("the {name} middleware"));
         }
@@ -935,8 +1121,14 @@ pub fn run(request: &Request) -> Result<Answer, String> {
     for f in &files {
         for (m, source) in &f.mounts {
             let with = checks(&Facts { callees: m.callees.clone(), ..Default::default() }, f);
-            let before = f.use_guards.iter().filter(|g| g.receiver == m.receiver && g.at < m.at && m.prefix.starts_with(g.prefix.trim_end_matches(['*', '/']))).find_map(|g| checks(&Facts { callees: g.callees.clone(), ..Default::default() }, f));
-            if let (Some(how), Some(target)) = (with.or(before), source.as_deref().and_then(|s| resolve(&f.file, s, &known))) {
+            let before = f
+                .use_guards
+                .iter()
+                .filter(|g| g.receiver == m.receiver && g.at < m.at && m.prefix.starts_with(g.prefix.trim_end_matches(['*', '/'])))
+                .find_map(|g| checks(&Facts { callees: g.callees.clone(), ..Default::default() }, f));
+            if let (Some(how), Some(target)) =
+                (with.or(before), source.as_deref().and_then(|s| crate::graph::resolve_relative(&known, &f.file, s)))
+            {
                 guarded_files.insert(target, how);
             }
         }
@@ -948,7 +1140,7 @@ pub fn run(request: &Request) -> Result<Answer, String> {
     for f in &files {
         if let Some(m) = &f.middleware {
             if checks(&Facts { callees: m.callees.clone(), ..Default::default() }, f).is_some() {
-                middleware.insert(crate::decisions::package_of(&request.root, &f.file, &mut packages), m);
+                middleware.insert(crate::graph::package_of(&request.root, &f.file, &mut packages), m);
             }
         }
     }
@@ -964,7 +1156,7 @@ pub fn run(request: &Request) -> Result<Answer, String> {
     let mut total = 0;
     for f in &files {
         let local: HashMap<&str, &Facts> = f.funcs.iter().map(|(n, facts)| (n.as_str(), facts)).collect();
-        let package = crate::decisions::package_of(&request.root, &f.file, &mut packages);
+        let package = crate::graph::package_of(&request.root, &f.file, &mut packages);
         for (e, start, end) in &f.endpoints {
             total += 1;
             let mut e = e.clone();
@@ -978,7 +1170,11 @@ pub fn run(request: &Request) -> Result<Answer, String> {
             let mut guard = checks(&e.facts, f);
             if guard.is_none() {
                 if let Some((receiver, at)) = &e.registration {
-                    guard = f.use_guards.iter().filter(|g| &g.receiver == receiver && g.at < *at && e.path.starts_with(g.prefix.trim_end_matches(['*', '/']))).find_map(|g| checks(&Facts { callees: g.callees.clone(), ..Default::default() }, f));
+                    guard = f
+                        .use_guards
+                        .iter()
+                        .filter(|g| &g.receiver == receiver && g.at < *at && e.path.starts_with(g.prefix.trim_end_matches(['*', '/'])))
+                        .find_map(|g| checks(&Facts { callees: g.callees.clone(), ..Default::default() }, f));
                     guard = guard.or_else(|| guarded_files.get(&f.file).cloned());
                 }
             }
@@ -1006,7 +1202,11 @@ pub fn run(request: &Request) -> Result<Answer, String> {
     for ((_, kind), list) in &groups {
         // Public by design, or nothing to protect (it reads and writes nothing outside the request).
         let public = |j: &Judged| {
-            j.endpoint.said_public || PUBLIC.is_match(&j.endpoint.path) || PUBLIC.is_match(j.file) || PUBLIC.is_match(&j.endpoint.key) || (j.guard.is_none() && !j.endpoint.facts.io)
+            j.endpoint.said_public
+                || PUBLIC.is_match(&j.endpoint.path)
+                || PUBLIC.is_match(j.file)
+                || PUBLIC.is_match(&j.endpoint.key)
+                || (j.guard.is_none() && !j.endpoint.facts.io)
         };
         let seen = |j: &Judged| j.endpoint.registration.is_none() || files_with_guards.contains(j.file);
         let candidate = |j: &Judged| j.guard.is_none() && j.changed && !public(j) && !j.endpoint.lint_reports && seen(j);
@@ -1040,11 +1240,30 @@ pub fn run(request: &Request) -> Result<Answer, String> {
     }
     findings.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
     let guarded_count = groups.values().flatten().filter(|j| j.guard.is_some()).count();
-    // `options.explain`: every endpoint with what guards it, for tuning the convention on a real project.
-    let data = request.options["explain"].as_bool().unwrap_or(false).then(|| {
-        serde_json::Value::Array(groups.values().flatten().map(|j| serde_json::json!([j.file, j.line, j.endpoint.kind, j.endpoint.label, j.guard, j.endpoint.facts.io, j.endpoint.said_public])).collect())
+    let data = explain.then(|| {
+        serde_json::Value::Array(
+            groups
+                .values()
+                .flatten()
+                .map(|j| {
+                    serde_json::json!([
+                        j.file,
+                        j.line,
+                        j.endpoint.kind,
+                        j.endpoint.label,
+                        j.guard,
+                        j.endpoint.facts.io,
+                        j.endpoint.said_public
+                    ])
+                })
+                .collect(),
+        )
     });
-    Ok(Answer { findings, summary: format!("{total} endpoints in {} files, {guarded_count} check who is calling", request.files.len()), data })
+    Ok(Answer {
+        findings,
+        summary: format!("{total} endpoints in {} files, {guarded_count} check who is calling", request.files.len()),
+        data,
+    })
 }
 
 #[cfg(test)]
@@ -1053,7 +1272,18 @@ mod tests {
 
     fn endpoints(file: &str, src: &str) -> Vec<(String, &'static str, bool)> {
         let f = walk_file(file, src).unwrap();
-        f.endpoints.iter().map(|(e, _, _)| (e.label.clone(), e.kind, e.facts.callees.iter().any(|c| IDENTITY.is_match(c) && !NOT_IDENTITY.is_match(c)) || e.facts.caller_read || e.facts.secret)).collect()
+        f.endpoints
+            .iter()
+            .map(|(e, _, _)| {
+                (
+                    e.label.clone(),
+                    e.kind,
+                    e.facts.callees.iter().any(|c| IDENTITY.is_match(c) && !NOT_IDENTITY.is_match(c))
+                        || e.facts.caller_read
+                        || e.facts.secret,
+                )
+            })
+            .collect()
     }
 
     #[test]
@@ -1062,7 +1292,13 @@ mod tests {
             endpoints("apps/web/app/(dash)/api/invoices/[id]/route.ts", "export async function GET(req) { const user = await getUser(); return Response.json(user); }\nexport const POST = withAuth(async (req) => Response.json({}));\nexport const DELETE = async () => { await db.invoice.delete(); };\n"),
             vec![("GET /api/invoices/[id]".into(), "route handler", true), ("POST /api/invoices/[id]".into(), "route handler", true), ("DELETE /api/invoices/[id]".into(), "route handler", false)]
         );
-        assert_eq!(endpoints("src/actions.ts", "'use server';\nexport async function save(x) { await db.insert(t).values(x); }\nexport function helper() {}\n"), vec![("server action save".into(), "server action", false)]);
+        assert_eq!(
+            endpoints(
+                "src/actions.ts",
+                "'use server';\nexport async function save(x) { await db.insert(t).values(x); }\nexport function helper() {}\n"
+            ),
+            vec![("server action save".into(), "server action", false)]
+        );
         assert_eq!(
             endpoints("src/server.ts", "const app = express();\napp.get('/api/me', requireAuth, (req, res) => res.json(req.user));\nrouter.post('/api/items', createItem);\naxios.get('/api/x', config);\napi.get('/users', { params });\n"),
             vec![("GET /api/me".into(), "route handler", true), ("POST /api/items".into(), "route handler", false)]
@@ -1074,7 +1310,10 @@ mod tests {
         let trpc = endpoints("src/server/routers/post.ts", "export const postRouter = router({ list: publicProcedure.query(() => db.post.findMany()), create: protectedProcedure.input(z.object({})).mutation(({ input }) => db.post.create({ data: input })) });");
         assert_eq!(trpc, vec![("tRPC query list".into(), "tRPC query", false), ("tRPC mutation create".into(), "tRPC mutation", true)]);
         let convex = endpoints("convex/tasks.ts", "export const add = mutation({ args: {}, handler: async (ctx, a) => { const id = await ctx.auth.getUserIdentity(); } });\nexport const all = query({ handler: async (ctx) => ctx.db.query('tasks').collect() });\nexport const sweep = internalMutation({ handler: async () => {} });\n");
-        assert_eq!(convex, vec![("convex mutation add".into(), "Convex mutation", true), ("convex query all".into(), "Convex query", false)]);
+        assert_eq!(
+            convex,
+            vec![("convex mutation add".into(), "Convex mutation", true), ("convex query all".into(), "Convex query", false)]
+        );
     }
 
     #[test]
@@ -1088,7 +1327,14 @@ mod tests {
 
     #[test]
     fn public_paths() {
-        for p in ["/api/auth/[...nextauth]", "/api/webhooks/stripe", "/api/health", "/api/cron/daily", "/api/og", "src/app/(auth)/login/route.ts"] {
+        for p in [
+            "/api/auth/[...nextauth]",
+            "/api/webhooks/stripe",
+            "/api/health",
+            "/api/cron/daily",
+            "/api/og",
+            "src/app/(auth)/login/route.ts",
+        ] {
             assert!(PUBLIC.is_match(p), "{p}");
         }
         for p in ["/api/invoices", "/api/users/[id]", "/api/authors"] {

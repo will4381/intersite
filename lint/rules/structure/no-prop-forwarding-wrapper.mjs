@@ -1,15 +1,7 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-/** The JSX element a component body only returns. @param {any} body */
-function onlyElement(body) {
-  let value = body;
-  if (body.type === "BlockStatement") {
-    if (body.body.length !== 1 || body.body[0].type !== "ReturnStatement") return undefined;
-    value = body.body[0].argument;
-  }
-  return value?.type === "JSXElement" ? value : undefined;
-}
+import { returned } from "../shared.mjs";
 
 const wrappers = /^(?:memo|forwardRef)$/;
 
@@ -36,8 +28,8 @@ export const rule = defineRule({
       if (!/^[A-Z]/.test(name ?? "") || node.typeParameters) return;
       const [props, ref, ...rest] = node.params;
       if (rest.length || props?.type !== "Identifier" || (ref && ref.type !== "Identifier")) return;
-      const element = onlyElement(node.body);
-      if (!element || element.children.length) return;
+      const element = returned(node);
+      if (element?.type !== "JSXElement" || element.children.length) return;
       const [spread, ...others] = element.openingElement.attributes;
       if (spread?.type !== "JSXSpreadAttribute" || spread.argument.type !== "Identifier" || spread.argument.name !== props.name) return;
       // forwardRef((props, ref) => <Input {...props} ref={ref} />) forwards the ref as well, and adds nothing either.

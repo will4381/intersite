@@ -8,64 +8,54 @@ use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
+use crate::graph::{basename, join, no_ext, parent};
 use crate::{Answer, Finding, Request};
 
-static SOURCE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.(?:[cm]?[jt]sx?|py|rb|rs|kts?|java|cs|php|vue|svelte|astro|css|scss)$").unwrap());
+static SOURCE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\.(?:[cm]?[jt]sx?|py|rb|rs|kts?|java|cs|php|vue|svelte|astro|css|scss)$").unwrap());
 static JS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.[cm]?[jt]sx?$").unwrap());
 /// Files whose references count. In code, only quoted text names a file (imports are strings); elsewhere any word.
-static CORPUS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.(?:[cm]?[jt]sx?|py|rb|go|rs|java|kts?|swift|c|h|cc|cpp|hpp|cs|php|vue|svelte|astro|scala|sh|sql|css|scss|html|json|jsonc|json5|ya?ml|toml)$|(?:^|/)(?:Dockerfile|Makefile|Procfile)$").unwrap());
+static CORPUS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\.(?:[cm]?[jt]sx?|py|rb|go|rs|java|kts?|swift|c|h|cc|cpp|hpp|cs|php|vue|svelte|astro|scala|sh|sql|css|scss|html|json|jsonc|json5|ya?ml|toml)$|(?:^|/)(?:Dockerfile|Makefile|Procfile)$").unwrap()
+});
 static QUOTED_ONLY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.(?:[cm]?[jt]sx?|vue|svelte|astro|css|scss)$").unwrap());
 /// Intersite's own config and baseline name files only to acknowledge or baseline them, which is not a use.
-static SKIP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|/)(?:node_modules|dist|build|out|vendor|coverage|generated|__generated__)/|\.min\.|(?:^|/)(?:package-lock\.json|pnpm-lock\.yaml|yarn\.lock|intersite\.(?:ya?ml|json)|intersite-baseline\.json)$").unwrap());
+static SKIP: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:^|/)(?:node_modules|dist|build|out|vendor|coverage|generated|__generated__)/|\.min\.|(?:^|/)(?:package-lock\.json|pnpm-lock\.yaml|yarn\.lock|intersite\.(?:ya?ml|json)|intersite-(?:gates-)?baseline\.json|\.intersite/baseline\.json)$").unwrap()
+});
 const MAX_BYTES: u64 = 1024 * 1024;
 /// Loaded by convention, never imported: routing folders, entry names, dotfiles, configs, types, tests and fixtures.
-static CONVENTION_DIR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|/)(?:components/ui|\.[^/]+|routes|pages|app|api|migrations|scripts|bin|public|skills|templates|functions|convex|fixtures|__fixtures__|__mocks__|tests?|__tests__|e2e)/").unwrap());
-static CONVENTION_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:main|server|worker|cli|middleware|instrumentation|instrumentation-client|mdx-components|__main__|conftest|manage|setup)$|^\.|\.(?:config|d|stories|typetest|bench)$|^test_|_test$").unwrap());
+static CONVENTION_DIR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:^|/)(?:components/ui|\.[^/]+|routes|pages|app|api|migrations|scripts|bin|public|skills|templates|functions|convex|fixtures|__fixtures__|__mocks__|tests?|__tests__|e2e)/").unwrap()
+});
+static CONVENTION_NAME: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?:main|server|worker|cli|middleware|instrumentation|instrumentation-client|mdx-components|__main__|conftest|manage|setup)$|^\.|\.(?:config|d|stories|typetest|bench)$|^test_|_test$").unwrap()
+});
 static TOKEN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\w$][\w$.-]*").unwrap());
 static QUOTED: LazyLock<Fancy> = LazyLock::new(|| Fancy::new(r#"(["'`])((?:\\.|(?!\1)[^\\\n])*)\1"#).unwrap());
-static EXPORT_DECL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*export\s+(?:declare\s+)?(?:async\s+)?(?:abstract\s+)?(?:function\*?|const|let|var|class|type|interface|enum|const\s+enum|namespace)\s+([\w$]+)").unwrap());
+static EXPORT_DECL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*export\s+(?:declare\s+)?(?:async\s+)?(?:abstract\s+)?(?:function\*?|const|let|var|class|type|interface|enum|const\s+enum|namespace)\s+([\w$]+)").unwrap()
+});
 // ponytail: one-line `export { a, b }` only; a multi-line list or `export const { a } =` is not seen, a tokenizer if it matters
 static EXPORT_LIST: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*export\s+(?:type\s+)?\{([^}]*)\}\s*;?\s*$").unwrap());
 /// Relative specifiers, and the common source-root aliases (`@/x`, `~/x`, `#/x`).
-static LOCAL_IMPORT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?:\bfrom\s+|\bimport\s*\(\s*|\brequire\s*\(\s*|^\s*import\s+)["']((?:\.\.?|[@~#])/[^"']*)["']"#).unwrap());
+static LOCAL_IMPORT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?:\bfrom\s+|\bimport\s*\(\s*|\brequire\s*\(\s*|^\s*import\s+)["']((?:\.\.?|[@~#])/[^"']*)["']"#).unwrap()
+});
 const RESOLVE: [&str; 14] = ["", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue", ".svelte", ".css", ".scss", ".json"];
-
-fn basename(p: &str) -> &str {
-    p.rfind('/').map_or(p, |i| &p[i + 1..])
-}
-
-fn dirname(p: &str) -> &str {
-    p.rfind('/').map_or(".", |i| &p[..i])
-}
-
-/// A path without its last extension (`a/b.test.ts` is `a/b.test`); a dotfile keeps its name.
-fn no_ext(path: &str) -> &str {
-    let name_start = path.rfind('/').map_or(0, |i| i + 1);
-    match path[name_start..].rfind('.') {
-        Some(i) if i > 0 && !path[name_start + i + 1..].is_empty() => &path[..name_start + i],
-        _ => path,
-    }
-}
 
 /// The name other files use for `path`: its name without extension, or its folder's name for an index.
 fn stem(path: &str) -> String {
     let name = no_ext(basename(path));
-    if name == "index" || name == "__init__" { basename(dirname(path)).to_string() } else { name.to_string() }
-}
-
-/// POSIX path normalisation: `a/./b/../c` is `a/c`, keeping leading `..`.
-pub fn normalize(path: &str) -> String {
-    let mut out: Vec<&str> = Vec::new();
-    for part in path.split('/') {
-        match part {
-            "" | "." => {}
-            ".." if out.last().is_some_and(|p| *p != "..") => {
-                out.pop();
-            }
-            p => out.push(p),
+    if name == "index" || name == "__init__" {
+        // A root index has no folder: "." names no file.
+        match basename(parent(path)) {
+            "" => ".".to_string(),
+            dir => dir.to_string(),
         }
+    } else {
+        name.to_string()
     }
-    out.join("/")
 }
 
 /// Every word in `text`, plus the parts of dotted and dashed words.
@@ -102,18 +92,20 @@ fn package_entries(root: &str, files: &[String]) -> (HashSet<String>, Vec<String
         let Ok(text) = std::fs::read_to_string(std::path::Path::new(root).join(file)) else { continue };
         // An invalid package.json names no entries; new-deps reports it.
         let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
-        let dir = dirname(file);
+        let dir = parent(file);
         let mut list = Vec::new();
         for key in ["main", "module", "types", "bin", "exports", "scripts"] {
             strings(&pkg[key], &mut list);
         }
         for s in list {
-            named.insert(no_ext(&normalize(&format!("{dir}/{s}"))).to_string());
+            if let Some(entry) = join(dir, &s) {
+                named.insert(no_ext(&entry).to_string());
+            }
         }
         // `main` alone is what npm init writes, so it does not mark a package as published.
         let private = pkg["private"].as_bool().unwrap_or(false);
         if !private && ["exports", "module", "files", "publishConfig"].iter().any(|k| !pkg[*k].is_null()) {
-            published.push(if dir == "." { String::new() } else { format!("{dir}/") });
+            published.push(if dir.is_empty() { String::new() } else { format!("{dir}/") });
         }
     }
     (named, published)
@@ -123,22 +115,38 @@ fn package_entries(root: &str, files: &[String]) -> (HashSet<String>, Vec<String
 fn word_count(line: &str, name: &str) -> usize {
     let is_word = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
     line.match_indices(name)
-        .filter(|(i, _)| !line[..*i].chars().next_back().is_some_and(is_word) && !line[i + name.len()..].chars().next().is_some_and(is_word))
+        .filter(|(i, _)| {
+            !line[..*i].chars().next_back().is_some_and(is_word) && !line[i + name.len()..].chars().next().is_some_and(is_word)
+        })
         .count()
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Options {
+    /// Files the change added.
+    fresh: Vec<String>,
+    /// The text of each file's added lines.
+    added_lines: Vec<(String, Vec<String>)>,
+    /// The text of each file's removed lines.
+    removed_lines: Vec<(String, Vec<String>)>,
+    /// Files the test or entry path globs name, matched in Node.
+    conventional_by_glob: HashSet<String>,
+}
+
 pub fn run(request: &Request) -> Result<Answer, String> {
-    let o = &request.options;
-    let get = |k: &str| o.get(k).cloned().unwrap_or(serde_json::Value::Null);
-    let fresh_list: Vec<String> = serde_json::from_value(get("fresh")).unwrap_or_default();
-    let added: Vec<(String, Vec<String>)> = serde_json::from_value(get("addedLines")).unwrap_or_default();
-    let removed: Vec<(String, Vec<String>)> = serde_json::from_value(get("removedLines")).unwrap_or_default();
-    let by_glob: HashSet<String> = serde_json::from_value(get("conventionalByGlob")).unwrap_or_default();
+    let Options { fresh: fresh_list, added_lines: added, removed_lines: removed, conventional_by_glob: by_glob } = request.options()?;
     let all = &request.files;
     let exists: HashSet<&str> = all.iter().map(String::as_str).collect();
     let fresh: HashSet<&str> = fresh_list.iter().map(String::as_str).collect();
     let (named, published) = package_entries(&request.root, all);
-    let conventional = |f: &str| by_glob.contains(f) || CONVENTION_DIR.is_match(f) || CONVENTION_NAME.is_match(no_ext(basename(f))) || named.contains(no_ext(f)) || SKIP.is_match(f);
+    let conventional = |f: &str| {
+        by_glob.contains(f)
+            || CONVENTION_DIR.is_match(f)
+            || CONVENTION_NAME.is_match(no_ext(basename(f)))
+            || named.contains(no_ext(f))
+            || SKIP.is_match(f)
+    };
 
     // 1. Added source files.
     let new_files: Vec<&String> = fresh_list.iter().filter(|f| SOURCE.is_match(f) && !conventional(f) && stem(f) != ".").collect();
@@ -146,7 +154,11 @@ pub fn run(request: &Request) -> Result<Answer, String> {
     // 2. Added exports in files that are not loaded by convention or published.
     let mut exports: Vec<(String, String)> = Vec::new();
     for (file, lines) in &added {
-        if !JS.is_match(file) || !exists.contains(file.as_str()) || conventional(file) || published.iter().any(|d| file.starts_with(d.as_str())) {
+        if !JS.is_match(file)
+            || !exists.contains(file.as_str())
+            || conventional(file)
+            || published.iter().any(|d| file.starts_with(d.as_str()))
+        {
             continue;
         }
         for line in lines {
@@ -154,7 +166,10 @@ pub fn run(request: &Request) -> Result<Answer, String> {
                 Some(c) => vec![c[1].to_string()],
                 None => {
                     static AS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+as\s+").unwrap());
-                    EXPORT_LIST.captures(line).map(|c| c[1].split(',').map(|s| AS.split(s.trim()).last().unwrap_or("").to_string()).collect()).unwrap_or_default()
+                    EXPORT_LIST
+                        .captures(line)
+                        .map(|c| c[1].split(',').map(|s| AS.split(s.trim()).last().unwrap_or("").to_string()).collect())
+                        .unwrap_or_default()
                 }
             };
             for name in list {
@@ -181,8 +196,13 @@ pub fn run(request: &Request) -> Result<Answer, String> {
                 // ponytail: an alias is resolved as the one file whose path ends with the rest of the specifier, not
                 // through tsconfig paths; read compilerOptions.paths if two source roots share file names
                 let alias = spec.starts_with("@/") || spec.starts_with("~/") || spec.starts_with("#/");
-                let path = if alias { spec[2..].to_string() } else { normalize(&format!("{}/{spec}", dirname(from))) };
-                let bare = path.strip_suffix(".js").or_else(|| path.strip_suffix(".cjs")).or_else(|| path.strip_suffix(".mjs")).unwrap_or(&path).to_string();
+                let Some(path) = (if alias { Some(spec[2..].to_string()) } else { join(parent(from), spec) }) else { continue };
+                let bare = path
+                    .strip_suffix(".js")
+                    .or_else(|| path.strip_suffix(".cjs"))
+                    .or_else(|| path.strip_suffix(".mjs"))
+                    .unwrap_or(&path)
+                    .to_string();
                 let mut names: Vec<String> = RESOLVE.iter().map(|e| format!("{path}{e}")).collect();
                 names.extend(RESOLVE[1..].iter().map(|e| format!("{bare}{e}")));
                 names.extend(RESOLVE[1..].iter().map(|e| format!("{path}/index{e}")));
@@ -201,7 +221,9 @@ pub fn run(request: &Request) -> Result<Answer, String> {
                 };
                 let target = if found.len() == 1 || !alias { found.first().cloned() } else { None };
                 // A file outside the project is another project's to keep or delete.
-                if let Some(t) = target.filter(|t| !t.starts_with("../") && !fresh.contains(t.as_str()) && SOURCE.is_match(t) && !conventional(t)) {
+                if let Some(t) =
+                    target.filter(|t| !t.starts_with("../") && !fresh.contains(t.as_str()) && SOURCE.is_match(t) && !conventional(t))
+                {
                     if !orphans.contains(&t) {
                         orphans.push(t);
                     }
@@ -279,7 +301,12 @@ pub fn run(request: &Request) -> Result<Answer, String> {
     let mut findings = Vec::new();
     let unreferenced: Vec<&&String> = new_files.iter().filter(|f| !referenced(f)).collect();
     for file in &unreferenced {
-        findings.push(Finding { file: file.to_string(), line: 0, target: file.to_string(), message: format!("{file} is added but no other file imports or names it: wire it in, or delete it") });
+        findings.push(Finding {
+            file: file.to_string(),
+            line: 0,
+            target: file.to_string(),
+            message: format!("{file} is added but no other file imports or names it: wire it in, or delete it"),
+        });
     }
     for (file, name) in &exports {
         if unreferenced.iter().any(|f| **f == file) || word_hits.get(name).is_some_and(|s| s.iter().any(|f| f != file)) {
@@ -297,16 +324,33 @@ pub fn run(request: &Request) -> Result<Answer, String> {
             }
         }
         if seen <= expected {
-            findings.push(Finding { file: file.clone(), line: 0, target: format!("{file}:{name}"), message: format!("{file}: export {name} is used nowhere: delete it") });
+            findings.push(Finding {
+                file: file.clone(),
+                line: 0,
+                target: format!("{file}:{name}"),
+                message: format!("{file}: export {name} is used nowhere: delete it"),
+            });
         }
     }
     for file in &orphans {
         if !referenced(file) {
-            findings.push(Finding { file: file.clone(), line: 0, target: file.clone(), message: format!("{file} is no longer imported by anything after this change: delete it") });
+            findings.push(Finding {
+                file: file.clone(),
+                line: 0,
+                target: file.clone(),
+                message: format!("{file} is no longer imported by anything after this change: delete it"),
+            });
         }
     }
-    let summary = format!("{} added files, {} added exports and {} removed imports checked against {count} files", new_files.len(), exports.len(), orphans.len());
-    Ok(Answer { findings, summary, data: None })
+    Ok(Answer::new(
+        findings,
+        format!(
+            "{} added files, {} added exports and {} removed imports checked against {count} files",
+            new_files.len(),
+            exports.len(),
+            orphans.len()
+        ),
+    ))
 }
 
 #[cfg(test)]
@@ -318,7 +362,6 @@ mod tests {
         assert_eq!(no_ext("a/b.test.ts"), "a/b.test");
         assert_eq!(no_ext("a/.env"), "a/.env");
         assert_eq!(stem("src/user/index.ts"), "user");
-        assert_eq!(normalize("src/a/../b/./c"), "src/b/c");
         assert_eq!(word_count("foo(fooBar, foo)", "foo"), 2);
         let mut seen = vec![];
         words("./user-card.js", &mut |w| seen.push(w.to_string()));

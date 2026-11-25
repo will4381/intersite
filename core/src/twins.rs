@@ -3,11 +3,8 @@
 //! with synonyms folded (fetch, load and read are all "get"), weighted by TF-IDF across the repository, so words every
 //! function has count for little. Two functions whose weighted words point the same way (cosine) likely do one job.
 
-use oxc_allocator::Allocator;
 use oxc_ast::ast::*;
 use oxc_ast_visit::{walk, Visit};
-use oxc_parser::Parser;
-use oxc_span::SourceType;
 use oxc_syntax::scope::ScopeFlags;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -16,11 +13,27 @@ use crate::text::{self, Lines};
 use crate::{Answer, Finding, Request};
 
 /// Words that say nothing about what a function does.
-const CALLBACK_KEYS: &[&str] = &["mutationFn", "queryFn", "queryKey", "select", "onSuccess", "onError", "onSettled", "onMutate", "getNextPageParam", "getPreviousPageParam", "callback", "cb", "fn", "handler"];
+const CALLBACK_KEYS: &[&str] = &[
+    "mutationFn",
+    "queryFn",
+    "queryKey",
+    "select",
+    "onSuccess",
+    "onError",
+    "onSettled",
+    "onMutate",
+    "getNextPageParam",
+    "getPreviousPageParam",
+    "callback",
+    "cb",
+    "fn",
+    "handler",
+];
 const NOISE: &[&str] = &[
-    "a", "an", "the", "of", "to", "in", "on", "for", "and", "or", "is", "it", "be", "by", "at", "as", "if", "do", "no", "not", "this", "that", "with", "from",
-    "data", "item", "items", "value", "values", "result", "results", "res", "req", "ctx", "context", "options", "opts", "args", "arg", "params", "param", "props",
-    "x", "y", "i", "j", "k", "n", "e", "err", "error", "fn", "cb", "callback", "obj", "temp", "tmp", "val", "key", "length", "push", "then",
+    "a", "an", "the", "of", "to", "in", "on", "for", "and", "or", "is", "it", "be", "by", "at", "as", "if", "do", "no", "not", "this",
+    "that", "with", "from", "data", "item", "items", "value", "values", "result", "results", "res", "req", "ctx", "context", "options",
+    "opts", "args", "arg", "params", "param", "props", "x", "y", "i", "j", "k", "n", "e", "err", "error", "fn", "cb", "callback", "obj",
+    "temp", "tmp", "val", "key", "length", "push", "then",
 ];
 
 fn fold(word: &str) -> String {
@@ -75,7 +88,13 @@ impl Collector {
         if CALLBACK_KEYS.contains(&name.as_str()) {
             return false;
         }
-        let mut unit = Unit { file: self.file.clone(), name: name.clone(), line: self.lines.line(span.start as usize), end_line: self.lines.line(span.end as usize), terms: HashMap::new() };
+        let mut unit = Unit {
+            file: self.file.clone(),
+            name: name.clone(),
+            line: self.lines.line(span.start as usize),
+            end_line: self.lines.line(span.end as usize),
+            terms: HashMap::new(),
+        };
         for w in text::words(&name) {
             if !NOISE.contains(&w.as_str()) {
                 *unit.terms.entry(fold(&w)).or_default() += 2.0;
@@ -163,14 +182,12 @@ impl<'a> Visit<'a> for Collector {
 }
 
 fn units(file: &str, src: &str) -> Vec<Unit> {
-    let allocator = Allocator::default();
-    let parsed = Parser::new(&allocator, src, SourceType::from_path(file).unwrap_or_default()).parse();
-    if parsed.panicked {
-        return vec![];
-    }
-    let mut c = Collector { file: file.to_string(), lines: Lines::new(src), open: vec![], done: vec![], pending_name: None };
-    c.visit_program(&parsed.program);
-    c.done
+    crate::js::parse(file, src, |program| {
+        let mut c = Collector { file: file.to_string(), lines: Lines::new(src), open: vec![], done: vec![], pending_name: None };
+        c.visit_program(program);
+        c.done
+    })
+    .unwrap_or_default()
 }
 
 /// TF-IDF vectors, L2-normalised: (unit index, term id -> weight).
@@ -194,10 +211,14 @@ fn vectors(all: &[Unit]) -> (Vec<Vec<(usize, f64)>>, Vec<String>) {
     let vecs = all
         .iter()
         .map(|u| {
-            let mut v: Vec<(usize, f64)> = u.terms.iter().map(|(t, tf)| {
-                let id = ids[t.as_str()];
-                (id, (1.0 + tf.ln()) * ((n + 1.0) / (df[id] as f64 + 1.0)).ln())
-            }).collect();
+            let mut v: Vec<(usize, f64)> = u
+                .terms
+                .iter()
+                .map(|(t, tf)| {
+                    let id = ids[t.as_str()];
+                    (id, (1.0 + tf.ln()) * ((n + 1.0) / (df[id] as f64 + 1.0)).ln())
+                })
+                .collect();
             let norm = v.iter().map(|(_, w)| w * w).sum::<f64>().sqrt().max(1e-9);
             for e in &mut v {
                 e.1 /= norm;
@@ -229,24 +250,51 @@ fn cosine(a: &[(usize, f64)], b: &[(usize, f64)]) -> f64 {
 fn shared(a: &[(usize, f64)], b: &[(usize, f64)], names: &[String]) -> Vec<String> {
     let bm: HashMap<usize, f64> = b.iter().copied().collect();
     let mut s: Vec<(f64, usize)> = a.iter().filter_map(|(t, w)| bm.get(t).map(|v| (w * v, *t))).collect();
-    s.sort_by(|x, y| y.0.partial_cmp(&x.0).unwrap_or(std::cmp::Ordering::Equal));
+    s.sort_by(|x, y| y.0.total_cmp(&x.0));
     s.into_iter().take(5).map(|(_, t)| names[t].clone()).collect()
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Options {
+    /// Two functions are twins at this cosine similarity or more.
+    min_score: f64,
+    /// At most this many matches for `at`.
+    max: usize,
+    /// A function needs this many distinct terms to be compared; a tuning knob the CLI does not send.
+    #[serde(default = "default_min_terms")]
+    min_terms: usize,
+    /// Meaning search: the functions most like the one around this line.
+    #[serde(default)]
+    at: Option<At>,
+}
+
+fn default_min_terms() -> usize {
+    10
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct At {
+    file: String,
+    line: u32,
+}
+
 pub fn run(request: &Request) -> Result<Answer, String> {
-    let min_score = request.options.get("minScore").and_then(|v| v.as_f64()).unwrap_or(0.8);
-    let min_terms = request.options.get("minTerms").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
-    let at = request.options.get("at").and_then(|v| v.as_object()).map(|o| (o.get("file").and_then(|f| f.as_str()).unwrap_or("").to_string(), o.get("line").and_then(|l| l.as_u64()).unwrap_or(0) as u32));
-    let max = request.options.get("max").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+    let Options { min_score, max, min_terms, at } = request.options()?;
+    let at = at.map(|a| (a.file, a.line));
     let mut all: Vec<Unit> = request.files.par_iter().filter_map(|f| Some(units(f, &text::read(&request.root, f)?))).flatten().collect();
     all.retain(|u| u.terms.len() >= min_terms && u.end_line > u.line + 1);
     let (vecs, names) = vectors(&all);
     // Candidates share one of each other's strongest terms: an inverted index on each unit's top terms.
-    let top: Vec<Vec<usize>> = vecs.iter().map(|v| {
-        let mut s = v.clone();
-        s.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        s.into_iter().take(8).map(|e| e.0).collect()
-    }).collect();
+    let top: Vec<Vec<usize>> = vecs
+        .iter()
+        .map(|v| {
+            let mut s = v.clone();
+            s.sort_by(|a, b| b.1.total_cmp(&a.1));
+            s.into_iter().take(8).map(|e| e.0).collect()
+        })
+        .collect();
     let mut index: HashMap<usize, Vec<usize>> = HashMap::new();
     for (u, terms) in top.iter().enumerate() {
         for &t in terms {
@@ -258,15 +306,29 @@ pub fn run(request: &Request) -> Result<Answer, String> {
     let mut matches = Vec::new();
     if let Some((file, line)) = at {
         // Meaning search: the functions most like the one around a line.
-        let Some(q) = all.iter().enumerate().filter(|(_, u)| u.file == file && u.line <= line && line <= u.end_line).min_by_key(|(_, u)| u.end_line - u.line).map(|(i, _)| i) else {
+        let Some(q) = all
+            .iter()
+            .enumerate()
+            .filter(|(_, u)| u.file == file && u.line <= line && line <= u.end_line)
+            .min_by_key(|(_, u)| u.end_line - u.line)
+            .map(|(i, _)| i)
+        else {
             return Err(format!("no function with enough words around {file}:{line}"));
         };
-        let mut scored: Vec<(f64, usize)> = (0..all.len()).filter(|&i| i != q && !nested(&all[i], &all[q])).map(|i| (cosine(&vecs[q], &vecs[i]), i)).filter(|(s, _)| *s >= min_score * 0.75).collect();
-        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        let mut scored: Vec<(f64, usize)> = (0..all.len())
+            .filter(|&i| i != q && !nested(&all[i], &all[q]))
+            .map(|i| (cosine(&vecs[q], &vecs[i]), i))
+            .filter(|(s, _)| *s >= min_score * 0.75)
+            .collect();
+        scored.sort_by(|a, b| b.0.total_cmp(&a.0));
         for (s, i) in scored.into_iter().take(max) {
             matches.push(serde_json::json!({ "file": all[i].file, "name": all[i].name, "line": all[i].line, "score": (s * 100.0).round() / 100.0, "shared": shared(&vecs[q], &vecs[i], &names) }));
         }
-        return Ok(Answer { findings, summary: format!("{} functions compared with {} at {}:{}", all.len(), all[q].name, all[q].file, all[q].line), data: Some(serde_json::json!({ "matches": matches })) });
+        return Ok(Answer {
+            findings,
+            summary: format!("{} functions compared with {} at {}:{}", all.len(), all[q].name, all[q].file, all[q].line),
+            data: Some(serde_json::json!({ "matches": matches })),
+        });
     }
     let changed: Vec<bool> = all.iter().map(|u| (u.line..=u.end_line).any(|l| request.changed(&u.file, l))).collect();
     let mut seen = HashSet::new();
@@ -301,7 +363,7 @@ pub fn run(request: &Request) -> Result<Answer, String> {
         });
     }
     findings.sort_by(|a, b| a.file.cmp(&b.file).then(a.line.cmp(&b.line)));
-    Ok(Answer { findings, summary: format!("{} functions compared by meaning", all.len()), data: None })
+    Ok(Answer::new(findings, format!("{} functions compared by meaning", all.len())))
 }
 
 #[cfg(test)]

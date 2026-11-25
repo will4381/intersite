@@ -5,9 +5,8 @@
 // ORDER BY random()), that stores UUIDs as text or points a foreign key at a column of another type, that returns wrong answers (UPDATE or DELETE with no WHERE, NOT IN a subquery), or that runs a
 // query once per loop item. With INTERSITE_DATABASE_URL set, each new query is also planned (never run) against that
 // database, and a sequential scan of a large table is reported with the index to add. The work is in core/sql.rs.
-import { posix } from "node:path";
 
-import { located, runCore } from "./core.mjs";
+import { fromEngine, runCore } from "./core.mjs";
 import { JS_FILE, NOT_PRODUCT, SKIP, changeOf, listFiles, matches } from "./lib.mjs";
 
 /** Scripts, CI and deploy files: where a command that empties a database runs unattended (core/sql.rs reads them). */
@@ -21,7 +20,6 @@ export async function sql({ cwd, base, testPaths }) {
   // Scripts, CI and deploy files are read where they changed, for commands that empty a database.
   const files = listFiles(top).filter((f) => !SKIP.test(f) && !matches(f, testPaths) && (/\.(?:sql|prisma)$/.test(f) || ((JS_FILE.test(f) && !NOT_PRODUCT.test(f)) || DEPLOY.test(f)) && (whole || added.has(f))));
   const answer = runCore({ command: "sql", root: top, files, added: whole ? undefined : Object.fromEntries(added), prefix, databaseUrl: process.env.INTERSITE_DATABASE_URL ?? "" });
-  const name = (/** @type {string} */ file) => posix.relative(prefix || ".", file);
-  const findings = answer.findings.map((f) => ({ ...located(f, name), target: f.target.replace(f.file, name(f.file)), message: f.message.replace(f.file, name(f.file)) }));
+  const findings = fromEngine(answer.findings, prefix);
   return { findings, summary: answer.summary };
 }

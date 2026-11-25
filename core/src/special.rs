@@ -19,9 +19,12 @@ static SNIFF: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"\bNODE_ENV\b\s*[!=]==?\s*["'`]test["'`]|["'`]test["'`]\s*[!=]==?\s*(?:process\.env|import\.meta\.env)\.NODE_ENV\b|\b(?:import\.meta\.env\.MODE|\bMODE)\s*[!=]==?\s*["'`]test["'`]|\b(?:process\.env|import\.meta\.env)\.(?:VITEST(?:_\w+)?|JEST_WORKER_ID)\b|\btypeof\s+(?:jest|vi|vitest)\s*[!=]==?|\b(?:globalThis|window|global)\.(?:jest|vi|__vitest_worker__)\b|\bXCTestConfigurationFilePath\b|NSClassFromString\(\s*"XCTest(?:Case)?"\s*\)|\bXCTestSessionIdentifier\b"#).unwrap()
 });
 /// Another environment named beside the test one: the switch is "not production", not "under test".
-static OTHER_ENV: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"["'`](?:development|dev|staging|preview|local|e2e)["'`]|\b(?:staging|STAGING)\b"#).unwrap());
+static OTHER_ENV: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"["'`](?:development|dev|staging|preview|local|e2e)["'`]|\b(?:staging|STAGING)\b"#).unwrap());
 /// Modules whose job is to describe the environment: a flag defined there is configuration, not a special case.
-static ENV_MODULE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|/)(?:env|config|configs|settings)(?:/|\.[^/]*$)|(?:^|/)[\w.-]*(?:env|environment|config)\.[cm]?[jt]s$").unwrap());
+static ENV_MODULE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:^|/)(?:env|config|configs|settings)(?:/|\.[^/]*$)|(?:^|/)[\w.-]*(?:env|environment|config)\.[cm]?[jt]s$").unwrap()
+});
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 enum Lit {
@@ -44,7 +47,7 @@ fn telling(l: &Lit) -> bool {
         Lit::Str(s) => s.chars().count() > 3,
         Lit::Num(n) => {
             let v: f64 = n.parse().unwrap_or(0.0);
-            ![0.0, 1.0, -1.0, 2.0, 10.0, 100.0, 1000.0].contains(&v) && !(v.fract() == 0.0 && (100.0..600.0).contains(&v))
+            !([0.0, 1.0, -1.0, 2.0, 10.0, 100.0, 1000.0].contains(&v) || (v.fract() == 0.0 && (100.0..600.0).contains(&v)))
         }
     }
 }
@@ -52,7 +55,9 @@ fn telling(l: &Lit) -> bool {
 fn lit_of(e: &Expression) -> Option<Lit> {
     match e {
         Expression::StringLiteral(s) => Some(Lit::Str(s.value.to_string())),
-        Expression::TemplateLiteral(t) if t.expressions.is_empty() => Some(Lit::Str(t.quasis.iter().map(|q| q.value.raw.to_string()).collect())),
+        Expression::TemplateLiteral(t) if t.expressions.is_empty() => {
+            Some(Lit::Str(t.quasis.iter().map(|q| q.value.raw.to_string()).collect()))
+        }
         Expression::NumericLiteral(n) => Some(Lit::Num(n.value.to_string())),
         Expression::UnaryExpression(u) if u.operator == UnaryOperator::UnaryNegation => match &u.argument {
             Expression::NumericLiteral(n) => Some(Lit::Num((-n.value).to_string())),
@@ -92,24 +97,15 @@ struct TestReader {
 impl TestReader {
     fn inputs(&self, actual: &Expression) -> HashSet<Lit> {
         let mut out = HashSet::new();
-        match actual.without_parentheses() {
+        let args = match actual.without_parentheses() {
             Expression::AwaitExpression(a) => return self.inputs(&a.argument),
             Expression::Identifier(id) => return self.from.get(id.name.as_str()).cloned().unwrap_or_default(),
-            Expression::CallExpression(c) => {
-                for a in &c.arguments {
-                    if let Some(e) = a.as_expression() {
-                        literals_in(e, &mut out);
-                    }
-                }
-            }
-            Expression::NewExpression(c) => {
-                for a in &c.arguments {
-                    if let Some(e) = a.as_expression() {
-                        literals_in(e, &mut out);
-                    }
-                }
-            }
-            _ => {}
+            Expression::CallExpression(c) => &c.arguments,
+            Expression::NewExpression(c) => &c.arguments,
+            _ => return out,
+        };
+        for e in args.iter().filter_map(|a| a.as_expression()) {
+            literals_in(e, &mut out);
         }
         out
     }
@@ -147,14 +143,20 @@ impl<'a> Visit<'a> for TestReader {
                 }
                 if let Expression::CallExpression(e) = object {
                     if matches!(&e.callee, Expression::Identifier(id) if id.name == "expect") {
-                        if let (Some(actual), Some(expected)) = (e.arguments.first().and_then(|a| a.as_expression()), it.arguments.first().and_then(|a| a.as_expression())) {
+                        if let (Some(actual), Some(expected)) =
+                            (e.arguments.first().and_then(|a| a.as_expression()), it.arguments.first().and_then(|a| a.as_expression()))
+                        {
                             self.expect(actual, expected);
                         }
                     }
                 }
             }
-            if matches!(&m.object, Expression::Identifier(id) if id.name == "assert") && matches!(matcher, "equal" | "strictEqual" | "deepEqual" | "deepStrictEqual") {
-                if let (Some(actual), Some(expected)) = (it.arguments.first().and_then(|a| a.as_expression()), it.arguments.get(1).and_then(|a| a.as_expression())) {
+            if matches!(&m.object, Expression::Identifier(id) if id.name == "assert")
+                && matches!(matcher, "equal" | "strictEqual" | "deepEqual" | "deepStrictEqual")
+            {
+                if let (Some(actual), Some(expected)) =
+                    (it.arguments.first().and_then(|a| a.as_expression()), it.arguments.get(1).and_then(|a| a.as_expression()))
+                {
                     self.expect(actual, expected);
                 }
             }
@@ -194,7 +196,10 @@ fn compared(e: &Expression, out: &mut Vec<Lit>) {
 
 fn only_literal_tests(e: &Expression) -> bool {
     match e.without_parentheses() {
-        Expression::BinaryExpression(b) => matches!(b.operator, BinaryOperator::StrictEquality | BinaryOperator::Equality) && (lit_of(&b.left).is_some() || lit_of(&b.right).is_some()),
+        Expression::BinaryExpression(b) => {
+            matches!(b.operator, BinaryOperator::StrictEquality | BinaryOperator::Equality)
+                && (lit_of(&b.left).is_some() || lit_of(&b.right).is_some())
+        }
         Expression::LogicalExpression(l) => only_literal_tests(&l.left) && only_literal_tests(&l.right),
         _ => false,
     }
@@ -325,15 +330,24 @@ impl<'a> Visit<'a> for CodeReader<'_> {
     }
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Options {
+    /// The changed test files.
+    tests: Vec<String>,
+    /// The changed production files.
+    production: Vec<String>,
+}
+
 pub fn run(request: &Request) -> Result<Answer, String> {
-    let tests: Vec<String> = serde_json::from_value(request.options["tests"].clone()).unwrap_or_default();
-    let production: Vec<String> = serde_json::from_value(request.options["production"].clone()).unwrap_or_default();
-    let added = request.added_sets().unwrap_or_default();
+    let Options { tests, production } = request.options()?;
+    let added = request.added.clone().unwrap_or_default();
     let empty = HashSet::new();
 
     // input literal → the literals tests expect for it.
     let mut pairs: HashMap<Lit, HashSet<Lit>> = HashMap::new();
-    let per_test: Vec<Vec<Expectation>> = tests.par_iter().map(|t| text::read(&request.root, t).map(|src| expectations(t, &src)).unwrap_or_default()).collect();
+    let per_test: Vec<Vec<Expectation>> =
+        tests.par_iter().map(|t| text::read(&request.root, t).map(|src| expectations(t, &src)).unwrap_or_default()).collect();
     for e in per_test.into_iter().flatten() {
         for input in e.inputs {
             if input != e.expected {
@@ -383,7 +397,7 @@ pub fn run(request: &Request) -> Result<Answer, String> {
         .collect();
     let mut findings = found;
     findings.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
-    Ok(Answer { summary: format!("{} changed source files checked against {} changed test files", production.len(), tests.len()), findings, data: None })
+    Ok(Answer::new(findings, format!("{} changed source files checked against {} changed test files", production.len(), tests.len())))
 }
 
 #[cfg(test)]
@@ -409,9 +423,18 @@ mod tests {
     #[test]
     fn a_branch_on_the_tests_input_returning_its_expected_value() {
         let test = "test('price', () => { expect(price('abc-123')).toBe(4200); const r = await total({ sku: 'sku-77' }); expect(r).toEqual(9900); });";
-        assert_eq!(hits(test, "export function price(id) {\n  if (id === 'abc-123') return 4200;\n  return lookup(id);\n}\n"), [("\"abc-123\"".into(), "4200".into())]);
-        assert_eq!(hits(test, "export function total(o) {\n  switch (o.sku) {\n    case 'sku-77':\n      return 9900;\n  }\n}\n"), [("\"sku-77\"".into(), "9900".into())]);
-        assert_eq!(hits(test, "export const price = (id) => id === 'abc-123' ? 4200 : lookup(id);\n"), [("\"abc-123\"".into(), "4200".into())]);
+        assert_eq!(
+            hits(test, "export function price(id) {\n  if (id === 'abc-123') return 4200;\n  return lookup(id);\n}\n"),
+            [("\"abc-123\"".into(), "4200".into())]
+        );
+        assert_eq!(
+            hits(test, "export function total(o) {\n  switch (o.sku) {\n    case 'sku-77':\n      return 9900;\n  }\n}\n"),
+            [("\"sku-77\"".into(), "9900".into())]
+        );
+        assert_eq!(
+            hits(test, "export const price = (id) => id === 'abc-123' ? 4200 : lookup(id);\n"),
+            [("\"abc-123\"".into(), "4200".into())]
+        );
     }
 
     #[test]
@@ -435,11 +458,22 @@ mod tests {
 
     #[test]
     fn test_environment_probes() {
-        for line in ["if (process.env.NODE_ENV === 'test') return [];", "const fast = process.env.VITEST ? 0 : 500;", "if (typeof jest !== 'undefined') skip();", "if ProcessInfo.processInfo.environment[\"XCTestConfigurationFilePath\"] != nil { return }", "if (process.env.JEST_WORKER_ID) {"] {
+        for line in [
+            "if (process.env.NODE_ENV === 'test') return [];",
+            "const fast = process.env.VITEST ? 0 : 500;",
+            "if (typeof jest !== 'undefined') skip();",
+            "if ProcessInfo.processInfo.environment[\"XCTestConfigurationFilePath\"] != nil { return }",
+            "if (process.env.JEST_WORKER_ID) {",
+        ] {
             assert!(SNIFF.is_match(line), "{line}");
         }
         assert!(OTHER_ENV.is_match("(env.NODE_ENV === \"development\" || env.NODE_ENV === \"test\") &&"));
-        for line in ["if (process.env.NODE_ENV === 'production') {", "const isTest = file.endsWith('.test.ts');", "if (import.meta.vitest) {", "if (mode === 'testing') {"] {
+        for line in [
+            "if (process.env.NODE_ENV === 'production') {",
+            "const isTest = file.endsWith('.test.ts');",
+            "if (import.meta.vitest) {",
+            "if (mode === 'testing') {",
+        ] {
             assert!(!SNIFF.is_match(line) || line.contains("import.meta.vitest"), "{line}");
         }
     }

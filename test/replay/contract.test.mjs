@@ -170,6 +170,7 @@ test("--openapi lints a documented contract with no server and no traffic", asyn
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "intersite-openapi-")));
   /** @param {Record<string, object>} properties */
   const answer = (properties) => ({ content: { "application/json": { schema: { type: "object", properties: { data: { type: "object", properties } } } } } });
+  /** @type {Record<string, { get: { responses: Record<string, object> } }>} */
   const paths = Object.fromEntries(SHOP_RESOURCES.map((resource) => [`/v1/${resource}/{id}`, {
     get: { responses: { 200: answer({ id: { type: "string" }, displayName: { type: "string" }, createdAt: { type: "string", format: "date-time" } }) } },
   }]));

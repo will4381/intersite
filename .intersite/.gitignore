@@ -1,0 +1,5 @@
+# Written by Intersite: everything here is generated except what is listed below.
+*
+!.gitignore
+!baseline.json
+!adapter.mjs

@@ -39,12 +39,13 @@ export const rule = defineRule({
         hasDebugger = true;
       },
       CallExpression(node) {
-        if (!LOGGER.test(node.callee.object?.name ?? "")) return;
-        const method = node.callee.property?.name;
+        const callee = /** @type {any} */ (node.callee);
+        if (!LOGGER.test(callee.object?.name ?? "")) return;
+        const method = callee.property?.name;
         const [first, ...rest] = node.arguments;
         const text = first?.type === "Literal" && typeof first.value === "string" ? first.value : first?.type === "TemplateLiteral" ? first.quasis[0].value.cooked ?? "" : undefined;
         if (text !== undefined && emoji.test(text)) return context.report({ node, messageId: "emoji" });
-        if (node.callee.object.name !== "console" || (method !== "log" && method !== "debug")) return;
+        if (callee.object.name !== "console" || (method !== "log" && method !== "debug")) return;
         const isMarker = first?.type === "Literal" && text !== undefined && (rest.length ? markerWithValue : marker).test(text.replace(/^[\s>*=#~!.:?-]+|[\s<*=#~!.:?-]+$/g, ""));
         if (text !== undefined && (tag.test(text) || isMarker)) return context.report({ node, messageId: "marker", data: { text: text.trim().slice(0, 30) } });
         if (first?.type === "Identifier" && !rest.length) bare.push(node);

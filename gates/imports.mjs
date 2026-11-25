@@ -4,12 +4,10 @@
 // change added are judged, and so are unchanged imports the change broke by deleting, moving or un-exporting what
 // they named. Every JavaScript and TypeScript file of the repository is read and resolved once, in core/graph.rs.
 import { spawnSync } from "node:child_process";
-import { posix } from "node:path";
 
-import { located, runCore } from "./core.mjs";
-import { EMPTY_TREE, addedLines, listFiles, parseNameStatus, projectPrefix, resolveBase, showMany, topLevel, withStdin, workingDiff } from "./lib.mjs";
+import { fromEngine, runCore } from "./core.mjs";
+import { EMPTY_TREE, JS_FILE, addedLines, listFiles, parseNameStatus, projectPrefix, resolveBase, showMany, topLevel, withStdin, workingDiff } from "./lib.mjs";
 
-const CODE = /\.[cm]?[jt]sx?$/;
 /** Files that change how imports resolve: a change to one alone can break an import. */
 const RESOLUTION = /(?:^|\/)(?:package\.json|(?:ts|js)config[\w.-]*\.json)$/;
 
@@ -25,11 +23,11 @@ export function graphGate(command, { cwd, base }, options = {}) {
   const prefix = projectPrefix(cwd);
   const [patch, status] = workingDiff(cwd, [["-U0", "-M", sha], ["--name-status", "-M", "-z", sha]]);
   const list = parseNameStatus(status);
-  if (!whole && !list.some((c) => CODE.test(c.path) || CODE.test(c.from) || RESOLUTION.test(c.path))) return { findings: [], summary: "no changed code" };
+  if (!whole && !list.some((c) => JS_FILE.test(c.path) || JS_FILE.test(c.from) || RESOLUTION.test(c.path))) return { findings: [], summary: "no changed code" };
   const top = topLevel(cwd);
   const added = Object.fromEntries([...addedLines(patch)].map(([file, lines]) => [prefix + file, [...lines]]));
   const gone = list.filter((c) => c.status === "D" || c.status === "R").map((c) => prefix + c.from);
-  const modified = list.filter((c) => (c.status === "M" || c.status === "R") && CODE.test(c.path));
+  const modified = list.filter((c) => (c.status === "M" || c.status === "R") && JS_FILE.test(c.path));
   const before = showMany(cwd, sha, modified.map((c) => c.from));
   const baseTexts = Object.fromEntries(modified.map((c) => [prefix + c.path, before.get(c.from) ?? ""]));
   const answer = runCore({
@@ -48,7 +46,7 @@ export function graphGate(command, { cwd, base }, options = {}) {
     const run = withStdin(paths.flatMap((p) => [p, ...CODE_SUFFIXES.map((s) => p + s)]).join("\n") + "\n", (fd) => spawnSync("git", ["check-ignore", "--no-index", "--stdin"], { cwd: top, stdio: [fd, "pipe", "pipe"], encoding: "utf8" }));
     for (const line of run.stdout.split("\n")) if (line) ignored.add(line.replace(/\.[cm]?[jt]sx?$|\/index\.[cm]?[jt]sx?$/, ""));
   }
-  const findings = answer.findings.filter((f) => !ignored.has(ignorable[f.target]?.replace(/\.[cm]?[jt]sx?$/, ""))).map((f) => ({ ...located(f, (file) => posix.relative(prefix || ".", file)), target: f.target, message: f.message }));
+  const findings = answer.findings.filter((f) => !ignored.has(ignorable[f.target]?.replace(/\.[cm]?[jt]sx?$/, ""))).map((f) => fromEngine([f], prefix)[0]);
   return { findings, summary: answer.summary };
 }
 

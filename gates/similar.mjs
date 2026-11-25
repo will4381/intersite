@@ -4,7 +4,7 @@
 // match while code that merely looks alike does not. It also fails when added code holds most of an existing
 // function's body (a helper pasted inside a new function instead of called), found with Aroma's structural features.
 // Exact pasted blocks are left to the duplicates gate. The work is in core/similar.rs, core/units.rs and core/aroma.rs.
-import { located, runCore } from "./core.mjs";
+import { fromEngine, runCore } from "./core.mjs";
 import { EMPTY_TREE, SKIP, addedLines, listFiles, matches, resolveBase, workingDiff } from "./lib.mjs";
 
 // Never one side of a pair: tests, fixtures and stories, configs, and route files whose shape the framework dictates.
@@ -23,5 +23,5 @@ export async function similar({ cwd, base, testPaths, duplicateLines }) {
   const sources = new Set(files);
   if (![...added.keys()].some((f) => sources.has(f))) return { findings: [], summary: "0 added units checked" };
   const answer = runCore({ command: "similar", root: cwd, files, added: Object.fromEntries([...added].map(([f, l]) => [f, [...l]])), options: { lines: duplicateLines, whole: sha === EMPTY_TREE } });
-  return { findings: answer.findings.map((f) => ({ ...located(f), target: f.target, message: f.message })), summary: answer.summary };
+  return { findings: fromEngine(answer.findings), summary: answer.summary };
 }

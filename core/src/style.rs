@@ -11,19 +11,35 @@ use std::sync::LazyLock;
 
 use crate::{Answer, Finding, Request};
 
-static HEX: LazyLock<Fancy> = LazyLock::new(|| Fancy::new(r"(?<![\w&#$-])#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3,4})(?![\w-])").unwrap());
-static FUNC: LazyLock<Fancy> = LazyLock::new(|| Fancy::new(r"(?<![\w-])(?:rgba?|hsla?)\(\s*[\d.]+(?:deg)?%?\s*[,\s]\s*[\d.]+%?\s*[,\s]\s*[\d.]+%?\s*(?:[,/]\s*[\d.]+%?\s*)?\)").unwrap());
-static CSS_PROPS: LazyLock<Fancy> = LazyLock::new(|| Fancy::new(r"(?<![\w-])(font-size|font-weight|line-height|letter-spacing|border(?:-[a-z]+)*-radius|padding(?:-[a-z]+)*|margin(?:-[a-z]+)*|gap|row-gap|column-gap|z-index|transition-duration|animation-duration)\s*:\s*([^;{}]+)").unwrap());
-static JS_PROPS: LazyLock<Fancy> = LazyLock::new(|| Fancy::new(r#"(?<![\w$])(fontSize|fontWeight|lineHeight|letterSpacing|border\w*Radius|padding\w*|margin\w*|gap|rowGap|columnGap|zIndex)\s*:\s*(?:(['"`])([^'"`\n]+)\2|(-?[\d.]+)(?![\w.(]))"#).unwrap());
-static TW_ARBITRARY: LazyLock<Fancy> = LazyLock::new(|| Fancy::new(r"(?<![\w-])(text|leading|tracking|font|rounded(?:-[a-z]{1,2})?|p[xytrblse]?|m[xytrblse]?|gap(?:-[xy])?|space-[xy]|z|duration|bg|border(?:-[xytrbl])?|ring|fill|stroke|outline|from|via|to|decoration|caret|accent)-\[([^\]\s]+)\]").unwrap());
-static SWIFT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.font\(\.system\(size:\s*([\d.]+)|\.padding\((?:\.[a-zA-Z]+,\s*)?([\d.]+)\)|cornerRadius(?::\s*|\()([\d.]+)").unwrap());
+static HEX: LazyLock<Fancy> =
+    LazyLock::new(|| Fancy::new(r"(?<![\w&#$-])#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3,4})(?![\w-])").unwrap());
+static FUNC: LazyLock<Fancy> = LazyLock::new(|| {
+    Fancy::new(r"(?<![\w-])(?:rgba?|hsla?)\(\s*[\d.]+(?:deg)?%?\s*[,\s]\s*[\d.]+%?\s*[,\s]\s*[\d.]+%?\s*(?:[,/]\s*[\d.]+%?\s*)?\)").unwrap()
+});
+static CSS_PROPS: LazyLock<Fancy> = LazyLock::new(|| {
+    Fancy::new(r"(?<![\w-])(font-size|font-weight|line-height|letter-spacing|border(?:-[a-z]+)*-radius|padding(?:-[a-z]+)*|margin(?:-[a-z]+)*|gap|row-gap|column-gap|z-index|transition-duration|animation-duration)\s*:\s*([^;{}]+)").unwrap()
+});
+static JS_PROPS: LazyLock<Fancy> = LazyLock::new(|| {
+    Fancy::new(r#"(?<![\w$])(fontSize|fontWeight|lineHeight|letterSpacing|border\w*Radius|padding\w*|margin\w*|gap|rowGap|columnGap|zIndex)\s*:\s*(?:(['"`])([^'"`\n]+)\2|(-?[\d.]+)(?![\w.(]))"#).unwrap()
+});
+static TW_ARBITRARY: LazyLock<Fancy> = LazyLock::new(|| {
+    Fancy::new(r"(?<![\w-])(text|leading|tracking|font|rounded(?:-[a-z]{1,2})?|p[xytrblse]?|m[xytrblse]?|gap(?:-[xy])?|space-[xy]|z|duration|bg|border(?:-[xytrbl])?|ring|fill|stroke|outline|from|via|to|decoration|caret|accent)-\[([^\]\s]+)\]").unwrap()
+});
+static SWIFT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\.font\(\.system\(size:\s*([\d.]+)|\.padding\((?:\.[a-zA-Z]+,\s*)?([\d.]+)\)|cornerRadius(?::\s*|\()([\d.]+)").unwrap()
+});
 static CUSTOM_PROP: LazyLock<Fancy> = LazyLock::new(|| Fancy::new(r"(?<![\w-])(--[\w-]+|\$[\w-]+)\s*:\s*([^;{}]+)").unwrap());
-static THEME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)(?:^|/)(?:tailwind\.config\.[cm]?[jt]s|[\w-]*(?:tokens?|theme|colou?rs|palette)[\w-]*\.[cm]?[jt]s)$").unwrap());
+static THEME: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:^|/)(?:tailwind\.config\.[cm]?[jt]s|[\w-]*(?:tokens?|theme|colou?rs|palette)[\w-]*\.[cm]?[jt]s)$").unwrap()
+});
 static MARKUP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.(?:[jt]sx|vue|svelte|astro|html)$").unwrap());
 static TOKEN_FILES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.(?:css|scss|sass|less|[jt]sx|vue|svelte|astro|html)$").unwrap());
 static SHARED_PKG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:|packages/[^/]+|shared|libs?/[^/]+|design-system|ui)$").unwrap());
 static VAR_REF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"var\((--[\w-]+)").unwrap());
-static TW_REF: LazyLock<Fancy> = LazyLock::new(|| Fancy::new(r"(?<![\w-])(?:bg|text|border|fill|stroke|ring|outline|from|via|to|decoration|divide|caret|accent|shadow)-([a-z][\w-]*)").unwrap());
+static TW_REF: LazyLock<Fancy> = LazyLock::new(|| {
+    Fancy::new(r"(?<![\w-])(?:bg|text|border|fill|stroke|ring|outline|from|via|to|decoration|divide|caret|accent|shadow)-([a-z][\w-]*)")
+        .unwrap()
+});
 
 const MAX_BYTES: u64 = 512 * 1024;
 const MAX_LINE: usize = 4000;
@@ -68,7 +84,11 @@ struct Seen {
 }
 
 fn num_text(n: f64) -> String {
-    if n.fract() == 0.0 && n.abs() < 1e15 { format!("{}", n as i64) } else { format!("{n}") }
+    if n.fract() == 0.0 && n.abs() < 1e15 {
+        format!("{}", n as i64)
+    } else {
+        format!("{n}")
+    }
 }
 
 fn hex2(n: f64) -> String {
@@ -131,13 +151,21 @@ fn colour_distance(x: &[f64; 4], y: &[f64; 4]) -> f64 {
 fn oklab(c: &[f64; 4]) -> [f64; 3] {
     let lin = |c: f64| {
         let c = c / 255.0;
-        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
     };
     let (r, g, b) = (lin(c[0]), lin(c[1]), lin(c[2]));
     let l = (0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b).cbrt();
     let m = (0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b).cbrt();
     let s = (0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b).cbrt();
-    [0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s, 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s, 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s]
+    [
+        0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s,
+        1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
+        0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s,
+    ]
 }
 
 fn is_neutral(key: &str) -> bool {
@@ -245,7 +273,15 @@ fn numbers(cat: &'static str, text: &str) -> Vec<Value> {
         }
         // A bare number is pixels in a style object, but a ratio for line height and a step for weight or z-index.
         let unit = if unit.is_empty() && matches!(cat, "font size" | "radius" | "spacing") { "px".to_string() } else { unit };
-        out.push(Value { cat, key: format!("{}{unit}", num_text(num)), raw: part.to_string(), num: Some(num), unit, rgba: None, token: None });
+        out.push(Value {
+            cat,
+            key: format!("{}{unit}", num_text(num)),
+            raw: part.to_string(),
+            num: Some(num),
+            unit,
+            rgba: None,
+            token: None,
+        });
     }
     out
 }
@@ -278,11 +314,27 @@ fn tokens(line: &str) -> Vec<Value> {
         }
         if let (Some(cat), Some((num, unit))) = (token_category(&name), parse_number(v)) {
             if num != 0.0 {
-                out.push(Value { cat, key: format!("{}{unit}", num_text(num)), raw: v.to_string(), num: Some(num), unit, rgba: None, token: Some(name.clone()) });
+                out.push(Value {
+                    cat,
+                    key: format!("{}{unit}", num_text(num)),
+                    raw: v.to_string(),
+                    num: Some(num),
+                    unit,
+                    rgba: None,
+                    token: Some(name.clone()),
+                });
             }
         }
         if out.is_empty() {
-            out.push(Value { cat: "colour", key: String::new(), raw: v.to_string(), num: None, unit: String::new(), rgba: None, token: Some(name) });
+            out.push(Value {
+                cat: "colour",
+                key: String::new(),
+                raw: v.to_string(),
+                num: None,
+                unit: String::new(),
+                rgba: None,
+                token: Some(name),
+            });
         }
     }
     out
@@ -290,7 +342,10 @@ fn tokens(line: &str) -> Vec<Value> {
 
 /// Lines whose colours are data or artwork rather than styling choices.
 fn palette_line(code: &str) -> bool {
-    static ART: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"gradient\(|<(?:svg|path|circle|rect|ellipse|polygon|polyline|line|stop|g)\b|\b(?:fill|stroke|stopColor|stop-color)=").unwrap());
+    static ART: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"gradient\(|<(?:svg|path|circle|rect|ellipse|polygon|polyline|line|stop|g)\b|\b(?:fill|stroke|stopColor|stop-color)=")
+            .unwrap()
+    });
     static BARE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"^\s*["'`]#[0-9a-fA-F]+["'`]\s*,?\s*$"#).unwrap());
     static RECORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"\b(?:name|label|title)\s*:\s*["'`]"#).unwrap());
     ART.is_match(code) || BARE.is_match(code) || RECORD.is_match(code) || fancy_all(&HEX, code).len() >= 3
@@ -302,7 +357,9 @@ fn tailwind(code: &str) -> Vec<Value> {
     for c in fancy_all(&TW_ARBITRARY, code) {
         let prefix = c.get(1).unwrap().as_str();
         let inner = c.get(2).unwrap().as_str();
-        if let Some((key, rgba)) = parse_colour(inner).filter(|_| inner.starts_with('#') || inner.starts_with("rgb") || inner.starts_with("hsl")) {
+        if let Some((key, rgba)) =
+            parse_colour(inner).filter(|_| inner.starts_with('#') || inner.starts_with("rgb") || inner.starts_with("hsl"))
+        {
             out.push(Value { cat: "colour", key, raw: inner.to_string(), num: None, unit: String::new(), rgba: Some(rgba), token: None });
             continue;
         }
@@ -350,7 +407,13 @@ fn values_of(line: &str, kind: &str) -> Vec<Value> {
     }
     if kind == "swift" {
         for c in SWIFT.captures_iter(&code) {
-            let (cat, text) = if let Some(m) = c.get(1) { ("font size", m.as_str()) } else if let Some(m) = c.get(2) { ("spacing", m.as_str()) } else { ("radius", c.get(3).map_or("", |m| m.as_str())) };
+            let (cat, text) = if let Some(m) = c.get(1) {
+                ("font size", m.as_str())
+            } else if let Some(m) = c.get(2) {
+                ("spacing", m.as_str())
+            } else {
+                ("radius", c.get(3).map_or("", |m| m.as_str()))
+            };
             out.extend(numbers(cat, text));
         }
     }
@@ -434,18 +497,28 @@ fn uses(count: usize, lead: &str) -> String {
         return String::new();
     }
     let s = if count == 1 { "" } else { "s" };
-    if lead == " (" { format!(" (used {count} time{s})") } else { format!("{lead}used {count} time{s}") }
+    if lead == " (" {
+        format!(" (used {count} time{s})")
+    } else {
+        format!("{lead}used {count} time{s}")
+    }
 }
 
-fn colour_finding(v: &Seen, inv: &Inventory, refs: &HashMap<String, usize>) -> Option<String> {
+/// The tokens a value in a token file is compared with (none elsewhere), and the names of those holding the value.
+fn holders<'a>(v: &Seen, inv: &Inventory<'a>) -> (Vec<&'a Seen>, Vec<&'a str>) {
     let tokens: Vec<&Seen> = if TOKEN_FILES.is_match(&v.file) { inv.tokens.clone() } else { vec![] };
     let mut holders: Vec<&str> = Vec::new();
-    for t in tokens.iter().filter(|t| t.v.cat == "colour" && t.v.key == v.v.key) {
+    for t in tokens.iter().filter(|t| t.v.cat == v.v.cat && t.v.key == v.v.key) {
         let name = t.v.token.as_deref().unwrap_or("");
         if !holders.contains(&name) {
             holders.push(name);
         }
     }
+    (tokens, holders)
+}
+
+fn colour_finding(v: &Seen, inv: &Inventory, refs: &HashMap<String, usize>) -> Option<String> {
+    let (tokens, holders) = holders(v, inv);
     let count = |name: &str| refs.get(name).copied().unwrap_or(0);
     if holders.len() == 1 && !is_neutral(&v.v.key) {
         return Some(format!("colour {} is the value of {}{}: use the token", v.v.raw, holders[0], uses(count(holders[0]), " (")));
@@ -477,18 +550,15 @@ fn colour_finding(v: &Seen, inv: &Inventory, refs: &HashMap<String, usize>) -> O
         }
     }
     let (name, key, n, _) = best?;
-    Some(if !name.is_empty() { format!("colour {} is nearly {key} ({name}{}): use the token", v.v.raw, uses(n, ", ")) } else { format!("colour {} is nearly {key} (used {n} times): use {key}", v.v.raw) })
+    Some(if !name.is_empty() {
+        format!("colour {} is nearly {key} ({name}{}): use the token", v.v.raw, uses(n, ", "))
+    } else {
+        format!("colour {} is nearly {key} (used {n} times): use {key}", v.v.raw)
+    })
 }
 
 fn number_finding(v: &Seen, inv: &Inventory, refs: &HashMap<String, usize>) -> Option<String> {
-    let tokens: Vec<&Seen> = if TOKEN_FILES.is_match(&v.file) { inv.tokens.clone() } else { vec![] };
-    let mut holders: Vec<&str> = Vec::new();
-    for t in tokens.iter().filter(|t| t.v.cat == v.v.cat && t.v.key == v.v.key) {
-        let name = t.v.token.as_deref().unwrap_or("");
-        if !holders.contains(&name) {
-            holders.push(name);
-        }
-    }
+    let (_, holders) = holders(v, inv);
     let count = |name: &str| refs.get(name).copied().unwrap_or(0);
     if holders.len() == 1 && matches!(v.v.cat, "font size" | "radius") && count(holders[0]) >= NUMBER_TOKEN_REFS {
         return Some(format!("{} {} is the value of {}{}: use the token", v.v.cat, v.v.raw, holders[0], uses(count(holders[0]), " (")));
@@ -497,7 +567,8 @@ fn number_finding(v: &Seen, inv: &Inventory, refs: &HashMap<String, usize>) -> O
         return None;
     }
     // The scale: existing values of this category and unit, most used first (ties keep first-seen order).
-    let mut list: Vec<(usize, &Value)> = inv.order.iter().map(|id| inv.values[id]).filter(|(_, e)| e.cat == v.v.cat && e.unit == v.v.unit).collect();
+    let mut list: Vec<(usize, &Value)> =
+        inv.order.iter().map(|id| inv.values[id]).filter(|(_, e)| e.cat == v.v.cat && e.unit == v.v.unit).collect();
     list.sort_by(|a, b| b.0.cmp(&a.0));
     let total: usize = list.iter().map(|e| e.0).sum();
     let steps: Vec<(usize, &Value)> = list.iter().filter(|e| e.0 >= 2).copied().collect();
@@ -517,13 +588,19 @@ fn number_finding(v: &Seen, inv: &Inventory, refs: &HashMap<String, usize>) -> O
         return None;
     }
     let mut sorted: Vec<f64> = steps.iter().take(12).filter_map(|e| e.1.num).collect();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    sorted.sort_by(f64::total_cmp);
     let share = (100.0 * steps.iter().take(12).map(|e| e.0).sum::<usize>() as f64 / total as f64).round() as i64;
     let below = sorted.iter().rev().find(|&&n| n < num);
     let above = sorted.iter().find(|&&n| n > num);
     let pick: Vec<String> = [below, above].into_iter().flatten().map(|n| format!("{}{}", num_text(*n), v.v.unit)).collect();
     let scale: Vec<String> = sorted.iter().map(|n| format!("{}{}", num_text(*n), v.v.unit)).collect();
-    Some(format!("{} {} is off this project's scale ({}: {share}% of {total} uses): use {}", v.v.cat, v.v.raw, scale.join(", "), pick.join(" or ")))
+    Some(format!(
+        "{} {} is off this project's scale ({}: {share}% of {total} uses): use {}",
+        v.v.cat,
+        v.v.raw,
+        scale.join(", "),
+        pick.join(" or ")
+    ))
 }
 
 /// The family a token belongs to: its name without the last segment (`--gray-750` is `--gray`).
@@ -546,12 +623,21 @@ fn token_finding(t: &Seen, inv: &Inventory) -> Option<String> {
             return Some(format!("token {name} ({}) duplicates {other}: use {other}", t.v.raw));
         }
         let (d, tolerance) = if t.v.cat == "colour" {
-            (match (&t.v.rgba, &o.v.rgba) { (Some(a), Some(b)) => colour_distance(a, b), _ => f64::INFINITY }, NEAR_COLOUR)
+            (
+                match (&t.v.rgba, &o.v.rgba) {
+                    (Some(a), Some(b)) => colour_distance(a, b),
+                    _ => f64::INFINITY,
+                },
+                NEAR_COLOUR,
+            )
         } else {
             ((t.v.num.unwrap_or(f64::NAN) - o.v.num.unwrap_or(f64::NAN)).abs(), near(t.v.cat, &t.v.unit).unwrap_or(-1.0))
         };
         if d < tolerance + 1e-9 {
-            return Some(format!("token {name} ({}) is nearly {other} ({}): use {other}, or make the two clearly different", t.v.raw, o.v.raw));
+            return Some(format!(
+                "token {name} ({}) is nearly {other} ({}): use {other}, or make the two clearly different",
+                t.v.raw, o.v.raw
+            ));
         }
     }
     None
@@ -566,11 +652,22 @@ fn finding_for(v: &Seen, inv: &Inventory, refs: &HashMap<String, usize>) -> Opti
         return colour_finding(v, inv, refs);
     }
     // A style object in a plain script is usually for someone else's API (Stripe appearance, a chart library, an email).
-    if PLAIN_SCRIPT.is_match(&v.file) { None } else { number_finding(v, inv, refs) }
+    if PLAIN_SCRIPT.is_match(&v.file) {
+        None
+    } else {
+        number_finding(v, inv, refs)
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Options {
+    /// The folder of each package.json, "" for the repository top.
+    packages: HashSet<String>,
 }
 
 pub fn run(request: &Request) -> Result<Answer, String> {
-    let packages: HashSet<String> = request.options.get("packages").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+    let Options { packages } = request.options()?;
     let pkg = |file: &str| {
         let mut dir = std::path::Path::new(file).parent();
         while let Some(d) = dir.filter(|d| !d.as_os_str().is_empty()) {
@@ -582,7 +679,7 @@ pub fn run(request: &Request) -> Result<Answer, String> {
         }
         String::new()
     };
-    let added = request.added_sets().unwrap_or_default();
+    let added = request.added.clone().unwrap_or_default();
     // Each file's values and token references, read in parallel, kept in file order.
     let per_file: Vec<(Vec<Seen>, Vec<Seen>, Vec<String>)> = request
         .files
@@ -617,7 +714,11 @@ pub fn run(request: &Request) -> Result<Answer, String> {
                 }
                 for v in values_of(line, kind) {
                     let seen = Seen { v, file: file.clone(), line: i as u32 + 1, pkg: package.clone() };
-                    if mine.is_some_and(|m| m.contains(&(i as u32 + 1))) { fresh.push(seen) } else { old.push(seen) }
+                    if mine.is_some_and(|m| m.contains(&(i as u32 + 1))) {
+                        fresh.push(seen)
+                    } else {
+                        old.push(seen)
+                    }
                 }
             }
             (fresh, old, refs)
@@ -648,7 +749,7 @@ pub fn run(request: &Request) -> Result<Answer, String> {
         }
         findings.push(Finding { file: v.file.clone(), line: v.line, target, message: format!("{}:{} {message}", v.file, v.line) });
     }
-    Ok(Answer { findings, summary: format!("{} added styling values checked against {} in the repository", fresh.len(), old.len()), data: None })
+    Ok(Answer::new(findings, format!("{} added styling values checked against {} in the repository", fresh.len(), old.len())))
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 // @ts-check
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -9,7 +9,7 @@ import { Worker } from "node:worker_threads";
 import { EMPTY_TREE, GateError, changes, git, inGit, matches, resolveBase } from "../gates/lib.mjs";
 import { runCore } from "../gates/core.mjs";
 import { answers } from "../replay/run.mjs";
-import { loadConfig } from "../shared/config.mjs";
+import { intersiteDir, loadConfig } from "../shared/config.mjs";
 import { WHOLE } from "./gate.mjs";
 import { installed, upgradeAvailable } from "./upgrade.mjs";
 
@@ -138,14 +138,9 @@ async function runStage(stage, cwd, record, silent, pooled) {
     return run(stage.argv, { cwd, quiet: true, silent, collect });
   }
   if (!silent) return run(stage.argv, { cwd, quiet: true });
-  const log = console.log;
-  console.log = (/** @type {unknown} */ line) => record.output.push(String(line));
-  try {
-    return await run(stage.argv, { cwd, quiet: true });
-  } finally {
-    console.log = log;
-    record.findings.push(...record.output.filter((line) => line.startsWith("FAIL")).map((message) => ({ target: stage.name, message })));
-  }
+  const code = await run(stage.argv, { cwd, quiet: true, print: (/** @type {string} */ line) => record.output.push(line) });
+  record.findings.push(...record.output.filter((line) => line.startsWith("FAIL")).map((message) => ({ target: stage.name, message })));
+  return code;
 }
 
 /**
@@ -164,9 +159,14 @@ function addToLedger(cwd, base, records) {
     findings: records.flatMap((r) => r.findings.map(key(r))),
     acknowledged: records.flatMap((r) => r.acknowledged.map(key(r))),
   };
-  mkdirSync(join(cwd, ".intersite"), { recursive: true });
+  intersiteDir(cwd);
   appendFileSync(join(cwd, ".intersite", "ledger.jsonl"), `${JSON.stringify(run)}\n`);
 }
+
+/**
+ * @typedef {{ base?: string, skip?: string[], full?: boolean, all?: boolean, json?: boolean }} Flags
+ * @typedef {{ name: string, command: string, argv: string[], check?: import("../shared/config.mjs").Config["checks"][number] }} Stage
+ */
 
 /**
  * `intersite check [--base <ref>] [--skip <stage>]... [--full] [--all] [--json]`: every check that applies to this project,
@@ -177,102 +177,151 @@ function addToLedger(cwd, base, records) {
  * @param {string[]} argv @param {{ cwd: string }} context
  */
 export default async function check(argv, { cwd }) {
-  let config;
-  /** @type {{ base?: string, skip?: string[], full?: boolean, all?: boolean, json?: boolean }} */
+  const read = readOptions(argv, cwd);
+  if (!read) return 2;
+  const { flags, config } = read;
+  // Asked now, answered while the stages run: a newer Intersite release to upgrade to.
+  const upgrade = upgradeAvailable(cwd);
+  /** @type {string[]} */
+  const skipped = [];
+  // `--json` prints one object, so the `skip …` lines go into it instead.
+  const note = (/** @type {string} */ line) => (flags.json ? skipped.push(line) : console.log(line));
+  const inRepo = inGit(cwd);
+  const stages = await planStages(cwd, config, flags, inRepo, note);
+  const { failed, records, worst } = await runStages(stages, cwd, Boolean(flags.json));
+  const tag = await upgrade;
+  if (inRepo) addToLedger(cwd, flags.base ?? config.gates.base, records);
+  if (flags.json) {
+    console.log(JSON.stringify({ ok: !failed.length, stages: records.map(({ name, code, findings, output }) => ({ name, ok: code === 0, code, findings, ...(output.length && { output }) })), skipped, ...(tag && { upgrade: tag }) }));
+    return worst;
+  }
+  if (tag) console.log(`upgrade intersite: ${tag} is out and this is v${installed}; install github:will4381/intersite#${tag} as a dev dependency (npm i -D, or the project's package manager), then run \`npx intersite init\``);
+  const ran = stages.map((stage) => stage.name);
+  console.log(failed.length > 0 ? `FAIL check: ${failed.join(", ")}` : `ok check: ${ran.join(", ") || "no stages ran"}`);
+  return worst;
+}
+
+/**
+ * The flags and config, or nothing when either cannot be read (the reason is printed).
+ * @param {string[]} argv @param {string} cwd
+ * @returns {{ flags: Flags, config: import("../shared/config.mjs").Config } | undefined}
+ */
+function readOptions(argv, cwd) {
+  /** @type {Flags} */
   let flags;
   try {
     flags = parseArgs({ args: argv, options: { base: { type: "string" }, skip: { type: "string", multiple: true }, full: { type: "boolean" }, all: { type: "boolean" }, json: { type: "boolean" } } }).values;
   } catch (error) {
     console.error(`check: ${/** @type {Error} */ (error).message}; usage: intersite check [--base <ref>] [--skip <stage>]... [--full] [--all] [--json]`);
-    return 2;
+    return undefined;
   }
   try {
-    config = loadConfig(cwd);
+    return { flags, config: loadConfig(cwd) };
   } catch (error) {
     console.error(`check: ${error instanceof Error ? error.message : String(error)}`);
-    return 2;
+    return undefined;
   }
-  // Asked now, answered while the stages run: a newer Intersite release to upgrade to.
-  const upgrade = upgradeAvailable(cwd);
+}
+
+/**
+ * The stages to run, in order of cost, less those `--skip` names; `note` is told of each one left out and why.
+ * @param {string} cwd @param {import("../shared/config.mjs").Config} config @param {Flags} flags @param {boolean} inRepo
+ * @param {(line: string) => void} note
+ * @returns {Promise<Stage[]>}
+ */
+async function planStages(cwd, config, flags, inRepo, note) {
   const skip = new Set(flags.skip ?? []);
   const base = flags.base ? ["--base", flags.base] : [];
-  /** @type {string[]} */
-  const skipped = [];
-  // `--json` prints one object, so the `skip …` lines go into it instead.
-  const note = (/** @type {string} */ line) => (flags.json ? skipped.push(line) : console.log(line));
-
-  const git = inGit(cwd);
-  if (!git) note("skip gates: not a git repository (run `git init` to check changes)");
-  /** @type {{ name: string, command: string, argv: string[], check?: import("../shared/config.mjs").Config["checks"][number] }[]} */
-  const stages = [
-    { name: "lint", command: "lint", argv: [] },
-    // The protected gate needs no listing: writing a `gates.protected` rule turns it on.
-    ...(git ? [...new Set([...config.gates.run, ...(config.gates.protected.length ? ["protected"] : [])])] : []).map((/** @type {string} */ gate) => ({ name: gate, command: "gate", argv: flags.all && WHOLE.has(gate) ? [gate, "--all"] : [gate, ...base] })),
-  ];
-  // Without git, or with a base that cannot be found (the gates say so), there is no change to go by: every check runs.
-  /** @type {string[] | undefined} */
-  let changed;
-  if (git && !flags.all && config.checks.some((check) => check.when.length)) {
-    try {
-      changed = changes(cwd, resolveBase(cwd, flags.base ?? config.gates.base)).flatMap((change) => [change.path, change.from]);
-    } catch (error) {
-      if (!(error instanceof GateError)) throw error;
-    }
-  }
+  const everything = flags.full || flags.all;
+  if (!inRepo) note("skip gates: not a git repository (run `git init` to check changes)");
+  /** @type {Stage[]} */
+  const stages = [{ name: "lint", command: "lint", argv: [] }, ...(inRepo ? gateStages(config, flags, base) : [])];
+  const changed = inRepo && !flags.all ? changedPaths(cwd, config, flags.base ?? config.gates.base) : undefined;
   // A bug fix must come with a test that fails without it. When the change says it is a fix and the project has a test
   // command, fails-on-base joins the slow stages, so `--full` proves the new test catches the bug.
-  const proveFix = git && config.gates.testCmd && !config.gates.run.includes("fails-on-base") && !skip.has("fails-on-base") && isFix(cwd, flags.base ?? config.gates.base);
-  if (proveFix && (flags.full || flags.all)) stages.push({ name: "fails-on-base", command: "gate", argv: ["fails-on-base", ...base] });
+  const proveFix = inRepo && config.gates.testCmd && !config.gates.run.includes("fails-on-base") && !skip.has("fails-on-base") && isFix(cwd, flags.base ?? config.gates.base);
+  if (proveFix && everything) stages.push({ name: "fails-on-base", command: "gate", argv: ["fails-on-base", ...base] });
   const applies = config.checks.filter((check) => !skip.has(check.name) && (!changed || !check.when.length || changed.some((path) => matches(path, check.when))));
-  const waiting = applies.filter((check) => check.slow && !flags.full && !flags.all);
-  const slowNames = [...waiting.map((check) => check.name), ...(proveFix && !flags.full && !flags.all ? ["fails-on-base"] : [])];
+  const waiting = everything ? [] : applies.filter((check) => check.slow);
+  const slowNames = [...waiting.map((check) => check.name), ...(proveFix && !everything ? ["fails-on-base"] : [])];
   if (slowNames.length) note(`skip ${slowNames.join(", ")}: slow, run with \`intersite check --full\``);
   stages.push(...applies.filter((check) => !waiting.includes(check)).map((check) => ({ name: check.name, command: "check", argv: [], check })));
   if (config.replay.enabled && !skip.has("replay")) {
-    if (!existsSync(resolve(cwd, config.replay.adapter))) note(`skip replay: no adapter at ${config.replay.adapter}`);
-    else if (!(await reachable(config.collector.url))) note(`skip replay: no collector at ${config.collector.url} (start one with \`intersite collector\`)`);
-    else if (!(await answers(config.replay.target))) note(`skip replay: nothing answers at ${config.replay.target} (start the server to replay recorded sessions)`);
+    const why = await replayBlocked(cwd, config);
+    if (why) note(`skip replay: ${why}`);
     else stages.push({ name: "replay", command: "replay", argv: [] });
   }
+  return stages.filter((stage) => !skip.has(stage.name));
+}
 
+/**
+ * The configured gates, with `--all` judging the whole repository where a gate can.
+ * @param {import("../shared/config.mjs").Config} config @param {Flags} flags @param {string[]} base
+ * @returns {Stage[]}
+ */
+function gateStages(config, flags, base) {
+  // The protected gate needs no listing: writing a `gates.protected` rule turns it on.
+  const gates = new Set([...config.gates.run, ...(config.gates.protected.length ? ["protected"] : [])]);
+  return [...gates].map((gate) => ({ name: gate, command: "gate", argv: flags.all && WHOLE.has(gate) ? [gate, "--all"] : [gate, ...base] }));
+}
+
+/**
+ * The paths the change touches, for the project checks' `when`. Nothing when no check has a `when`, or with a base
+ * that cannot be found (the gates say so): there is no change to go by, so every check runs.
+ * @param {string} cwd @param {import("../shared/config.mjs").Config} config @param {string} base
+ * @returns {string[] | undefined}
+ */
+function changedPaths(cwd, config, base) {
+  if (!config.checks.some((check) => check.when.length)) return undefined;
+  try {
+    return changes(cwd, resolveBase(cwd, base)).flatMap((change) => [change.path, change.from]);
+  } catch (error) {
+    if (!(error instanceof GateError)) throw error;
+    return undefined;
+  }
+}
+
+/** Why replay cannot run now, or "" when it can. @param {string} cwd @param {import("../shared/config.mjs").Config} config */
+async function replayBlocked(cwd, config) {
+  if (!existsSync(resolve(cwd, config.replay.adapter))) return `no adapter at ${config.replay.adapter}`;
+  if (!(await reachable(config.collector.url))) return `no collector at ${config.collector.url} (start one with \`intersite collector\`)`;
+  if (!(await answers(config.replay.target))) return `nothing answers at ${config.replay.target} (start the server to replay recorded sessions)`;
+  return "";
+}
+
+/**
+ * Runs the stages, each printing only its findings. Lint waits on oxlint in another process, so the gates run
+ * meanwhile; its line prints when it finishes. The gates that only read run side by side in workers and print in
+ * order; those that run the tests wait for them.
+ * @param {Stage[]} stages @param {string} cwd @param {boolean} silent
+ */
+async function runStages(stages, cwd, silent) {
   /** @type {string[]} */
   const failed = [];
   /** @type {Record[]} */
   const records = [];
   let worst = 0;
-  /** @param {typeof stages[number]} stage @param {Parameters<typeof runStage>[4]} [pooled] */
+  /** @param {Stage} stage @param {Parameters<typeof runStage>[4]} [pooled] */
   const runOne = async (stage, pooled) => {
-    // Each stage prints only its findings; this command's own line is the one success line.
     /** @type {Record} */
     const record = { name: stage.name, code: 0, findings: [], acknowledged: [], output: [] };
     records.push(record);
-    record.code = await runStage(stage, cwd, record, Boolean(flags.json), pooled);
+    record.code = await runStage(stage, cwd, record, silent, pooled);
     if (record.code !== 0) failed.push(stage.name);
     worst = Math.max(worst, record.code);
   };
-  const [lint, ...rest] = stages.filter((stage) => !skip.has(stage.name));
-  // Lint waits on oxlint in another process, so the gates run meanwhile; its line prints when it finishes. The gates
-  // that only read run side by side in workers and print in order; those that run the tests wait for them.
+  const [lint, ...rest] = stages;
   const linting = lint ? runOne(lint) : undefined;
   const side = rest.filter((stage) => stage.command === "gate" && !RUNS_TESTS.has(stage.name));
   const pool = side.length > 1 ? gatePool(Math.min(side.length, Math.max(2, Math.min(6, availableParallelism() - 1)))) : undefined;
-  const pending = new Map(pool ? side.map((stage) => [stage, pool.run({ argv: stage.argv, cwd, silent: Boolean(flags.json) })]) : []);
+  const pending = new Map(pool ? side.map((stage) => [stage, pool.run({ argv: stage.argv, cwd, silent })]) : []);
   try {
     for (const stage of rest) await runOne(stage, pending.get(stage));
   } finally {
     await pool?.close();
   }
   await linting;
-  const tag = await upgrade;
-  if (git) addToLedger(cwd, flags.base ?? config.gates.base, records);
-  if (flags.json) {
-    console.log(JSON.stringify({ ok: !failed.length, stages: records.map(({ name, code, findings, output }) => ({ name, ok: code === 0, code, findings, ...(output.length && { output }) })), skipped, ...(tag && { upgrade: tag }) }));
-    return worst;
-  }
-  if (tag) console.log(`upgrade intersite: ${tag} is out and this is v${installed}; install github:will4381/intersite#${tag} as a dev dependency (npm i -D, or the project's package manager), then run \`npx intersite init\``);
-  const ran = stages.filter((stage) => !skip.has(stage.name)).map((stage) => stage.name);
-  console.log(failed.length > 0 ? `FAIL check: ${failed.join(", ")}` : `ok check: ${ran.join(", ") || "no stages ran"}`);
-  return worst;
+  return { failed, records, worst };
 }
 
 /**

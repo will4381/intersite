@@ -45,12 +45,21 @@ struct Tally {
     acknowledged: HashSet<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Options {
+    /// .intersite/ledger.jsonl, "" when there is none.
+    ledger: String,
+    /// The config's `gates.acknowledged`.
+    acknowledged: Vec<Entry>,
+    /// `Intersite-Ack:` commit trailers.
+    trailers: Vec<Trailer>,
+}
+
 pub fn run(request: &Request) -> Result<Answer, String> {
-    let o = &request.options;
+    let Options { ledger, acknowledged: entries, trailers } = request.options()?;
     // A line cut short by an interrupted write is skipped, not fatal: the ledger only ever grows by appends.
-    let runs: Vec<Run> = o["ledger"].as_str().unwrap_or("").lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
-    let entries: Vec<Entry> = serde_json::from_value(o["acknowledged"].clone()).unwrap_or_default();
-    let trailers: Vec<Trailer> = serde_json::from_value(o["trailers"].clone()).unwrap_or_default();
+    let runs: Vec<Run> = ledger.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
 
     let mut tallies: BTreeMap<String, Tally> = BTreeMap::new();
     let mut branches: HashMap<&str, Vec<&Run>> = HashMap::new();
@@ -117,8 +126,14 @@ mod tests {
         .unwrap();
         let rows = run(&request).unwrap().data.unwrap();
         let get = |stage: &str| rows.as_array().unwrap().iter().find(|r| r["stage"] == stage).unwrap().clone();
-        assert_eq!((get("sql")["raised"].as_u64(), get("sql")["fixed"].as_u64(), get("sql")["acknowledged"].as_u64()), (Some(2), Some(1), Some(0)));
-        assert_eq!((get("naming")["raised"].as_u64(), get("naming")["fixed"].as_u64(), get("naming")["acknowledged"].as_u64()), (Some(2), Some(0), Some(2)));
+        assert_eq!(
+            (get("sql")["raised"].as_u64(), get("sql")["fixed"].as_u64(), get("sql")["acknowledged"].as_u64()),
+            (Some(2), Some(1), Some(0))
+        );
+        assert_eq!(
+            (get("naming")["raised"].as_u64(), get("naming")["fixed"].as_u64(), get("naming")["acknowledged"].as_u64()),
+            (Some(2), Some(0), Some(2))
+        );
         let order: Vec<&str> = rows.as_array().unwrap().iter().map(|r| r["stage"].as_str().unwrap()).collect();
         assert_eq!(order, vec!["naming", "new-deps", "sql"]);
     }

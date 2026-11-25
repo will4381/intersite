@@ -258,6 +258,315 @@ const disabled = (reason) => {
 };
 
 /**
+ * The settings and batch queue one capture works from.
+ * @param {CaptureOptions} options
+ */
+function captureState(options) {
+  const { project, url, token, fetcher, release } = options;
+  const salt = options.salt ?? token;
+  const idPattern = new RegExp(options.idPattern ?? DEFAULT_ID_PATTERN);
+  return {
+    project,
+    token,
+    fetcher,
+    release,
+    salt,
+    idPattern,
+    sample: options.sample ?? 0.05,
+    maxBodyBytes: options.maxBodyBytes ?? 32_768,
+    include: (options.include ?? ["/**"]).map(globToRegExp),
+    exclude: (options.exclude ?? []).map(globToRegExp),
+    ttlDays: { ...DEFAULT_TTL_DAYS, ...options.ttlDays },
+    scrubber: createScrubber({ salt, idPattern: idPattern.source, redactKeys: options.redactKeys, keepKeys: options.keepKeys }),
+    endpoint: `${url.replace(/\/+$/, "")}/v1/cases`,
+    // ponytail: the queue lives in this capture instance and flushes on a timer; in a Worker build one per request (as in
+    // the example), since workerd forbids I/O across request contexts. A shared cross-request queue needs waitUntil plumbing.
+    /** @type {{ item: Promise<unknown>, done: () => void }[]} */
+    queue: [],
+    /** @type {ReturnType<typeof setTimeout> | undefined} */
+    timer: undefined,
+  };
+}
+
+/** @typedef {ReturnType<typeof captureState>} Capture */
+
+/**
+ * Synchronous, so an unsampled request costs nothing else. Whole sessions per UTC day.
+ * @param {Capture} capture @param {string} outcome @param {string} session @param {number} ms
+ */
+const sampled = (capture, outcome, session, ms) =>
+  outcome !== "ok" ||
+  (Number.isFinite(ms) && quickHash(`${capture.salt}|${session}|${Math.floor(ms / 86_400_000)}`) / 2 ** 53 < capture.sample);
+
+/** Every segment that is not an ID or a short lowercase word becomes `_`. Never trusts the client's reduction. @param {Capture} capture @param {unknown} page */
+function reducePage(capture, page) {
+  if (typeof page !== "string" || !page.startsWith("/") || page.length > 2048) return undefined;
+  const reduced = reduce(page, capture.scrubber.isId);
+  return reduced.length <= 256 ? reduced : undefined;
+}
+
+/** @param {Capture} capture @param {unknown} name @param {unknown} page */
+function actionOf(capture, name, page) {
+  const reduced = reducePage(capture, page);
+  return typeof name === "string" && ACTION_NAME.test(name) && reduced ? { action: { name, page: reduced } } : {};
+}
+
+/** The tab's step that caused a request, from its `x-intersite-step` header. @param {string | null} value */
+function stepOf(value) {
+  const step = { n: Number(value) };
+  return value !== null && /^\d{1,7}$/.test(value) && !stepProblem(step, false) ? { step } : {};
+}
+
+/** @param {{ kind: string } | undefined} actor */
+const actorOf = (actor) => ({ kind: /^[a-z][a-z0-9_-]{0,31}$/.test(actor?.kind ?? "") ? /** @type {{ kind: string }} */ (actor).kind : "unknown" });
+
+/**
+ * Fields every case shares. `session` is the raw caller value; only its salted daily HMAC is stored.
+ * @param {Capture} capture @param {string} rawSession @param {string} at @param {string} outcome @param {string} id
+ */
+async function base(capture, rawSession, at, outcome, id) {
+  return {
+    v: /** @type {1} */ (1),
+    id,
+    project: capture.project,
+    session: (await capture.scrubber.hash(`${rawSession}|${at.slice(0, 10)}`)).slice(0, 32),
+    seq: Date.parse(at),
+    at,
+    release: capture.release,
+    outcome: /** @type {import("../shared/case.mjs").Case["outcome"]} */ (outcome),
+    ttlDays: capture.ttlDays[/** @type {keyof Capture["ttlDays"]} */ (outcome)],
+  };
+}
+
+/** POSTs one batch of built cases. @param {Capture} capture @param {unknown[]} cases */
+async function send(capture, cases) {
+  if (cases.length === 0) return;
+  // A timer, not AbortSignal.timeout: Node does not wait for that one, so a process with nothing else to do would exit
+  // with record() still pending and its cases lost.
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")), TIMEOUT_MS);
+  try {
+    const sent = await (capture.fetcher ?? globalThis).fetch(capture.endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${capture.token}` },
+      body: JSON.stringify({ cases }),
+      signal: abort.signal,
+    });
+    discard(sent.body);
+    if (!sent.ok) throw new Error(`the collector answered ${sent.status}`);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Sends up to 50 queued cases as one POST. Entries join a batch when `record` is called, so one tick's cases share a POST. @param {Capture} capture */
+function flush(capture) {
+  clearTimeout(capture.timer);
+  capture.timer = undefined;
+  const batch = capture.queue.slice(0, MAX_BATCH);
+  capture.queue = capture.queue.slice(MAX_BATCH);
+  if (capture.queue.length > 0) capture.timer = setTimeout(() => flush(capture), 0);
+  if (batch.length === 0) return;
+  Promise.all(batch.map((entry) => withDeadline(entry.item)))
+    .then((items) => send(capture, items.filter((item) => item !== undefined)))
+    // A failed send drops its cases: record() must never reject into the request it observes.
+    .catch((error) => warnUndelivered(capture.endpoint, error))
+    .finally(() => {
+      for (const entry of batch) entry.done();
+    });
+}
+
+/** @param {Capture} capture @param {Promise<unknown>} build A case, or undefined to drop it. @returns {Promise<void>} */
+function enqueue(capture, build) {
+  // A case that fails to build is dropped, never surfaced: capture must not disturb the request it observes.
+  const dropped = () => undefined;
+  const item = build.then((value) => (caseProblem(value) ? undefined : value)).catch(dropped);
+  return new Promise((done) => {
+    capture.queue.push({ item, done: () => done(undefined) });
+    if (capture.queue.length >= MAX_BATCH) flush(capture);
+    else capture.timer ??= setTimeout(() => flush(capture), 0);
+  });
+}
+
+/**
+ * The path's segments, each one that is not the route's own literal scrubbed under its parameter's name. Not async, so
+ * awaiting it costs no extra tick: workerd refuses to read the request body once the response is sent, so `build` must
+ * reach `readJson(request)` within the same few microtasks it always has.
+ * @param {Capture} capture @param {string[]} segments @param {string} route
+ */
+function scrubPath(capture, segments, route) {
+  const routeParts = templateFor(segments, route.split("/"));
+  return Promise.all(
+    segments.map(async (segment, index) => {
+      const template = routeParts[index];
+      if (segment === "" || (segment === template && !template.startsWith(":"))) return segment;
+      let decoded = segment;
+      try {
+        decoded = decodeURIComponent(segment);
+      } catch {
+        decoded = segment;
+      }
+      const scrubbed = await capture.scrubber.scrub(decoded, template?.startsWith(":") ? template.slice(1) : "");
+      return encodeURIComponent(String(scrubbed));
+    }),
+  );
+}
+
+/**
+ * @param {Capture} capture @param {RecordInput} input @param {Request | PlainRequest} request @param {Response | PlainResponse} response
+ * @param {{ status: number, outcome: string, at: string, session: string, id: string }} known
+ */
+async function build(capture, input, request, response, { status, outcome, at, session, id }) {
+  const { route } = input;
+  const { scrubber } = capture;
+  const requestUrl = new URL(request.url, "http://localhost");
+  const path = requestUrl.pathname;
+  if (!capture.include.some((glob) => glob.test(path)) || capture.exclude.some((glob) => glob.test(path))) return undefined;
+
+  const pathParts = await scrubPath(capture, path.split("/"), route);
+
+  /** @type {Record<string, string>} */
+  const query = {};
+  for (const [key, value] of requestUrl.searchParams) {
+    query[await scrubber.scrubKey(key)] = String(await scrubber.scrub(value, key));
+  }
+
+  const requestBody = await readJson(request, capture.maxBodyBytes);
+  const body = "json" in requestBody ? await scrubber.scrub(requestBody.json) : { $omitted: requestBody.omitted };
+
+  const responseBody = await readJson(response, MAX_RESPONSE_BYTES);
+  const json = "json" in responseBody ? await scrubber.scrubKeys(responseBody.json) : null;
+  const code = /** @type {{ code?: unknown } | null} */ (json)?.code;
+  /** @type {import("../shared/case.mjs").Case} */
+  const item = {
+    ...(await base(capture, session, at, outcome, id)),
+    actor: actorOf(input.actor),
+    request: { method: request.method.toUpperCase(), route, path: pathParts.join("/"), query, body },
+    response: {
+      status,
+      shape: shapeOf(json),
+      ids: await keptIds(capture, json),
+      // Only on errors: a 2xx `code` is as likely an invite or verification code as an error code.
+      ...(status >= 400 && typeof code === "string" && /^[A-Za-z][A-Za-z0-9_.:-]{0,63}$/.test(code) ? { errorCode: code } : {}),
+    },
+    ...actionOf(capture, header(request.headers, "x-intersite-action"), header(request.headers, "x-intersite-page")),
+    ...stepOf(header(request.headers, "x-intersite-step")),
+  };
+  if (caseProblem(item)) item.request.body = { $omitted: "too large" };
+  return item;
+}
+
+/**
+ * The response's IDs that the scrubber would keep in a request under the same key: a secret shaped like an ID
+ * (`whsec_…` under `webhookSecret`, `sk_…`) is not one. The key is the nearest object key above the value.
+ * @param {Capture} capture @param {unknown} json
+ */
+async function keptIds(capture, json) {
+  /** @type {Record<string, string>} */
+  const kept = {};
+  for (const [pointer, value] of Object.entries(idsOf(json, capture.idPattern))) {
+    const key = pointer.split("/").filter((part) => part !== "" && !/^\d+$/.test(part)).at(-1) ?? "";
+    if ((await capture.scrubber.scrub(value, key)) === value) kept[pointer] = value;
+  }
+  return kept;
+}
+
+/** @param {Capture} capture @param {RecordInput} input @returns {Promise<void>} */
+function record(capture, input) {
+  const request = input?.request;
+  // Skipped or unusable: free the request copy's body (cancelling is not reading) so its tee does not buffer.
+  const skip = () => {
+    discard(isFetchMessage(request) ? request.body : undefined);
+    return resolved;
+  };
+  try {
+    const response = input.response;
+    const status = response?.status;
+    if (!Number.isInteger(status) || typeof request?.url !== "string" || typeof request.method !== "string") return skip();
+    if (header(request.headers, "x-intersite-replay") !== null) return skip();
+    // The outcome comes from the status alone, so the sampling decision is made before any body is touched.
+    const outcome = input.outcome ?? (status >= 500 ? "error" : status >= 400 ? "rejected" : "ok");
+    const ms = input.at === undefined ? Date.now() : new Date(input.at).getTime();
+    // With no caller session and no tab header, each request is its own session, so sampling takes about `sample` of them.
+    const id = input.id ?? crypto.randomUUID();
+    const session = String(input.session ?? header(request.headers, "x-intersite-session") ?? id);
+    if (!sampled(capture, outcome, session, ms)) return skip();
+    // Clone synchronously, before the caller returns the original and the runtime starts streaming it.
+    const copy = isFetchMessage(response) ? response.clone() : response;
+    const known = { status: /** @type {number} */ (status), outcome, at: new Date(ms).toISOString(), session, id };
+    return enqueue(
+      capture,
+      build(capture, input, request, copy, known).finally(() => {
+        discard(isFetchMessage(copy) ? copy.body : undefined);
+        discard(isFetchMessage(request) ? request.body : undefined);
+      }),
+    );
+  } catch {
+    return skip();
+  }
+}
+
+/** @param {Capture} capture @param {UiInput} input @returns {Promise<void>} */
+function recordUi(capture, input) {
+  try {
+    const page = reducePage(capture, input?.page);
+    const outcome = input.outcome;
+    const ms = Date.now();
+    const at = new Date(ms).toISOString();
+    const id = crypto.randomUUID();
+    const session = String(input.session ?? id);
+    if (!page || !OUTCOMES.includes(outcome) || (input.step !== undefined && stepProblem(input.step, true))) return resolved;
+    if (!sampled(capture, outcome, session, ms)) return resolved;
+    const errorName = typeof input.errorName === "string" && ERROR_NAME.test(input.errorName) ? { errorCode: input.errorName } : {};
+    return enqueue(
+      capture,
+      base(capture, session, at, outcome, id).then((fields) => ({
+        ...fields,
+        release: typeof input.release === "string" ? input.release : capture.release,
+        actor: actorOf(input.actor),
+        request: { method: UI_METHOD, route: page, path: page, query: {}, body: null },
+        response: { status: 0, shape: "null", ids: {}, ...errorName },
+        ...actionOf(capture, input.name, page),
+        ...(input.step !== undefined && { step: input.step }),
+      })),
+    );
+  } catch {
+    return resolved;
+  }
+}
+
+/** @param {Capture} capture @param {typeof fetch} inner @param {(request: Request) => Described} describe @returns {typeof fetch} */
+function wrapFetch(capture, inner, describe) {
+  return (input, init) => {
+    /** @type {Request | undefined} */
+    let copy;
+    /** @type {Described} */
+    let described;
+    try {
+      // A copy taken before `inner` consumes the original; a streamed body is left out rather than stolen.
+      const source = input instanceof Request ? input.clone() : input;
+      copy = new Request(source, init?.body instanceof ReadableStream ? { ...init, body: null } : init);
+      described = copy.url.startsWith(capture.endpoint) ? undefined : describe(copy);
+    } catch {
+      described = undefined;
+    }
+    const pending = inner(input, init);
+    if (!copy || !described || typeof described.route !== "string") {
+      discard(copy?.body);
+      return pending;
+    }
+    const request = copy;
+    const { route, actor, session } = described;
+    // Registered before the caller's own `then`, so the response is cloned before the caller reads it.
+    Promise.resolve(pending).then(
+      (response) => record(capture, { request, response, route, actor, session }),
+      () => discard(request.body),
+    );
+    return pending;
+  };
+}
+
+/**
  * @param {CaptureOptions} options
  * @returns {{
  *   record(input: RecordInput): Promise<void>,
@@ -268,276 +577,13 @@ const disabled = (reason) => {
 export function createCapture(options) {
   // Construction must not throw either: a Worker usually builds this per request, so a missing secret would 500 everything.
   try {
-    const { project, url, token, fetcher, release } = options;
-    if (!project || !url || !token) return disabled("project, url and token are required");
-    const sample = options.sample ?? 0.05;
-    const salt = options.salt ?? token;
-    const maxBodyBytes = options.maxBodyBytes ?? 32_768;
-    const include = (options.include ?? ["/**"]).map(globToRegExp);
-    const exclude = (options.exclude ?? []).map(globToRegExp);
-    const ttlDays = { ...DEFAULT_TTL_DAYS, ...options.ttlDays };
-    const idPattern = new RegExp(options.idPattern ?? DEFAULT_ID_PATTERN);
-    const scrubber = createScrubber({ salt, idPattern: idPattern.source, redactKeys: options.redactKeys, keepKeys: options.keepKeys });
-    const endpoint = `${url.replace(/\/+$/, "")}/v1/cases`;
-
-    /** Synchronous, so an unsampled request costs nothing else. Whole sessions per UTC day. @param {string} outcome @param {string} session @param {number} ms */
-    const sampled = (outcome, session, ms) =>
-      outcome !== "ok" || (Number.isFinite(ms) && quickHash(`${salt}|${session}|${Math.floor(ms / 86_400_000)}`) / 2 ** 53 < sample);
-
-    /** Every segment that is not an ID or a short lowercase word becomes `_`. Never trusts the client's reduction. @param {unknown} page */
-    function reducePage(page) {
-      if (typeof page !== "string" || !page.startsWith("/") || page.length > 2048) return undefined;
-      const reduced = reduce(page, scrubber.isId);
-      return reduced.length <= 256 ? reduced : undefined;
-    }
-
-    /** @param {unknown} name @param {unknown} page */
-    function actionOf(name, page) {
-      const reduced = reducePage(page);
-      return typeof name === "string" && ACTION_NAME.test(name) && reduced ? { action: { name, page: reduced } } : {};
-    }
-
-    /** The tab's step that caused a request, from its `x-intersite-step` header. @param {string | null} value */
-function stepOf(value) {
-  const step = { n: Number(value) };
-  return value !== null && /^\d{1,7}$/.test(value) && !stepProblem(step, false) ? { step } : {};
-}
-
-/** @param {{ kind: string } | undefined} actor */
-    const actorOf = (actor) => ({ kind: /^[a-z][a-z0-9_-]{0,31}$/.test(actor?.kind ?? "") ? /** @type {{ kind: string }} */ (actor).kind : "unknown" });
-
-    /**
-     * Fields every case shares. `session` is the raw caller value; only its salted daily HMAC is stored.
-     * @param {string} rawSession @param {string} at @param {string} outcome @param {string} id
-     */
-    async function base(rawSession, at, outcome, id) {
-      return {
-        v: /** @type {1} */ (1),
-        id,
-        project,
-        session: (await scrubber.hash(`${rawSession}|${at.slice(0, 10)}`)).slice(0, 32),
-        seq: Date.parse(at),
-        at,
-        release,
-        outcome: /** @type {import("../shared/case.mjs").Case["outcome"]} */ (outcome),
-        ttlDays: ttlDays[/** @type {keyof typeof ttlDays} */ (outcome)],
-      };
-    }
-
-    // ponytail: the queue lives in this capture instance and flushes on a timer; in a Worker build one per request (as in
-    // the example), since workerd forbids I/O across request contexts. A shared cross-request queue needs waitUntil plumbing.
-    /** @type {{ item: Promise<unknown>, done: () => void }[]} */
-    let queue = [];
-    /** @type {ReturnType<typeof setTimeout> | undefined} */
-    let timer;
-
-    /** Sends up to 50 queued cases as one POST. Entries join a batch when `record` is called, so one tick's cases share a POST. */
-    function flush() {
-      clearTimeout(timer);
-      timer = undefined;
-      const batch = queue.slice(0, MAX_BATCH);
-      queue = queue.slice(MAX_BATCH);
-      if (queue.length > 0) timer = setTimeout(flush, 0);
-      if (batch.length === 0) return;
-      Promise.all(batch.map((entry) => withDeadline(entry.item)))
-        .then(async (items) => {
-          const cases = items.filter((item) => item !== undefined);
-          if (cases.length === 0) return;
-          const sent = await (fetcher ?? globalThis).fetch(endpoint, {
-            method: "POST",
-            headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-            body: JSON.stringify({ cases }),
-            signal: AbortSignal.timeout(TIMEOUT_MS),
-          });
-          discard(sent.body);
-          if (!sent.ok) throw new Error(`the collector answered ${sent.status}`);
-        })
-        // A failed send drops its cases: record() must never reject into the request it observes.
-        .catch((error) => warnUndelivered(endpoint, error))
-        .finally(() => {
-          for (const entry of batch) entry.done();
-        });
-    }
-
-    /** @param {Promise<unknown>} build A case, or undefined to drop it. @returns {Promise<void>} */
-    function enqueue(build) {
-      // A case that fails to build is dropped, never surfaced: capture must not disturb the request it observes.
-      const dropped = () => undefined;
-      const item = build.then((value) => (caseProblem(value) ? undefined : value)).catch(dropped);
-      return new Promise((done) => {
-        queue.push({ item, done: () => done(undefined) });
-        if (queue.length >= MAX_BATCH) flush();
-        else timer ??= setTimeout(flush, 0);
-      });
-    }
-
-    /**
-     * @param {RecordInput} input @param {Request | PlainRequest} request @param {Response | PlainResponse} response
-     * @param {{ status: number, outcome: string, at: string, session: string, id: string }} known
-     */
-    async function build(input, request, response, { status, outcome, at, session, id }) {
-      const { route } = input;
-      const requestUrl = new URL(request.url, "http://localhost");
-      const path = requestUrl.pathname;
-      if (!include.some((glob) => glob.test(path)) || exclude.some((glob) => glob.test(path))) return undefined;
-
-      const segments = path.split("/");
-      const routeParts = templateFor(segments, route.split("/"));
-      const pathParts = await Promise.all(
-        segments.map(async (segment, index) => {
-          const template = routeParts[index];
-          if (segment === "" || (segment === template && !template.startsWith(":"))) return segment;
-          let decoded = segment;
-          try {
-            decoded = decodeURIComponent(segment);
-          } catch {
-            decoded = segment;
-          }
-          const scrubbed = await scrubber.scrub(decoded, template?.startsWith(":") ? template.slice(1) : "");
-          return encodeURIComponent(String(scrubbed));
-        }),
-      );
-
-      /** @type {Record<string, string>} */
-      const query = {};
-      for (const [key, value] of requestUrl.searchParams) {
-        query[await scrubber.scrubKey(key)] = String(await scrubber.scrub(value, key));
-      }
-
-      const requestBody = await readJson(request, maxBodyBytes);
-      const body = "json" in requestBody ? await scrubber.scrub(requestBody.json) : { $omitted: requestBody.omitted };
-
-      const responseBody = await readJson(response, MAX_RESPONSE_BYTES);
-      const json = "json" in responseBody ? await scrubber.scrubKeys(responseBody.json) : null;
-      const code = /** @type {{ code?: unknown } | null} */ (json)?.code;
-      /** @type {import("../shared/case.mjs").Case} */
-      const item = {
-        ...(await base(session, at, outcome, id)),
-        actor: actorOf(input.actor),
-        request: { method: request.method.toUpperCase(), route, path: pathParts.join("/"), query, body },
-        response: {
-          status,
-          shape: shapeOf(json),
-          ids: await keptIds(json),
-          // Only on errors: a 2xx `code` is as likely an invite or verification code as an error code.
-          ...(status >= 400 && typeof code === "string" && /^[A-Za-z][A-Za-z0-9_.:-]{0,63}$/.test(code) ? { errorCode: code } : {}),
-        },
-        ...actionOf(header(request.headers, "x-intersite-action"), header(request.headers, "x-intersite-page")),
-        ...stepOf(header(request.headers, "x-intersite-step")),
-      };
-      if (caseProblem(item)) item.request.body = { $omitted: "too large" };
-      return item;
-    }
-
-    /**
-     * The response's IDs that the scrubber would keep in a request under the same key: a secret shaped like an ID
-     * (`whsec_…` under `webhookSecret`, `sk_…`) is not one. The key is the nearest object key above the value.
-     * @param {unknown} json
-     */
-    async function keptIds(json) {
-      /** @type {Record<string, string>} */
-      const kept = {};
-      for (const [pointer, value] of Object.entries(idsOf(json, idPattern))) {
-        const key = pointer.split("/").filter((part) => part !== "" && !/^\d+$/.test(part)).at(-1) ?? "";
-        if ((await scrubber.scrub(value, key)) === value) kept[pointer] = value;
-      }
-      return kept;
-    }
-
-    /** @param {RecordInput} input @returns {Promise<void>} */
-    function record(input) {
-      const request = input?.request;
-      // Skipped or unusable: free the request copy's body (cancelling is not reading) so its tee does not buffer.
-      const skip = () => {
-        discard(isFetchMessage(request) ? request.body : undefined);
-        return resolved;
-      };
-      try {
-        const response = input.response;
-        const status = response?.status;
-        if (!Number.isInteger(status) || typeof request?.url !== "string" || typeof request.method !== "string") return skip();
-        if (header(request.headers, "x-intersite-replay") !== null) return skip();
-        // The outcome comes from the status alone, so the sampling decision is made before any body is touched.
-        const outcome = input.outcome ?? (status >= 500 ? "error" : status >= 400 ? "rejected" : "ok");
-        const ms = input.at === undefined ? Date.now() : new Date(input.at).getTime();
-        // With no caller session and no tab header, each request is its own session, so sampling takes about `sample` of them.
-        const id = input.id ?? crypto.randomUUID();
-        const session = String(input.session ?? header(request.headers, "x-intersite-session") ?? id);
-        if (!sampled(outcome, session, ms)) return skip();
-        // Clone synchronously, before the caller returns the original and the runtime starts streaming it.
-        const copy = isFetchMessage(response) ? response.clone() : response;
-        const known = { status: /** @type {number} */ (status), outcome, at: new Date(ms).toISOString(), session, id };
-        return enqueue(
-          build(input, request, copy, known).finally(() => {
-            discard(isFetchMessage(copy) ? copy.body : undefined);
-            discard(isFetchMessage(request) ? request.body : undefined);
-          }),
-        );
-      } catch {
-        return skip();
-      }
-    }
-
-    /** @param {UiInput} input @returns {Promise<void>} */
-    function recordUi(input) {
-      try {
-        const page = reducePage(input?.page);
-        const outcome = input.outcome;
-        const ms = Date.now();
-        const at = new Date(ms).toISOString();
-        const id = crypto.randomUUID();
-        const session = String(input.session ?? id);
-        if (!page || !OUTCOMES.includes(outcome) || (input.step !== undefined && stepProblem(input.step, true))) return resolved;
-        if (!sampled(outcome, session, ms)) return resolved;
-        const errorName = typeof input.errorName === "string" && ERROR_NAME.test(input.errorName) ? { errorCode: input.errorName } : {};
-        return enqueue(
-          base(session, at, outcome, id).then((fields) => ({
-            ...fields,
-            release: typeof input.release === "string" ? input.release : release,
-            actor: actorOf(input.actor),
-            request: { method: UI_METHOD, route: page, path: page, query: {}, body: null },
-            response: { status: 0, shape: "null", ids: {}, ...errorName },
-            ...actionOf(input.name, page),
-            ...(input.step !== undefined && { step: input.step }),
-          })),
-        );
-      } catch {
-        return resolved;
-      }
-    }
-
-    /** @param {typeof fetch} inner @param {(request: Request) => Described} describe @returns {typeof fetch} */
-    function wrapFetch(inner, describe) {
-      return (input, init) => {
-        /** @type {Request | undefined} */
-        let copy;
-        /** @type {Described} */
-        let described;
-        try {
-          // A copy taken before `inner` consumes the original; a streamed body is left out rather than stolen.
-          const source = input instanceof Request ? input.clone() : input;
-          copy = new Request(source, init?.body instanceof ReadableStream ? { ...init, body: null } : init);
-          described = copy.url.startsWith(endpoint) ? undefined : describe(copy);
-        } catch {
-          described = undefined;
-        }
-        const pending = inner(input, init);
-        if (!copy || !described || typeof described.route !== "string") {
-          discard(copy?.body);
-          return pending;
-        }
-        const request = copy;
-        const { route, actor, session } = described;
-        // Registered before the caller's own `then`, so the response is cloned before the caller reads it.
-        Promise.resolve(pending).then(
-          (response) => record({ request, response, route, actor, session }),
-          () => discard(request.body),
-        );
-        return pending;
-      };
-    }
-
-    return { record, recordUi, wrapFetch };
+    if (!options.project || !options.url || !options.token) return disabled("project, url and token are required");
+    const capture = captureState(options);
+    return {
+      record: (input) => record(capture, input),
+      recordUi: (input) => recordUi(capture, input),
+      wrapFetch: (inner, describe) => wrapFetch(capture, inner, describe),
+    };
   } catch (error) {
     return disabled(error instanceof Error ? error.message : String(error));
   }

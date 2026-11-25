@@ -6,10 +6,11 @@
 // in core/naming.rs.
 import { posix } from "node:path";
 
-import { located, runCore } from "./core.mjs";
-import { changes, listFiles, matches, projectSpec, resolveBase } from "./lib.mjs";
+import { fromEngine, runCore } from "./core.mjs";
+import { SKIP, changes, listFiles, matches, projectSpec, resolveBase } from "./lib.mjs";
 
-const SKIP = /(?:^|\/)(?:node_modules|dist|build|out|vendor|coverage|generated|__generated__|migrations|drizzle|Pods|DerivedData)\/|\.min\.|\.d\.[cm]?ts$/;
+/** Folders of generated or tool-named files, on top of what every gate skips. */
+const NAMED_BY_TOOLS = /(?:^|\/)(?:migrations|drizzle|Pods|DerivedData)\//;
 
 /**
  * @param {import("./lib.mjs").GateOptions} options
@@ -18,10 +19,10 @@ const SKIP = /(?:^|\/)(?:node_modules|dist|build|out|vendor|coverage|generated|_
 export async function naming({ cwd, base, testPaths }) {
   const sha = resolveBase(cwd, base);
   const spec = projectSpec(cwd);
-  const added = changes(cwd, sha, spec).filter((c) => (c.status === "A" || (c.status === "R" && posix.basename(c.from) !== posix.basename(c.path))) && !SKIP.test(c.path)).map((c) => c.path);
+  const added = changes(cwd, sha, spec).filter((c) => (c.status === "A" || (c.status === "R" && posix.basename(c.from) !== posix.basename(c.path))) && !SKIP.test(c.path) && !NAMED_BY_TOOLS.test(c.path)).map((c) => c.path);
   if (!added.length) return { findings: [], summary: "0 added files checked" };
   const files = listFiles(cwd, spec);
   const tests = added.filter((f) => matches(f, testPaths));
   const answer = runCore({ command: "naming", root: cwd, files, options: { added, tests } });
-  return { findings: answer.findings.map((f) => ({ ...located(f), target: f.target, message: f.message })), summary: answer.summary };
+  return { findings: fromEngine(answer.findings), summary: answer.summary };
 }

@@ -1,7 +1,7 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { counted, fails, hasTestCalls, isAssertion, isFail, isTestCall } from "./require-assertion.mjs";
+import { counted, fails, isFail, testAssertions } from "./require-assertion.mjs";
 
 /** An assertion, a throw, or a fail call: a branch with one of these does not let the test pass silently. */
 const checks = /\b(?:expect|assert\w*|throw|should)\b|\.fail\(/;
@@ -19,10 +19,6 @@ export const rule = defineRule({
   createOnce(context) {
     /** @param {any} node */
     const text = (node) => context.sourceCode.getText(node);
-    /** @type {any[]} tests being visited whose bodies are not guarded by expect.assertions */
-    let tests = [];
-    /** @type {any[]} */
-    let inside = [];
 
     /**
      * The branch statement that makes `node` conditional, if any, climbing to the enclosing test call.
@@ -75,26 +71,13 @@ export const rule = defineRule({
       return body.slice(0, body.indexOf(node)).some((/** @type {any} */ s) => s.type === "ExpressionStatement" && checks.test(text(s)) && text(s).includes(name));
     }
 
-    return {
-      before() {
-        tests = [];
-        inside = [];
-        return hasTestCalls(context);
+    // A test whose body is guarded by expect.assertions is followed as null: its assertions are counted.
+    return testAssertions(context, {
+      test: (node) => (counted.test(text(node)) ? null : node),
+      assertion(node, test) {
+        if (test && !isFail(node) && conditional(node, test)) context.report({ node, messageId: "conditional" });
       },
-      CallExpression(node) {
-        if (isTestCall(node.callee) && node.arguments.some((/** @type {any} */ a) => a.type.endsWith("FunctionExpression"))) {
-          tests.push(counted.test(text(node)) ? null : node);
-        } else if (!inside.length && tests.length && isAssertion(node.callee)) {
-          inside.push(node);
-          const test = tests.at(-1);
-          if (test && !isFail(node) && conditional(node, test)) context.report({ node, messageId: "conditional" });
-        }
-      },
-      "CallExpression:exit"(node) {
-        if (inside.at(-1) === node) inside.pop();
-        if (isTestCall(node.callee) && node.arguments.some((/** @type {any} */ a) => a.type.endsWith("FunctionExpression"))) tests.pop();
-      },
-    };
+    });
   },
 });
 

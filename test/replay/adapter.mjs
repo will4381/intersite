@@ -19,7 +19,7 @@ export async function reset({ target }) {
 export const invariants = [
   {
     name: "ledger balances",
-    /** @param {{ target: string, fetch: typeof fetch }} options */
+    /** @param {{ target: string, fetch: typeof globalThis.fetch }} options */
     async check({ target, fetch }) {
       const stats = await (await fetch(`${target}/stats`)).json();
       return stats.ok ? undefined : "ledger is off by 1";

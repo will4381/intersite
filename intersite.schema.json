@@ -117,11 +117,6 @@
             "$ref": "#/definitions/rule"
           }
         },
-        "baseline": {
-          "type": "string",
-          "default": "intersite-baseline.json",
-          "description": "Findings that already exist; the count per file and rule may only go down."
-        },
         "extends": {
           "type": "string",
           "default": ".oxlintrc.json",
@@ -340,11 +335,6 @@
         "features": {
           "type": "string",
           "description": "A glob with one `*` naming each feature's folder, such as `src/features/*`: the `boundaries` gate reports a new import from one feature's files into another's."
-        },
-        "baseline": {
-          "type": "string",
-          "default": "intersite-gates-baseline.json",
-          "description": "Where `intersite gate <name> --all --write` records whole-repository findings, so `--all` fails only on new ones."
         }
       }
     },
@@ -490,7 +480,7 @@
             },
             "adapter": {
               "type": "string",
-              "default": "./intersite.adapter.mjs",
+              "default": "./.intersite/adapter.mjs",
               "description": "Module that signs in seeded users and resolves IDs."
             },
             "modes": {

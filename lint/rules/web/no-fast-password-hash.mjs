@@ -36,7 +36,7 @@ export const rule = defineRule({
         const [first, second] = /** @type {any[]} */ (node.arguments);
         const member = node.callee.type === "MemberExpression";
         const hashed =
-          (member && name === "update" && calleeName(unwrap(node.callee.object)) === "createHash" && first) ||
+          (member && name === "update" && calleeName(unwrap(/** @type {any} */ (node.callee).object)) === "createHash" && first) ||
           (member && name === "digest" && receiverName(node) === "subtle" && second) ||
           (HASH_FN.test(name) && (!member || /^(CryptoJS|crypto_js|hash)$/i.test(receiverName(node))) && first);
         if (hashed && hasPassword(hashed)) context.report({ node, messageId: "fast" });

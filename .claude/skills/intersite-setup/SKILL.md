@@ -25,8 +25,8 @@ its own dependencies; it does not need oxlint there. Then install and run:
 npx intersite init
 ```
 
-This writes `intersite.yml` (which acknowledges `intersite` itself for the `new-deps` gate), `intersite.adapter.mjs`,
-the agent rules and skills, and records today's lint findings in `intersite-baseline.json` so only new ones fail.
+This writes `intersite.yml` (which acknowledges `intersite` itself for the `new-deps` gate), `.intersite/adapter.mjs`,
+the agent rules and skills, and records today's lint findings in `.intersite/baseline.json` so only new ones fail.
 
 If the project already gates its own oxlint rules (a lint script with its own baseline), set `lint: { ownRules: false }` in
 `intersite.yml` before `init`: Intersite then reports and baselines only the rules it adds, so the two baselines never
@@ -108,13 +108,15 @@ reports nothing but the new pack's findings (`--write=init` records every curren
 
 ## 4. Write the replay adapter
 
-Open `intersite.adapter.mjs`. Find how this project's tests or seed scripts sign in a test user, and return those
+Open `.intersite/adapter.mjs`. Find how this project's tests or seed scripts sign in a test user, and return those
 headers from `signIn(actorKind, { other })`, including the header that picks the account it acts in. `other: true`
 must return a user from a different account; signing up a fresh one as the app does is the surest stranger. Headers
 every request needs whoever sends it (an API version) or that must differ per request (an idempotency key: use the
 case ID, so `twice` resends the same one) go in `headers({ caseId, method, route })`. Implement `resolveId` by mapping
 an ID's prefix to a seeded record of that kind, or, when replay runs on a copy of the database the traffic was
-recorded against, return the ID unchanged. Implement `reset` if there is a reseed command. Never use real user
+recorded against, return the ID unchanged. Implement `reset` if there is a reseed command, and `state({ target })` if
+the test database can be read (row counts, balances, statuses as JSON): invariants then get it from before and after
+each session, and `twice` checks a repeated PUT, DELETE, webhook or keyed write changes nothing. Never use real user
 credentials: only seeded test accounts.
 
 Optional: have the server send `Server-Timing: queries;desc=<n>` per request (count queries in the database

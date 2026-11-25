@@ -1,5 +1,6 @@
-//! What the SQL and regex checks need from a JavaScript or TypeScript file, in one parse: SQL strings and the call
-//! that runs them, database calls inside loops, and regular expressions with the name they are bound to.
+//! JavaScript and TypeScript helpers the checks share: parsing, string literals, environment reads, and what the SQL
+//! and regex checks need from a file in one parse (SQL strings and the call that runs them, database calls inside
+//! loops, and regular expressions with the name they are bound to).
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::*;
@@ -53,8 +54,12 @@ pub fn looks_like_sql(text: &str) -> bool {
         return true;
     }
     let t = trimmed.to_ascii_uppercase();
-    let starts = ["SELECT ", "SELECT\n", "INSERT ", "UPDATE ", "DELETE ", "WITH ", "CREATE ", "ALTER ", "DROP "].iter().any(|k| t.starts_with(k));
-    starts && [" FROM ", " INTO ", " SET ", " TABLE ", " INDEX ", "\nFROM ", "\nSET "].iter().any(|k| t.replace('\n', " \n").contains(k) || t.contains(k))
+    let starts =
+        ["SELECT ", "SELECT\n", "INSERT ", "UPDATE ", "DELETE ", "WITH ", "CREATE ", "ALTER ", "DROP "].iter().any(|k| t.starts_with(k));
+    starts
+        && [" FROM ", " INTO ", " SET ", " TABLE ", " INDEX ", "\nFROM ", "\nSET "]
+            .iter()
+            .any(|k| t.replace('\n', " \n").contains(k) || t.contains(k))
 }
 
 /// Database clients' usual names, for `prisma.user.findMany` and `db.select()`.
@@ -65,7 +70,9 @@ const PRISMA_OPS: [&str; 7] = ["find", "create", "update", "delete", "upsert", "
 fn is_db_call(callee: &str) -> bool {
     let parts: Vec<&str> = callee.trim_start_matches("this.").split('.').collect();
     let (Some(first), Some(last)) = (parts.first(), parts.last()) else { return false };
-    let client = CLIENTS.contains(&first.trim_start_matches('_')) || first.to_ascii_lowercase().ends_with("prisma") || first.to_ascii_lowercase().ends_with("db");
+    let client = CLIENTS.contains(&first.trim_start_matches('_'))
+        || first.to_ascii_lowercase().ends_with("prisma")
+        || first.to_ascii_lowercase().ends_with("db");
     if first.to_ascii_lowercase().contains("supabase") && *last == "from" {
         return true;
     }
@@ -74,7 +81,10 @@ fn is_db_call(callee: &str) -> bool {
     }
     match parts.len() {
         3 => PRISMA_OPS.iter().any(|op| last.starts_with(op)) || (parts[1] == "query" && last.starts_with("find")),
-        2 => ["select", "insert", "update", "delete", "execute", "query", "$queryRaw", "$executeRaw", "$queryRawUnsafe", "$executeRawUnsafe"].contains(last),
+        2 => {
+            ["select", "insert", "update", "delete", "execute", "query", "$queryRaw", "$executeRaw", "$queryRawUnsafe", "$executeRawUnsafe"]
+                .contains(last)
+        }
         4 => parts[1] == "query" && last.starts_with("find"),
         _ => false,
     }
@@ -98,8 +108,10 @@ struct Walker<'s> {
     kept: std::collections::HashSet<u32>,
 }
 
-/// Methods that narrow a Supabase (PostgREST) or knex query to some rows.
-const ROW_FILTERS: [&str; 22] = ["eq", "neq", "gt", "gte", "lt", "lte", "like", "ilike", "is", "in", "contains", "containedBy", "overlaps", "match", "filter", "not", "or", "textSearch", "rangeGt", "rangeLt", "limit", "single"];
+/// Comparisons a Supabase (PostgREST) or knex query filters a column with.
+pub const COMPARISONS: [&str; 12] = ["eq", "neq", "gt", "gte", "lt", "lte", "like", "ilike", "is", "in", "contains", "containedBy"];
+/// The other methods that narrow such a query to some rows.
+const ROW_FILTERS: [&str; 10] = ["overlaps", "match", "filter", "not", "or", "textSearch", "rangeGt", "rangeLt", "limit", "single"];
 
 impl<'s> Walker<'s> {
     fn line(&self, offset: u32) -> u32 {
@@ -178,7 +190,11 @@ impl<'s> Walker<'s> {
         }
         let Some(table) = table else { return };
         let Some(method) = methods.iter().find(|m| **m == "delete" || **m == "update") else { return };
-        if self.kept.contains(&top.span.start) || methods.iter().any(|m| ROW_FILTERS.contains(m) || m.starts_with("where") || m.starts_with("range")) {
+        if self.kept.contains(&top.span.start)
+            || methods
+                .iter()
+                .any(|m| COMPARISONS.contains(m) || ROW_FILTERS.contains(m) || m.starts_with("where") || m.starts_with("range"))
+        {
             return;
         }
         let line = self.line(top.span.start);
@@ -257,7 +273,9 @@ impl<'a, 's> Visit<'a> for Walker<'s> {
             self.db_call(it.span.start, &callee);
         }
         let method = last_segment(&callee);
-        if ["query", "execute", "$queryRawUnsafe", "$executeRawUnsafe", "raw", "prepare", "unsafe", "exec", "run", "all", "get"].contains(&method) {
+        if ["query", "execute", "$queryRawUnsafe", "$executeRawUnsafe", "raw", "prepare", "unsafe", "exec", "run", "all", "get"]
+            .contains(&method)
+        {
             if let Some(first) = it.arguments.first().and_then(|a| a.as_expression()) {
                 let text = match first {
                     Expression::StringLiteral(s) => Some((s.value.as_str().to_string(), vec![])),
@@ -282,7 +300,8 @@ impl<'a, 's> Visit<'a> for Walker<'s> {
         self.visit_expression(&it.callee);
         let line = self.line(it.span.start);
         for argument in &it.arguments {
-            let callback = matches!(argument.as_expression(), Some(Expression::ArrowFunctionExpression(_) | Expression::FunctionExpression(_)));
+            let callback =
+                matches!(argument.as_expression(), Some(Expression::ArrowFunctionExpression(_) | Expression::FunctionExpression(_)));
             if callback {
                 self.pending_loop = Some(line);
             }
@@ -375,7 +394,35 @@ impl<'a, 's> Visit<'a> for Walker<'s> {
     }
 }
 
-/// The facts of one file, or None when it does not parse.
+/// A string literal's value, or a template literal's with no substitutions: as written when `raw`, else with its
+/// escapes applied.
+pub fn string<'b>(e: &'b Expression, raw: bool) -> Option<&'b str> {
+    match e {
+        Expression::StringLiteral(s) => Some(s.value.as_str()),
+        Expression::TemplateLiteral(t) if t.expressions.is_empty() => {
+            let q = &t.quasis.first()?.value;
+            if raw {
+                Some(q.raw.as_str())
+            } else {
+                q.cooked.as_ref().map(|c| c.as_str())
+            }
+        }
+        _ => None,
+    }
+}
+
+/// `process.env`, `import.meta.env`, `Bun.env`: the object an environment variable is read from.
+pub fn is_env_object(text: &str) -> bool {
+    matches!(text, "process.env" | "import.meta.env" | "Bun.env")
+}
+
+/// An env module: the one place a project reads and validates its environment.
+pub fn is_env_module(file: &str) -> bool {
+    let name = file.rsplit('/').next().unwrap_or(file);
+    let stem = name.split('.').next().unwrap_or(name);
+    matches!(stem, "env" | "config" | "settings" | "environment") || file.contains("/env/") || file.contains("/config/")
+}
+
 /// Parses a JavaScript or TypeScript file and hands its program to `f`; None when the parser gave up on it.
 pub fn parse<R>(path: &str, src: &str, f: impl FnOnce(&Program<'_>) -> R) -> Option<R> {
     let allocator = Allocator::default();
@@ -383,16 +430,23 @@ pub fn parse<R>(path: &str, src: &str, f: impl FnOnce(&Program<'_>) -> R) -> Opt
     (!parsed.panicked).then(|| f(&parsed.program))
 }
 
+/// The facts of one file, or None when it does not parse.
 pub fn facts(path: &str, src: &str) -> Option<Facts> {
-    let allocator = Allocator::default();
-    let source_type = SourceType::from_path(path).unwrap_or_default();
-    let parsed = Parser::new(&allocator, src, source_type).parse();
-    if parsed.panicked {
-        return None;
-    }
-    let mut walker = Walker { src, lines: Lines::new(src), facts: Facts::default(), loops: vec![None], pending_loop: None, names: vec![], seen_sql: Default::default(), chained: Default::default(), kept: Default::default() };
-    walker.visit_program(&parsed.program);
-    Some(walker.facts)
+    parse(path, src, |program| {
+        let mut walker = Walker {
+            src,
+            lines: Lines::new(src),
+            facts: Facts::default(),
+            loops: vec![None],
+            pending_loop: None,
+            names: vec![],
+            seen_sql: Default::default(),
+            chained: Default::default(),
+            kept: Default::default(),
+        };
+        walker.visit_program(program);
+        walker.facts
+    })
 }
 
 #[cfg(test)]
@@ -403,7 +457,10 @@ mod tests {
     fn finds_sql_queries_in_loops_and_named_regexes() {
         let src = "const EMAIL = /^[^@]+@[^@]+$/;\nexport async function load(ids) {\n  for (const id of ids) {\n    await prisma.user.findUnique({ where: { id } });\n  }\n  await Promise.all(ids.map((id) => db.select().from(users)));\n  return pool.query(`SELECT * FROM users WHERE id = ${ids[0]}`);\n}\n";
         let f = facts("a.ts", src).unwrap();
-        assert_eq!(f.db_in_loops.iter().map(|d| (d.line, d.call.as_str(), d.loop_line)).collect::<Vec<_>>(), vec![(4, "prisma.user.findUnique", 3), (6, "db.select", 6)]);
+        assert_eq!(
+            f.db_in_loops.iter().map(|d| (d.line, d.call.as_str(), d.loop_line)).collect::<Vec<_>>(),
+            vec![(4, "prisma.user.findUnique", 3), (6, "db.select", 6)]
+        );
         assert_eq!(f.sql.len(), 1);
         assert_eq!(f.sql[0].text, "SELECT * FROM users WHERE id = $1");
         assert_eq!(f.regexes[0].name.as_deref(), Some("EMAIL"));

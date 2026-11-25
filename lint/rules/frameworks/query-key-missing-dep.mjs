@@ -101,9 +101,7 @@ export const rule = defineRule({
   createOnce(context) {
     return {
       // Tests build throwaway clients with unique keys.
-      before() {
-        return !isScriptFile(context);
-      },
+      before: () => !isScriptFile(context),
       // `{ queryKey: [...], queryFn: () => … }` in useQuery, useSuspenseQuery, queryOptions, prefetchQuery, ensureQueryData.
       ObjectExpression(node) {
         const props = /** @type {any[]} */ (node.properties);

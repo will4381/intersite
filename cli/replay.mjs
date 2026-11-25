@@ -4,13 +4,13 @@ import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
-import { LOCAL_HOST, getCase, listSessions, postResults } from "../replay/collector.mjs";
+import { LOCAL_HOST, collectorOf, getCase, listSessions, postResults } from "../replay/collector.mjs";
 import { evidenceOf, lintContract, printable } from "../replay/contract.mjs";
 import { compareMetrics } from "../replay/metrics.mjs";
 import { openapiEvidence } from "../replay/openapi.mjs";
 import { answers, replaySessions } from "../replay/run.mjs";
 import { compareSnapshots, describe } from "../replay/snapshot.mjs";
-import { collectorTokens, loadConfig } from "../shared/config.mjs";
+import { loadConfig } from "../shared/config.mjs";
 
 const MODES = ["baseline", "twice", "race", "cross-tenant", "ui", "contract"];
 
@@ -47,10 +47,13 @@ const USAGE = "usage: intersite replay [--id <caseId> | --seed <n> --sample <n> 
   + " --snapshot-out file, same rules; the file holds response bodies from the local server, so write it under .intersite/, never a tracked path)"
   + " [--mode contract --openapi <file>] (lints an OpenAPI JSON document's contract with no server and no traffic)";
 
-/** `quiet` leaves out the success line, for `check`. @param {string[]} argv @param {{ cwd: string, quiet?: boolean }} context @returns {Promise<number>} */
-export default async function replay(argv, { cwd, quiet = false }) {
+/**
+ * `quiet` leaves out the success line and `print` takes each output line instead of stdout, for `check`.
+ * @param {string[]} argv @param {{ cwd: string, quiet?: boolean, print?: (line: string) => void }} context @returns {Promise<number>}
+ */
+export default async function replay(argv, { cwd, quiet = false, print = console.log }) {
   try {
-    return await main(argv, cwd, quiet);
+    return await main(argv, cwd, quiet, print);
   } catch (error) {
     const usage = String(/** @type {{ code?: unknown }} */ (error)?.code).startsWith("ERR_PARSE_ARGS") ? `; ${USAGE}` : "";
     console.error(`intersite replay: ${error instanceof Error ? error.message : error}${usage}`);
@@ -58,49 +61,30 @@ export default async function replay(argv, { cwd, quiet = false }) {
   }
 }
 
-/** @param {string[]} argv @param {string} cwd @param {boolean} quiet */
-async function main(argv, cwd, quiet) {
+/** @param {string[]} argv @param {string} cwd @param {boolean} quiet @param {(line: string) => void} print */
+async function main(argv, cwd, quiet, print) {
   const { values: flags } = parseArgs({ args: argv, options, strict: true, allowPositionals: false });
   const config = loadConfig(cwd);
   const target = flags.target ?? config.replay.target;
   const modes = /** @type {import("../replay/run.mjs").Mode[]} */ (flags.mode ?? config.replay.modes);
-  for (const mode of modes) if (!MODES.includes(mode)) throw new Error(`unknown mode ${mode}; use ${MODES.join(", ")}`);
+  const unknown = modes.find((mode) => !MODES.includes(mode));
+  if (unknown) throw new Error(`unknown mode ${unknown}; use ${MODES.join(", ")}`);
   const ignoreContract = ignoreList(config.replay, "contractIgnore", "pointer?, check?, ");
   const crossTenantIgnore = ignoreList(config.replay, "crossTenantIgnore", "");
-  if (flags.openapi) return lintOpenapi({ cwd, file: flags.openapi, modes: flags.mode ?? ["contract"], idPattern: config.capture.idPattern, ignore: ignoreContract, json: flags.json, quiet });
+  if (flags.openapi) return lintOpenapi({ cwd, file: flags.openapi, modes: flags.mode ?? ["contract"], idPattern: config.capture.idPattern, ignore: ignoreContract, json: flags.json, quiet, print });
   const contract = modes.includes("contract");
   if (contract && flags.id && !flags.seed) {
     throw new Error("--mode contract with --id needs --seed <n>: the API's conventions come from that run's sample; copy the rerun command from the finding");
   }
 
-  // Replay sends writes, so only local hosts are allowed without --allow-remote.
-  let host;
-  try { host = new URL(target).hostname; } catch { throw new Error(`target is not a URL: ${target}`); }
-  if (!LOCAL_HOST.test(host) && !flags["allow-remote"]) {
-    throw new Error(`refusing to send replayed writes to ${host}, which is not a local host; pass --allow-remote if that is intended`);
-  }
-  if (flags.mark && !flags.release) throw new Error("--mark needs --release <sha>");
-  let concurrency = Number(flags.concurrency ?? 1);
-  if (!Number.isInteger(concurrency) || concurrency < 1) throw new Error("--concurrency must be a positive integer");
-
+  const asked = checkRunFlags(flags, target, modes);
   const files = { metrics: flags["metrics-base"], snapshot: flags["snapshot-base"] };
-  const baselineOnly = ["metrics-out", "metrics-base", "snapshot-out", "snapshot-base"].filter((flag) => flags[/** @type {keyof typeof flags} */ (flag)]);
-  if (baselineOnly.length && !modes.includes("baseline")) throw new Error(`${baselineOnly.map((flag) => `--${flag}`).join(" and ")} need${baselineOnly.length === 1 ? "s" : ""} the baseline mode`);
   const ignore = snapshotIgnore(config.replay);
   const bases = { metrics: files.metrics ? readBase(cwd, files.metrics, "metrics") : undefined, snapshot: files.snapshot ? readBase(cwd, files.snapshot, "snapshot") : undefined };
 
-  const collector = { url: config.collector.url, token: collectorTokens(config).read, project: config.project };
+  const collector = collectorOf(config);
 
-  const adapter = named(await import(pathToFileURL(resolve(cwd, config.replay.adapter)).href), config.replay.adapter);
-  if (typeof adapter.signIn !== "function") throw new Error(`${config.replay.adapter} does not export signIn`);
-  if (concurrency > 1 && typeof adapter.reset === "function") {
-    console.error(`note: --concurrency ${concurrency} ignored; sessions run one at a time because the adapter resets shared state`);
-    concurrency = 1;
-  }
-  if (concurrency > 1 && modes.includes("ui") && config.replay.browser === "lightpanda") {
-    console.error(`note: --concurrency ${concurrency} ignored; lightpanda holds one browser context at a time`);
-    concurrency = 1;
-  }
+  const { adapter, concurrency } = await loadAdapter(cwd, config, modes, asked);
 
   const { seed, sessions } = await pickSessions(flags, String(config.replay.sample), collector, bases.metrics ?? bases.snapshot);
   // A rerun of one case still judges it against the conventions of the run that found it: the same seeded sample.
@@ -108,16 +92,9 @@ async function main(argv, cwd, quiet) {
   if (sessions.length && modes.some((mode) => mode !== "ui") && !(await answers(target))) {
     throw new Error(`nothing answers at ${target}: start the project's server there, or point replay.target in intersite.yml (or --target) at it`);
   }
+  /** @type {ReturnType<typeof readBase>["_meta"]} */
   const meta = { seed: seed === undefined ? null : Number(seed), sessions: sessions.map((session) => session.session) };
-  for (const kind of /** @type {const} */ (["metrics", "snapshot"])) {
-    const base = bases[kind];
-    const same = !base || (flags.id ? meta.sessions.every((name) => base._meta.sessions.includes(name))
-      : meta.seed === base._meta.seed && meta.sessions.join("\n") === base._meta.sessions.join("\n"));
-    if (!same) {
-      throw new Error(`--${kind}-base ${files[kind]} was written by a run of other sessions (seed ${base._meta.seed}); `
-        + `replay the same ones: same --seed, --sample and filters, on the same local data`);
-    }
-  }
+  checkSameSessions(meta, bases, files, flags.id);
 
   // Timestamps a server sets as "now plus an offset" are compared by their offset from each run's start.
   const startedAt = Date.now();
@@ -131,24 +108,87 @@ async function main(argv, cwd, quiet) {
 
   const steps = results.flatMap((result) => result.steps);
   /** @type {import("../replay/metrics.mjs").Metrics} */
-  const metrics = Object.fromEntries(steps.filter((step) => step.mode === "baseline" && step.counters).map((step) => [step.caseId, step.counters]));
+  const metrics = Object.fromEntries(steps.flatMap((step) => (step.mode === "baseline" && step.counters ? [/** @type {const} */ ([step.caseId, step.counters])] : [])));
   /** @type {import("../replay/snapshot.mjs").Snapshot} */
   const snapshot = Object.assign({}, ...results.map((result) => result.snapshot));
   // Both bases were read before the run, so an --*-out naming the same file is written after comparing.
   writeRun(cwd, flags["metrics-out"], meta, metrics);
   writeRun(cwd, flags["snapshot-out"], { ...meta, startedAt: new Date(startedAt).toISOString() }, snapshot);
-  const { _meta: _metricsMeta, ...metricsBefore } = bases.metrics ?? { _meta: meta };
-  const { _meta: snapshotMeta, ...snapshotBefore } = bases.snapshot ?? { _meta: meta };
+  const compared = compareBases(bases, meta, { metrics, snapshot, ignore, startedAt });
+  return report({ flags, quiet, print, seed, sessions, results, steps, compared, files, contract: contract ? lintRun(flags, [...sessions, ...sample], results, { idPattern: config.capture.idPattern, ignore: ignoreContract }) : undefined });
+}
+
+/**
+ * Checks the flags that shape a run against a server, in the order a user meets them, and returns the concurrency.
+ * @param {Record<string, any>} flags @param {string} target @param {string[]} modes
+ */
+function checkRunFlags(flags, target, modes) {
+  // Replay sends writes, so only local hosts are allowed without --allow-remote.
+  let host;
+  try { host = new URL(target).hostname; } catch { throw new Error(`target is not a URL: ${target}`); }
+  if (!LOCAL_HOST.test(host) && !flags["allow-remote"]) {
+    throw new Error(`refusing to send replayed writes to ${host}, which is not a local host; pass --allow-remote if that is intended`);
+  }
+  if (flags.mark && !flags.release) throw new Error("--mark needs --release <sha>");
+  const concurrency = Number(flags.concurrency ?? 1);
+  if (!Number.isInteger(concurrency) || concurrency < 1) throw new Error("--concurrency must be a positive integer");
+  const baselineOnly = ["metrics-out", "metrics-base", "snapshot-out", "snapshot-base"].filter((flag) => flags[flag]);
+  if (baselineOnly.length && !modes.includes("baseline")) throw new Error(`${baselineOnly.map((flag) => `--${flag}`).join(" and ")} need${baselineOnly.length === 1 ? "s" : ""} the baseline mode`);
+  return concurrency;
+}
+
+/**
+ * The project's adapter, and the concurrency it and the browser allow: one session at a time when either holds shared state.
+ * @param {string} cwd @param {import("../shared/config.mjs").Config} config @param {string[]} modes @param {number} concurrency as asked
+ */
+async function loadAdapter(cwd, config, modes, concurrency) {
+  const adapter = named(await import(pathToFileURL(resolve(cwd, config.replay.adapter)).href), config.replay.adapter);
+  if (concurrency > 1 && typeof adapter.reset === "function") {
+    console.error(`note: --concurrency ${concurrency} ignored; sessions run one at a time because the adapter resets shared state`);
+    return { adapter, concurrency: 1 };
+  }
+  if (concurrency > 1 && modes.includes("ui") && config.replay.browser === "lightpanda") {
+    console.error(`note: --concurrency ${concurrency} ignored; lightpanda holds one browser context at a time`);
+    return { adapter, concurrency: 1 };
+  }
+  return { adapter, concurrency };
+}
+
+/**
+ * Fails when a --metrics-base or --snapshot-base file was written by a run of other sessions: its numbers would not
+ * compare. With --id, the case's session need only be among them.
+ * @param {ReturnType<typeof readBase>["_meta"]} meta @param {{ metrics?: ReturnType<typeof readBase>, snapshot?: ReturnType<typeof readBase> }} bases
+ * @param {{ metrics?: string, snapshot?: string }} files @param {string | undefined} id
+ */
+function checkSameSessions(meta, bases, files, id) {
+  for (const kind of /** @type {const} */ (["metrics", "snapshot"])) {
+    const base = bases[kind];
+    const same = !base || (id ? meta.sessions.every((name) => base._meta.sessions.includes(name))
+      : meta.seed === base._meta.seed && meta.sessions.join("\n") === base._meta.sessions.join("\n"));
+    if (!same) {
+      throw new Error(`--${kind}-base ${files[kind]} was written by a run of other sessions (seed ${base._meta.seed}); `
+        + `replay the same ones: same --seed, --sample and filters, on the same local data`);
+    }
+  }
+}
+
+/**
+ * This run's metrics and snapshot against the base files, for those given.
+ * @param {{ metrics?: ReturnType<typeof readBase>, snapshot?: ReturnType<typeof readBase> }} bases @param {ReturnType<typeof readBase>["_meta"]} meta
+ * @param {{ metrics: import("../replay/metrics.mjs").Metrics, snapshot: import("../replay/snapshot.mjs").Snapshot, ignore: string[], startedAt: number }} run
+ */
+function compareBases(bases, meta, { metrics, snapshot, ignore, startedAt }) {
+  const { _meta: _metricsMeta, ...metricsBefore } = bases.metrics ?? /** @type {ReturnType<typeof readBase>} */ ({ _meta: meta });
+  const { _meta: snapshotMeta, ...snapshotBefore } = bases.snapshot ?? /** @type {ReturnType<typeof readBase>} */ ({ _meta: meta });
   // A file written before `startedAt` was recorded has no start: NaN, so its timestamps are compared as written.
   const startedBefore = typeof snapshotMeta.startedAt === "string" ? Date.parse(snapshotMeta.startedAt) : Number.NaN;
-  const compared = {
+  return {
     metrics: bases.metrics && { failures: compareMetrics(metricsBefore, metrics), count: Object.keys(metrics).filter((id) => metricsBefore[id]).length },
     snapshot: bases.snapshot && {
       failures: compareSnapshots(/** @type {import("../replay/snapshot.mjs").Snapshot} */ (snapshotBefore), snapshot, ignore, { before: startedBefore, after: startedAt }),
       count: Object.keys(snapshot).filter((id) => snapshotBefore[id]).length,
     },
   };
-  return report({ flags, quiet, seed, sessions, results, steps, compared, files, contract: contract ? lintRun(flags, [...sessions, ...sample], results, { idPattern: config.capture.idPattern, ignore: ignoreContract }) : undefined });
 }
 
 /**
@@ -166,9 +206,9 @@ function lintRun(flags, sessions, results, options) {
 
 /**
  * `--openapi <file>`: the contract lint over an OpenAPI JSON document, with no server and no traffic.
- * @param {{ cwd: string, file: string, modes: string[], idPattern: string, ignore: import("../replay/contract.mjs").Ignore[], json?: boolean, quiet: boolean }} options
+ * @param {{ cwd: string, file: string, modes: string[], idPattern: string, ignore: import("../replay/contract.mjs").Ignore[], json?: boolean, quiet: boolean, print: (line: string) => void }} options
  */
-function lintOpenapi({ cwd, file, modes, idPattern, ignore, json, quiet }) {
+function lintOpenapi({ cwd, file, modes, idPattern, ignore, json, quiet, print }) {
   if (modes.join() !== "contract") throw new Error("--openapi lints a document, with no server: use it with --mode contract only");
   let doc;
   try {
@@ -179,15 +219,15 @@ function lintOpenapi({ cwd, file, modes, idPattern, ignore, json, quiet }) {
   const evidence = openapiEvidence(doc);
   const findings = lintContract(evidence, { idPattern, ignore });
   if (json) {
-    console.log(JSON.stringify({ contract: findings }));
+    print(JSON.stringify({ contract: findings }));
     return findings.length ? 1 : 0;
   }
   const summary = `replay: openapi ${file}; contract: ${new Set(evidence.map((item) => `${item.method} ${item.route}`)).size} routes, ${findings.length} findings`;
   if (!findings.length) {
-    if (!quiet) console.log(`ok ${summary}`);
+    if (!quiet) print(`ok ${summary}`);
     return 0;
   }
-  console.log([summary, ...printable(findings).map((finding) => contractLine(finding, `intersite replay --openapi ${file} --mode contract`))].join("\n"));
+  for (const line of [summary, ...printable(findings).map((finding) => contractLine(finding, `intersite replay --openapi ${file} --mode contract`))]) print(line);
   return 1;
 }
 
@@ -224,12 +264,12 @@ function ignoreList(replayConfig, name, fields) {
 
 /**
  * Prints the run: `--json`, or the summary line and one line per finding. Returns the exit code.
- * @param {{ flags: Record<string, any>, quiet: boolean, seed: string | undefined, sessions: { session: string }[],
+ * @param {{ flags: Record<string, any>, quiet: boolean, print: (line: string) => void, seed: string | undefined, sessions: { session: string }[],
  *   results: import("../replay/run.mjs").SessionResult[], steps: import("../replay/run.mjs").Step[],
  *   compared: { metrics?: { failures: { caseId: string, reason: string }[], count: number }, snapshot?: { failures: { caseId: string, differences: import("../replay/snapshot.mjs").Difference[] }[], count: number } },
  *   files: { metrics?: string, snapshot?: string }, contract?: { findings: import("../replay/contract.mjs").Finding[], routes: number } }} run
  */
-function report({ flags, quiet, seed, sessions, results, steps, compared, files, contract }) {
+function report({ flags, quiet, print, seed, sessions, results, steps, compared, files, contract }) {
   const count = (/** @type {string} */ kind) => steps.filter((step) => step.result === kind).length;
   const metricFailures = compared.metrics?.failures ?? [];
   const snapshotFailures = compared.snapshot?.failures ?? [];
@@ -238,7 +278,7 @@ function report({ flags, quiet, seed, sessions, results, steps, compared, files,
   const where = (/** @type {string} */ caseId) => steps.find((s) => s.mode === "baseline" && s.caseId === caseId);
   if (flags.json) {
     // With --verbose, the recorded cases too: the request as production saw it, scrubbed, for writing a reproduction.
-    console.log(JSON.stringify({
+    print(JSON.stringify({
       seed, sessions: results.map(({ snapshot: _snapshot, ...result }) => result),
       ...(compared.metrics && { metrics: metricFailures }),
       ...(compared.snapshot && { snapshot: snapshotFailures.map((failure) => ({ ...failure, method: where(failure.caseId)?.method, route: where(failure.caseId)?.route })) }),
@@ -248,12 +288,9 @@ function report({ flags, quiet, seed, sessions, results, steps, compared, files,
     return failed ? 1 : 0;
   }
   const extra = (flags.target ? ` --target ${flags.target}` : "") + (flags["allow-remote"] ? " --allow-remote" : "");
-  const metricsCount = compared.metrics ? `; metrics: ${compared.metrics.count} cases compared, ${metricFailures.length} higher` : "";
-  const snapshotCount = compared.snapshot ? `; snapshot: ${compared.snapshot.count} cases compared, ${snapshotFailures.length} changed` : "";
-  const contractCount = contract ? `; contract: ${contract.routes} routes, ${contractFindings.length} findings` : "";
-  const summary = `replay: ${results.length} sessions; steps: ${count("passed")} passed, ${count("failed")} failed, ${count("skipped")} skipped${seed === undefined ? "" : `; seed ${seed}`}${metricsCount}${snapshotCount}${contractCount}`;
+  const summary = summaryLine({ results, count, seed, compared, contract });
   if (!failed) {
-    if (!quiet) console.log(`ok ${summary}`);
+    if (!quiet) print(`ok ${summary}`);
     return 0;
   }
   const lines = [
@@ -272,8 +309,19 @@ function report({ flags, quiet, seed, sessions, results, steps, compared, files,
     ...printable(contractFindings).map((finding) => contractLine(finding, `intersite replay --id ${finding.caseId}${sampleFlags(flags, flags.id ? flags.seed : seed)} --mode contract${extra}`)),
     ...results.filter((result) => result.skipped).map((result) => `SKIP ${result.session}: ${result.skipped}`),
   ];
-  console.log(lines.join("\n"));
+  for (const line of lines) print(line);
   return 1;
+}
+
+/**
+ * The run's one summary line: sessions, steps, seed, and what each comparison found.
+ * @param {{ results: unknown[], count: (kind: string) => number, seed: string | undefined, compared: Parameters<typeof report>[0]["compared"], contract: Parameters<typeof report>[0]["contract"] }} run
+ */
+function summaryLine({ results, count, seed, compared, contract }) {
+  const metricsCount = compared.metrics ? `; metrics: ${compared.metrics.count} cases compared, ${compared.metrics.failures.length} higher` : "";
+  const snapshotCount = compared.snapshot ? `; snapshot: ${compared.snapshot.count} cases compared, ${compared.snapshot.failures.length} changed` : "";
+  const contractCount = contract ? `; contract: ${contract.routes} routes, ${contract.findings.length} findings` : "";
+  return `replay: ${results.length} sessions; steps: ${count("passed")} passed, ${count("failed")} failed, ${count("skipped")} skipped${seed === undefined ? "" : `; seed ${seed}`}${metricsCount}${snapshotCount}${contractCount}`;
 }
 
 /**
@@ -304,6 +352,7 @@ function snapshotIgnore(replayConfig) {
  * @returns {import("../replay/run.mjs").Adapter}
  */
 export function named(module, file) {
+  if (typeof module.signIn !== "function") throw new Error(`${file} does not export signIn`);
   /** @param {(...args: any[]) => any} fn @param {string} name */
   const wrap = (fn, name) => async (/** @type {any[]} */ ...args) => {
     try {
@@ -314,13 +363,13 @@ export function named(module, file) {
     }
   };
   const functions = ["signIn", "resolveId", "reset", "headers"].filter((name) => typeof module[name] === "function");
-  return {
+  return /** @type {import("../replay/run.mjs").Adapter} */ ({
     ...module,
     ...Object.fromEntries(functions.map((name) => [name, wrap(module[name], name)])),
     invariants: module.invariants?.map((/** @type {{ name: string, check: Function }} */ invariant) => ({
       ...invariant, check: wrap(invariant.check.bind(invariant), `invariant "${invariant.name}"`),
     })),
-  };
+  });
 }
 
 /**

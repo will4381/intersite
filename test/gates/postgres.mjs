@@ -18,7 +18,11 @@ async function freePort() {
 
 /** @returns {Promise<{ url: string, psql: (sql: string) => string, stop: () => void } | undefined>} */
 export async function tempPostgres() {
-  if (spawnSync("initdb", ["--version"]).status !== 0) return undefined;
+  if (spawnSync("initdb", ["--version"]).status !== 0) {
+    // CI installs Postgres, so a skip there would hide that the planner code never ran.
+    if (process.env.CI) throw new Error("initdb is not on PATH; CI must install Postgres for the planner tests");
+    return undefined;
+  }
   const dir = mkdtempSync(join(tmpdir(), "intersite-pg-"));
   const data = join(dir, "data");
   const init = spawnSync("initdb", ["-D", data, "-U", "postgres", "--auth=trust", "-E", "UTF8", "--no-locale"], { encoding: "utf8" });

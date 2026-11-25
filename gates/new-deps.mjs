@@ -6,7 +6,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 
-import { located, runCore } from "./core.mjs";
+import { fromEngine, runCore } from "./core.mjs";
 import { changes, projectPrefix, resolveBase, show, topLevel } from "./lib.mjs";
 
 const NPM = "https://registry.npmjs.org";
@@ -46,5 +46,5 @@ export async function newDeps({ cwd, base }) {
   const list = [...files, ...root].map((c) => ({ path: c.path, beforePlace: `${c.from} on ${base}`, before: show(cwd, sha, c.from), now: readFileSync(join(cwd, c.path), "utf8") }));
   const answer = runCore({ command: "new-deps", root: cwd, options: { changes: list, ...registryOf(cwd) } });
   const checked = `${files.length} changed package.json files checked${root.length ? ", and the workspace root's" : ""}`;
-  return { findings: answer.findings.map((f) => ({ ...located(f), target: f.target, message: f.message })), summary: answer.summary ? `${checked}; ${answer.summary}` : checked };
+  return { findings: fromEngine(answer.findings), summary: answer.summary ? `${checked}; ${answer.summary}` : checked };
 }

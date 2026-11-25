@@ -17,13 +17,43 @@ use std::io::{Read, Write};
 use crate::globals::JS_GLOBALS;
 use crate::text::Lines;
 
-const TYPE_KEYS: &[&str] = &["typeAnnotation", "returnType", "typeParameters", "typeArguments", "superTypeArguments", "decorators", "implements"];
+const TYPE_KEYS: &[&str] =
+    &["typeAnnotation", "returnType", "typeParameters", "typeArguments", "superTypeArguments", "decorators", "implements"];
 /// Nodes that only wrap one expression or statement: what they wrap stands in their place.
-const WRAPPERS: &[&str] = &["ExpressionStatement", "ChainExpression", "ParenthesizedExpression", "JSXExpressionContainer", "TSAsExpression", "TSSatisfiesExpression", "TSNonNullExpression", "TSTypeAssertion", "TSInstantiationExpression"];
+const WRAPPERS: &[&str] = &[
+    "ExpressionStatement",
+    "ChainExpression",
+    "ParenthesizedExpression",
+    "JSXExpressionContainer",
+    "TSAsExpression",
+    "TSSatisfiesExpression",
+    "TSNonNullExpression",
+    "TSTypeAssertion",
+    "TSInstantiationExpression",
+];
 const FUNCTIONS: &[&str] = &["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"];
 const DROPPED: &[&str] = &["EmptyStatement", "JSXEmptyExpression", "JSXClosingElement", "JSXClosingFragment", "ImportDeclaration"];
 const BROWSER: &[&str] = &["window", "document", "localStorage", "sessionStorage", "navigator", "location", "history"];
-const NOT_CODE: &[&str] = &["type", "start", "end", "range", "loc", "raw", "operator", "kind", "computed", "optional", "prefix", "async", "generator", "shorthand", "method", "static", "delegate", "directive"];
+const NOT_CODE: &[&str] = &[
+    "type",
+    "start",
+    "end",
+    "range",
+    "loc",
+    "raw",
+    "operator",
+    "kind",
+    "computed",
+    "optional",
+    "prefix",
+    "async",
+    "generator",
+    "shorthand",
+    "method",
+    "static",
+    "delegate",
+    "directive",
+];
 const LITERAL_CHARS: usize = 40;
 const SLOT: i32 = 35;
 /// Bumped when features change, so a cache from an older Intersite is recomputed.
@@ -108,7 +138,9 @@ fn is_node(v: &Value) -> bool {
 
 /// The keys that may hold code on a node, type annotations left out, in the serializer's order.
 fn code_keys(n: &Value) -> Vec<&str> {
-    n.as_object().map(|o| o.keys().map(String::as_str).filter(|k| !NOT_CODE.contains(k) && !TYPE_KEYS.contains(k)).collect()).unwrap_or_default()
+    n.as_object()
+        .map(|o| o.keys().map(String::as_str).filter(|k| !NOT_CODE.contains(k) && !TYPE_KEYS.contains(k)).collect())
+        .unwrap_or_default()
 }
 
 /// The child nodes under the given keys of a node.
@@ -158,7 +190,10 @@ fn name_of(f: &Value, path: &[&Value], fallback: &str) -> Option<String> {
         if ty(p) == "VariableDeclarator" && same(&p["init"], f) && ty(&p["id"]) == "Identifier" {
             return p["id"]["name"].as_str().map(str::to_string);
         }
-        if matches!(ty(p), "Property" | "MethodDefinition" | "PropertyDefinition") && same(&p["value"], f) && p["computed"] != Value::Bool(true) {
+        if matches!(ty(p), "Property" | "MethodDefinition" | "PropertyDefinition")
+            && same(&p["value"], f)
+            && p["computed"] != Value::Bool(true)
+        {
             return p["key"]["name"].as_str().map(str::to_string).or_else(|| Some(js_string(&p["key"]["value"])));
         }
         if ty(p) == "ExportDefaultDeclaration" {
@@ -178,7 +213,9 @@ fn js_string(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
         Value::Null => "null".into(),
-        Value::Number(n) => n.as_f64().map_or(n.to_string(), |f| if f.fract() == 0.0 && f.abs() < 1e21 { format!("{}", f as i64) } else { format!("{f}") }),
+        Value::Number(n) => {
+            n.as_f64().map_or(n.to_string(), |f| if f.fract() == 0.0 && f.abs() < 1e21 { format!("{}", f as i64) } else { format!("{f}") })
+        }
         other => other.to_string(),
     }
 }
@@ -291,7 +328,11 @@ fn simplify(n: &Value, reference: bool, local: &dyn Fn(&str) -> bool) -> Option<
         return Some(leaf(&text, &text, false, start(n)));
     }
     if t == "TemplateElement" || t == "JSXText" {
-        let value = if t == "JSXText" { n["value"].as_str().unwrap_or("").to_string() } else { n["value"]["cooked"].as_str().or_else(|| n["value"]["raw"].as_str()).unwrap_or("").to_string() };
+        let value = if t == "JSXText" {
+            n["value"].as_str().unwrap_or("").to_string()
+        } else {
+            n["value"]["cooked"].as_str().or_else(|| n["value"]["raw"].as_str()).unwrap_or("").to_string()
+        };
         // JavaScript's trim and \s count the byte-order mark as whitespace; Rust's do not.
         let collapsed = value.split(|c: char| c.is_whitespace() || c == '\u{feff}').filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
         let raw = utf16_prefix(&collapsed, LITERAL_CHARS);
@@ -331,10 +372,11 @@ fn simplify(n: &Value, reference: bool, local: &dyn Fn(&str) -> bool) -> Option<
     // The label is the syntax with a # for each leaf or subtree, hashed as it is built.
     let mut label = hash_of(&format!("{}{flags}", if FUNCTIONS.contains(&t) { "Function" } else { t }));
     for kid in &list {
-        label = (label ^ match kid {
-            Simple::Kw(k) => hash_of(k),
-            _ => SLOT,
-        })
+        label = (label
+            ^ match kid {
+                Simple::Kw(k) => hash_of(k),
+                _ => SLOT,
+            })
         .wrapping_mul(0x01000193);
     }
     Some(Simple::Tree(Tree { label, kids: list, member: t == "MemberExpression" && n["computed"] != Value::Bool(true) }))
@@ -372,7 +414,11 @@ fn featurize(tree: &Tree, lines: &Lines) -> Vec<Featured> {
                         depth += 1;
                     }
                     // A local's context is its place in its parent, or for `x.foo` the property it is reached into.
-                    let property = if node.member && slot == 1 { node.kids.iter().enumerate().find(|(i, k)| *i > 0 && !matches!(k, Simple::Kw(_))).map(|(_, k)| k) } else { None };
+                    let property = if node.member && slot == 1 {
+                        node.kids.iter().enumerate().find(|(i, k)| *i > 0 && !matches!(k, Simple::Kw(_))).map(|(_, k)| k)
+                    } else {
+                        None
+                    };
                     let context = match property {
                         Some(Simple::Leaf(prop)) => prop.id,
                         _ => mix(3, slot, node.label, 0),
@@ -422,7 +468,8 @@ struct Analysis {
 fn analyze(path: &str, text: &str, as_snippet: bool) -> Option<Analysis> {
     let allocator = Allocator::default();
     let source_type = SourceType::from_path(path).unwrap_or_default();
-    let parsed = Parser::new(&allocator, text, source_type).with_options(ParseOptions { preserve_parens: false, ..ParseOptions::default() }).parse();
+    let parsed =
+        Parser::new(&allocator, text, source_type).with_options(ParseOptions { preserve_parens: false, ..ParseOptions::default() }).parse();
     if parsed.panicked || (!parsed.errors.is_empty() && parsed.program.body.is_empty()) {
         return None;
     }
@@ -437,14 +484,25 @@ fn analyze(path: &str, text: &str, as_snippet: bool) -> Option<Analysis> {
         .filter(|s| ty(s) == "ImportDeclaration")
         .flat_map(|s| s["specifiers"].as_array().into_iter().flatten().filter_map(|x| x["local"]["name"].as_str().map(str::to_string)))
         .collect();
-    let loose = |name: &str| !imported.contains(name) && !found.called.contains(name) && name.starts_with(|c: char| c.is_ascii_lowercase() || c == '_' || c == '$') && !BROWSER.contains(&name) && !JS_GLOBALS.contains(&name);
-    let local: Box<dyn Fn(&str) -> bool> = if as_snippet { Box::new(|n: &str| found.names.contains(n) || loose(n)) } else { Box::new(|n: &str| found.names.contains(n)) };
+    let loose = |name: &str| {
+        !imported.contains(name)
+            && !found.called.contains(name)
+            && name.starts_with(|c: char| c.is_ascii_lowercase() || c == '_' || c == '$')
+            && !BROWSER.contains(&name)
+            && !JS_GLOBALS.contains(&name)
+    };
+    let local: Box<dyn Fn(&str) -> bool> =
+        if as_snippet { Box::new(|n: &str| found.names.contains(n) || loose(n)) } else { Box::new(|n: &str| found.names.contains(n)) };
     let leaves = match simplify(&program, true, &*local) {
         Some(Simple::Tree(t)) => featurize(&t, &lines),
         _ => vec![],
     };
     let first = |offset: u64| leaves.partition_point(|l| l.at < offset);
-    let named = found.functions.iter().map(|(name, s, e)| (name.clone(), lines.line(*s as usize), lines.line(e.saturating_sub(1) as usize), first(*s), first(*e))).collect();
+    let named = found
+        .functions
+        .iter()
+        .map(|(name, s, e)| (name.clone(), lines.line(*s as usize), lines.line(e.saturating_sub(1) as usize), first(*s), first(*e)))
+        .collect();
     Some(Analysis { leaves, named })
 }
 
@@ -584,17 +642,7 @@ pub fn scattered(from: u32, to: u32, length: u32) -> bool {
 
 /// A source file's text, or None when missing, too large, binary or generated.
 pub fn read_source(root: &str, file: &str) -> Option<String> {
-    let path = std::path::Path::new(root).join(file);
-    let meta = std::fs::metadata(&path).ok()?;
-    if !meta.is_file() || meta.len() > MAX_BYTES {
-        return None;
-    }
-    let text = std::fs::read_to_string(&path).ok()?;
-    let head: String = text.chars().take(500).collect();
-    if text.contains('\0') || head.contains("@generated") || head.contains("DO NOT EDIT") {
-        return None;
-    }
-    Some(text)
+    crate::text::read_up_to(root, file, MAX_BYTES)
 }
 
 fn file_key(file: &str, text: &str) -> u64 {

@@ -17,7 +17,8 @@ import { parseArgs } from "node:util";
 
 import { runCore } from "../gates/core.mjs";
 import { GateError, killGroup, projectPrefix, resolveBase, topLevel, withWorktree } from "../gates/lib.mjs";
-import { collectorTokens, loadConfig } from "../shared/config.mjs";
+import { collectorOf } from "../replay/collector.mjs";
+import { loadConfig } from "../shared/config.mjs";
 
 const usage = 'usage: intersite trace [--runs <n>] [--base <ref>] [--touched] [--json] -- <command> | --server "<command>" --url <origin> (--request "<METHOD> <path>"... | --requests <file> | --replay [--sample <n>]) | --page <url> [--compare <url>]';
 const options = /** @type {const} */ ({
@@ -65,6 +66,7 @@ export default async function trace(argv, { cwd }) {
  */
 function profiled(command, dir, verbose) {
   const out = mkdtempSync(join(tmpdir(), "intersite-trace-"));
+  /** @type {NodeJS.ProcessEnv} */
   const env = { ...process.env, NODE_V8_COVERAGE: join(out, "coverage"), NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --cpu-prof --cpu-prof-dir=${join(out, "profiles")}`.trim() };
   delete env.NODE_TEST_CONTEXT;
   const started = performance.now();
@@ -128,6 +130,18 @@ function crunch({ top, prefix, now, baseRuns, baseRoot, minMs }) {
 const time = (ms) => (ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : `${Math.round(ms)}ms`);
 
 /**
+ * The first line: the run's wall time, with the run range and the change from the base when there is one.
+ * @param {string} title @param {Report} report @param {number} runs
+ */
+function wallLine(title, report, runs) {
+  const range = (/** @type {number[] | undefined} */ r) => (runs > 1 && r && r[1] > r[0] ? ` (${time(r[0])}–${time(r[1])})` : "");
+  // Overlapping ranges: some base run was as slow as some run of the change, so the medians may differ by noise.
+  const overlap = report.baseWallMs && runs > 1 && report.wallRange && report.baseWallRange && report.wallRange[0] <= report.baseWallRange[1] && report.baseWallRange[0] <= report.wallRange[1];
+  const base = report.baseWallMs ? ` (base ${time(report.baseWallMs)}${range(report.baseWallRange)}, ${report.wallMs >= report.baseWallMs ? "+" : ""}${Math.round(((report.wallMs - report.baseWallMs) / report.baseWallMs) * 100)}%${overlap ? ", ranges overlap: within noise" : ""})` : "";
+  return `trace ${title}: ${runs > 1 ? `median of ${runs} runs ` : ""}${time(report.wallMs)}${range(report.wallRange)}${base}`;
+}
+
+/**
  * @param {{ title: string, report: Report, findings: { message: string }[], runs: number, queries?: SqlLine[], flags: Record<string, any>, extra?: string[] }} input
  */
 function print({ title, report, findings, runs, queries = [], flags, extra = [] }) {
@@ -135,11 +149,7 @@ function print({ title, report, findings, runs, queries = [], flags, extra = [] 
     console.log(JSON.stringify({ ...report, findings, queries }));
     return;
   }
-  const range = (/** @type {number[] | undefined} */ r) => (runs > 1 && r && r[1] > r[0] ? ` (${time(r[0])}–${time(r[1])})` : "");
-  // Overlapping ranges: some base run was as slow as some run of the change, so the medians may differ by noise.
-  const overlap = report.baseWallMs && runs > 1 && report.wallRange && report.baseWallRange && report.wallRange[0] <= report.baseWallRange[1] && report.baseWallRange[0] <= report.wallRange[1];
-  const base = report.baseWallMs ? ` (base ${time(report.baseWallMs)}${range(report.baseWallRange)}, ${report.wallMs >= report.baseWallMs ? "+" : ""}${Math.round(((report.wallMs - report.baseWallMs) / report.baseWallMs) * 100)}%${overlap ? ", ranges overlap: within noise" : ""})` : "";
-  console.log(`trace ${title}: ${runs > 1 ? `median of ${runs} runs ` : ""}${time(report.wallMs)}${range(report.wallRange)}${base}`);
+  console.log(wallLine(title, report, runs));
   for (const line of extra) console.log(line);
   const files = new Set(report.touched.map((t) => t.file)).size;
   console.log(`touched ${report.touched.length} functions in ${files} project files${flags.touched ? ":" : " (--touched lists them)"}`);
@@ -242,6 +252,7 @@ async function startServer(command, dir, url) {
     }
     await new Promise((ok) => setTimeout(ok, 300));
   }
+  /** @type {Awaited<ReturnType<typeof devtools>>[]} */
   const inspectors = [];
   for (const socket of sockets) {
     let tool;
@@ -327,7 +338,7 @@ async function measureReplay(server, cwd, origin, flags) {
   const { replaySessions } = await import("../replay/run.mjs");
   const config = loadConfig(cwd);
   const adapter = named(await import(pathToFileURL(resolve(cwd, config.replay.adapter)).href), config.replay.adapter);
-  const collector = { url: config.collector.url, token: collectorTokens(config).read, project: config.project };
+  const collector = collectorOf(config);
   const { sessions } = await pickSessions({ sample: flags.sample ?? "20", seed: flags.seed }, "20", collector, undefined);
   /** @type {Map<string, Run[]>} */
   const byLabel = new Map();

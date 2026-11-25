@@ -63,7 +63,7 @@ function inspect(fn) {
   return { read, checked, used };
 }
 
-/** `!x`, `x == null`, `!a || !b`: a test that a value is there, not that it is valid. @param {any} test */
+/** `!x`, `x == null`, `!a || !b`: a test that a value is there, not that it is valid. @param {any} test @returns {boolean} */
 function presenceOnly(test) {
   test = unwrap(test);
   if (test.type === "LogicalExpression") return presenceOnly(test.left) && presenceOnly(test.right);

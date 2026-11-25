@@ -23,6 +23,10 @@ export function walk(node, visit, parent = node?.parent) {
   }
 }
 
+/** What a function only returns: an arrow's expression, or the argument of a body that is one `return`. @param {any} fn */
+export const returned = (fn) =>
+  fn.body.type !== "BlockStatement" ? fn.body : fn.body.body.length === 1 && fn.body.body[0].type === "ReturnStatement" ? fn.body.body[0].argument : undefined;
+
 /** The nearest enclosing function, or undefined. @param {any} node */
 export function enclosingFunction(node) {
   for (let n = node.parent; n; n = n.parent) if (n.type.endsWith("FunctionExpression") || n.type === "FunctionDeclaration") return n;
@@ -138,7 +142,7 @@ const decodedText = perFile((context) => {
   const text = context.sourceCode.text;
   if (!text.includes("\\") && !text.includes("&")) return null;
   if (/&[a-z]\w*;/i.test(text)) return undefined;
-  return text.replace(ESCAPE, (...match) => decodeEscape(match)).replace(NUMERIC_ENTITY, (_, hex, dec) => char(hex ? parseInt(hex, 16) : Number(dec)));
+  return text.replace(ESCAPE, (/** @type {string[]} */ ...match) => decodeEscape(match)).replace(NUMERIC_ENTITY, (/** @type {string} */ _, /** @type {string | undefined} */ hex, /** @type {string | undefined} */ dec) => char(hex ? parseInt(hex, 16) : Number(dec)));
 });
 
 /** What one ESCAPE match stands for. @param {string[]} match */

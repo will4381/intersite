@@ -55,10 +55,12 @@ pub fn classify(output: &str, code: Option<i64>, timed_out: bool) -> (&'static s
 /// The test files a run's output names as failing, from `expect` (paths relative to where the tests ran): when the
 /// output names test files and none of them is one of these, the failure is somewhere else.
 fn elsewhere(output: &str, expect: &[String]) -> Option<String> {
-    static TEST_FILE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\w./-]*?[\w-]+(?:\.(?:test|spec)\.[cm]?[jt]sx?|_test\.(?:go|py)|Tests?\.swift)\b").unwrap());
+    static TEST_FILE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"[\w./-]*?[\w-]+(?:\.(?:test|spec)\.[cm]?[jt]sx?|_test\.(?:go|py)|Tests?\.swift)\b").unwrap());
     // Only lines that report a failure: a runner names the files that passed too.
     static FAILING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"✖|×|✗|❯|\bFAIL|not ok|(?i:fail)|Error|^\s*at ").unwrap());
-    let named: Vec<&str> = output.lines().filter(|l| FAILING.is_match(l)).flat_map(|l| TEST_FILE.find_iter(l).map(|m| m.as_str())).collect();
+    let named: Vec<&str> =
+        output.lines().filter(|l| FAILING.is_match(l)).flat_map(|l| TEST_FILE.find_iter(l).map(|m| m.as_str())).collect();
     if named.is_empty() || expect.is_empty() {
         return None;
     }
@@ -70,13 +72,24 @@ fn elsewhere(output: &str, expect: &[String]) -> Option<String> {
     Some(named[0].to_string())
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Options {
+    /// What the test command printed.
+    output: String,
+    /// Its exit code; none when a signal ended it.
+    code: Option<i64>,
+    timed_out: bool,
+    /// The tests the run was expected to fail in; only fails-on-base names them.
+    #[serde(default)]
+    expect: Vec<String>,
+}
+
 /// `{ output, code, timedOut, expect? }` → `data: { kind, why, elsewhere? }`.
 pub fn run(request: &Request) -> Result<Answer, String> {
-    let o = &request.options;
-    let output = o["output"].as_str().unwrap_or("");
-    let (kind, why) = classify(output, o["code"].as_i64(), o["timedOut"].as_bool().unwrap_or(false));
-    let expect: Vec<String> = serde_json::from_value(o["expect"].clone()).unwrap_or_default();
-    let other = if kind == "fail" { elsewhere(output, &expect) } else { None };
+    let Options { output, code, timed_out, expect } = request.options()?;
+    let (kind, why) = classify(&output, code, timed_out);
+    let other = if kind == "fail" { elsewhere(&output, &expect) } else { None };
     Ok(Answer { findings: vec![], summary: String::new(), data: Some(serde_json::json!({ "kind": kind, "why": why, "elsewhere": other })) })
 }
 
@@ -90,9 +103,15 @@ mod tests {
         assert_eq!(classify(" FAIL  test/a.test.ts > adds\nAssertionError: expected 0 to be 4", Some(1), false).0, "fail");
         assert_eq!(classify("expect(received).toBe(expected)\n\nExpected: 4\nReceived: 0", Some(1), false).0, "fail");
         assert_eq!(classify("Error: Test timed out in 5000ms.", Some(1), false).0, "fail");
-        assert_eq!(classify("TypeError: Cannot read properties of undefined (reading 'id')\n    at test/a.test.ts:4:9", Some(1), false).0, "fail");
+        assert_eq!(
+            classify("TypeError: Cannot read properties of undefined (reading 'id')\n    at test/a.test.ts:4:9", Some(1), false).0,
+            "fail"
+        );
         let (kind, why) = classify(" FAIL  test/a.test.ts [ test/a.test.ts ]\nSyntaxError: The requested module '../add.mjs' does not provide an export named 'add'", Some(1), false);
-        assert_eq!((kind, why.as_str()), ("compile", "SyntaxError: The requested module '../add.mjs' does not provide an export named 'add'"));
+        assert_eq!(
+            (kind, why.as_str()),
+            ("compile", "SyntaxError: The requested module '../add.mjs' does not provide an export named 'add'")
+        );
         assert_eq!(classify("src/a.ts(3,7): error TS2322: Type 'string' is not assignable to type 'number'.", Some(2), false).0, "compile");
         assert_eq!(classify("Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'zod' imported from /x/a.mjs", Some(1), false).0, "setup");
         assert_eq!(classify("sh: vitest: command not found", Some(127), false).0, "setup");

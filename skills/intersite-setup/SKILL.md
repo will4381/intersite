@@ -25,8 +25,8 @@ its own dependencies; it does not need oxlint there. Then install and run:
 npx intersite init
 ```
 
-This writes `intersite.yml` (which acknowledges `intersite` itself for the `new-deps` gate), `intersite.adapter.mjs`,
-the agent rules and skills, and records today's lint findings in `intersite-baseline.json` so only new ones fail.
+This writes `intersite.yml` (which acknowledges `intersite` itself for the `new-deps` gate), `.intersite/adapter.mjs`,
+the agent rules and skills, and records today's lint findings in `.intersite/baseline.json` so only new ones fail.
 
 If the project already gates its own oxlint rules (a lint script with its own baseline), set `lint: { ownRules: false }` in
 `intersite.yml` before `init`: Intersite then reports and baselines only the rules it adds, so the two baselines never
@@ -108,7 +108,7 @@ reports nothing but the new pack's findings (`--write=init` records every curren
 
 ## 4. Write the replay adapter
 
-Open `intersite.adapter.mjs`. Find how this project's tests or seed scripts sign in a test user, and return those
+Open `.intersite/adapter.mjs`. Find how this project's tests or seed scripts sign in a test user, and return those
 headers from `signIn(actorKind, { other })`, including the header that picks the account it acts in. `other: true`
 must return a user from a different account; signing up a fresh one as the app does is the surest stranger. Headers
 every request needs whoever sends it (an API version) or that must differ per request (an idempotency key: use the

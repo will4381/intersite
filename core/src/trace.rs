@@ -28,7 +28,7 @@ struct Run {
 }
 
 #[derive(Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Options {
     #[serde(default)]
     runs: Vec<Run>,
@@ -93,12 +93,13 @@ fn place(url: &str, root: &Path) -> Option<Place> {
 
 pub fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
+    let digit = |b: u8| (b as char).to_digit(16);
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(b) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(b);
+        if bytes[i] == b'%' {
+            if let Some((Some(hi), Some(lo))) = bytes.get(i + 1..i + 3).map(|h| (digit(h[0]), digit(h[1]))) {
+                out.push((hi * 16 + lo) as u8);
                 i += 3;
                 continue;
             }
@@ -111,7 +112,8 @@ pub fn percent_decode(s: &str) -> String {
 
 pub fn json_files(dir: &str, ext: &str) -> Vec<serde_json::Value> {
     let Ok(entries) = std::fs::read_dir(dir) else { return vec![] };
-    let paths: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|x| x == ext)).collect();
+    let paths: Vec<PathBuf> =
+        entries.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|x| x == ext)).collect();
     paths.par_iter().filter_map(|p| serde_json::from_slice(&std::fs::read(p).ok()?).ok()).collect()
 }
 
@@ -123,7 +125,9 @@ fn line_of(root: &Path, file: &str, name: &str, offset: usize, cache: &mut HashM
     let at = if !transpiled && offset <= text.len() {
         Some(offset)
     } else if !name.is_empty() {
-        [format!("function {name}"), format!("{name} = "), format!("{name}("), format!("{name}: ")].iter().find_map(|needle| text.find(needle.as_str()))
+        [format!("function {name}"), format!("{name} = "), format!("{name}("), format!("{name}: ")]
+            .iter()
+            .find_map(|needle| text.find(needle.as_str()))
     } else {
         None
     };
@@ -210,8 +214,16 @@ fn timings(run: &Run, root: &Path) -> Timings {
             let url = frame["url"].as_str().unwrap_or("");
             match place(url, root) {
                 Some(Place::Project(file)) => {
-                    let key = (file, frame["functionName"].as_str().unwrap_or("").to_string(), (frame["lineNumber"].as_i64().unwrap_or(-1).max(-1) + 1) as u32);
-                    let outermost = !ancestors(i, &parent).any(|a| nodes[a]["callFrame"]["url"] == frame["url"] && nodes[a]["callFrame"]["functionName"] == frame["functionName"] && nodes[a]["callFrame"]["lineNumber"] == frame["lineNumber"]);
+                    let key = (
+                        file,
+                        frame["functionName"].as_str().unwrap_or("").to_string(),
+                        (frame["lineNumber"].as_i64().unwrap_or(-1).max(-1) + 1) as u32,
+                    );
+                    let outermost = !ancestors(i, &parent).any(|a| {
+                        nodes[a]["callFrame"]["url"] == frame["url"]
+                            && nodes[a]["callFrame"]["functionName"] == frame["functionName"]
+                            && nodes[a]["callFrame"]["lineNumber"] == frame["lineNumber"]
+                    });
                     let e = per_fn.entry(key).or_default();
                     e.0 += self_us[i] / 1000.0;
                     if outermost {
@@ -243,7 +255,7 @@ fn median(mut v: Vec<f64>) -> f64 {
     if v.is_empty() {
         return 0.0;
     }
-    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    v.sort_by(f64::total_cmp);
     let m = v.len() / 2;
     if v.len().is_multiple_of(2) {
         (v[m - 1] + v[m]) / 2.0
@@ -265,7 +277,13 @@ fn combined(runs: &[Run], root: &Path) -> Timings {
             (k, (s, t))
         })
         .collect();
-    let per_pkg = pkgs.into_iter().map(|k| { let m = median(all.iter().map(|(_, p)| p.get(&k).copied().unwrap_or(0.0)).collect()); (k, m) }).collect();
+    let per_pkg = pkgs
+        .into_iter()
+        .map(|k| {
+            let m = median(all.iter().map(|(_, p)| p.get(&k).copied().unwrap_or(0.0)).collect());
+            (k, m)
+        })
+        .collect();
     (per_fn, per_pkg)
 }
 
@@ -287,7 +305,10 @@ fn spread(runs: &[Run], root: &Path) -> Spread {
         .collect();
     let mut out: HashMap<(String, String), (f64, f64)> = HashMap::new();
     for key in all.iter().flat_map(|m| m.keys()).cloned().collect::<std::collections::HashSet<_>>() {
-        let range = all.iter().map(|m| m.get(&key).copied().unwrap_or(0.0)).fold((f64::INFINITY, 0.0), |(lo, hi): (f64, f64), v| (lo.min(v), hi.max(v)));
+        let range = all
+            .iter()
+            .map(|m| m.get(&key).copied().unwrap_or(0.0))
+            .fold((f64::INFINITY, 0.0), |(lo, hi): (f64, f64), v| (lo.min(v), hi.max(v)));
         out.insert(key, range);
     }
     let walls = runs.iter().map(|r| r.wall_ms).fold((f64::INFINITY, 0.0), |(lo, hi): (f64, f64), v| (lo.min(v), hi.max(v)));
@@ -295,7 +316,7 @@ fn spread(runs: &[Run], root: &Path) -> Spread {
 }
 
 pub fn run(request: &Request) -> Result<Answer, String> {
-    let options: Options = serde_json::from_value(request.options.clone()).map_err(|e| format!("trace options: {e}"))?;
+    let options: Options = request.options()?;
     if options.runs.is_empty() {
         return Err("trace-report needs at least one run".into());
     }
@@ -308,16 +329,34 @@ pub fn run(request: &Request) -> Result<Answer, String> {
             *count = (*count).max(t.count);
         }
     }
-    let mut touched_list: Vec<Touched> = touched_all.into_iter().map(|((file, name, line), count)| Touched { file, name, line, count }).collect();
+    let mut touched_list: Vec<Touched> =
+        touched_all.into_iter().map(|((file, name, line), count)| Touched { file, name, line, count }).collect();
     touched_list.sort_by(|a, b| a.file.cmp(&b.file).then(a.line.cmp(&b.line)));
     let (now, pkgs) = combined(&options.runs, &root);
     // An unnamed frame on a module's first line is the module's own top-level code.
-    let label = |name: &str, line: u32| if !name.is_empty() { name.to_string() } else if line <= 1 { "(top level)".into() } else { "(anonymous)".into() };
-    let mut hot: Vec<Hot> = now.iter().map(|((file, name, line), (s, t))| Hot { file: file.clone(), name: label(name, *line), line: *line, self_ms: round(*s), total_ms: round(*t) }).collect();
-    hot.sort_by(|a, b| b.self_ms.partial_cmp(&a.self_ms).unwrap_or(std::cmp::Ordering::Equal));
+    let label = |name: &str, line: u32| {
+        if !name.is_empty() {
+            name.to_string()
+        } else if line <= 1 {
+            "(top level)".into()
+        } else {
+            "(anonymous)".into()
+        }
+    };
+    let mut hot: Vec<Hot> = now
+        .iter()
+        .map(|((file, name, line), (s, t))| Hot {
+            file: file.clone(),
+            name: label(name, *line),
+            line: *line,
+            self_ms: round(*s),
+            total_ms: round(*t),
+        })
+        .collect();
+    hot.sort_by(|a, b| b.self_ms.total_cmp(&a.self_ms));
     hot.truncate(50);
     let mut deps: Vec<(String, f64)> = pkgs.into_iter().map(|(k, v)| (k, round(v))).collect();
-    deps.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    deps.sort_by(|a, b| b.1.total_cmp(&a.1));
     deps.truncate(15);
     let wall_now = median(options.runs.iter().map(|r| r.wall_ms).collect());
     let mut findings = Vec::new();
@@ -351,7 +390,11 @@ pub fn run(request: &Request) -> Result<Answer, String> {
                     continue;
                 }
                 slower.push(serde_json::json!({ "file": file, "name": name, "line": line, "baseMs": round(before), "nowMs": round(*s) }));
-                let was = if before >= 1.0 { format!("{before:.0}ms on the base (+{:.0}%)", (s - before) / before * 100.0) } else { "under 1ms on the base".into() };
+                let was = if before >= 1.0 {
+                    format!("{before:.0}ms on the base (+{:.0}%)", (s - before) / before * 100.0)
+                } else {
+                    "under 1ms on the base".into()
+                };
                 findings.push(Finding {
                     file: file.clone(),
                     line: *line,
@@ -386,20 +429,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn percent_decode_reads_bytes_not_chars() {
+        assert_eq!(percent_decode("/a%20b%C3%A9.js"), "/a bé.js");
+        // `%` before a multi-byte character, or with too few digits, stays as written.
+        assert_eq!(percent_decode("/tmp/%1é.js"), "/tmp/%1é.js");
+        assert_eq!(percent_decode("%é%2"), "%é%2");
+        assert_eq!(percent_decode("%+5"), "%+5");
+    }
+
+    #[test]
     fn reads_profiles_and_coverage_and_finds_slowdowns() {
         let root = std::env::temp_dir().join(format!("intersite-trace-{}", std::process::id()));
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("src/a.js"), "function slow() {}\nfunction fast() {}\n").unwrap();
         let url = format!("file://{}/src/a.js", root.display());
-        let profile = |slow_us: f64| serde_json::json!({
-            "nodes": [
-                { "id": 1, "callFrame": { "functionName": "(root)", "url": "", "lineNumber": -1 }, "children": [2, 3] },
-                { "id": 2, "callFrame": { "functionName": "slow", "url": url, "lineNumber": 0 }, "children": [] },
-                { "id": 3, "callFrame": { "functionName": "fast", "url": url, "lineNumber": 1 }, "children": [] }
-            ],
-            "samples": [2, 3, 2],
-            "timeDeltas": [0, slow_us, 1000.0, 0]
-        });
+        let profile = |slow_us: f64| {
+            serde_json::json!({
+                "nodes": [
+                    { "id": 1, "callFrame": { "functionName": "(root)", "url": "", "lineNumber": -1 }, "children": [2, 3] },
+                    { "id": 2, "callFrame": { "functionName": "slow", "url": url, "lineNumber": 0 }, "children": [] },
+                    { "id": 3, "callFrame": { "functionName": "fast", "url": url, "lineNumber": 1 }, "children": [] }
+                ],
+                "samples": [2, 3, 2],
+                "timeDeltas": [0, slow_us, 1000.0, 0]
+            })
+        };
         let coverage = serde_json::json!([{ "url": url, "functions": [
             { "functionName": "slow", "ranges": [{ "startOffset": 0, "endOffset": 18, "count": 3 }] },
             { "functionName": "fast", "ranges": [{ "startOffset": 19, "endOffset": 37, "count": 0 }] }
@@ -422,6 +476,10 @@ mod tests {
         assert_eq!(data["touched"].as_array().unwrap().len(), 1);
         assert_eq!(data["hot"][0]["name"], "slow");
         assert_eq!(answer.findings.len(), 1);
-        assert!(answer.findings[0].message.starts_with("src/a.js:1 slow takes 100ms of its own time, 5ms on the base (+1900%)"), "{}", answer.findings[0].message);
+        assert!(
+            answer.findings[0].message.starts_with("src/a.js:1 slow takes 100ms of its own time, 5ms on the base (+1900%)"),
+            "{}",
+            answer.findings[0].message
+        );
     }
 }

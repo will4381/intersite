@@ -23,7 +23,7 @@ function isChildProcess(node, sourceCode) {
   return CHILD_PROCESS.test(node.name) || (def?.type === "ImportBinding" && String(def.parent?.source?.value).endsWith("child_process"));
 }
 
-/** `exec`, `cp.exec`, `promisify(exec)`, or a `const run = promisify(cp.exec)`. @param {any} callee @param {any} sourceCode */
+/** `exec`, `cp.exec`, `promisify(exec)`, or a `const run = promisify(cp.exec)`. @param {any} callee @param {any} sourceCode @returns {boolean} */
 function runsShell(callee, sourceCode) {
   callee = unwrap(callee);
   if (callee.type === "CallExpression") return calleeName(callee) === "promisify" && Boolean(callee.arguments[0]) && runsShell(callee.arguments[0], sourceCode);

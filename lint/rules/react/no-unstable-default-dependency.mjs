@@ -25,14 +25,14 @@ export const rule = defineRule({
   },
   createOnce(context) {
     return {
-      ":function"(fn) {
+      ":function"(/** @type {any} */ fn) {
         if (!isComponentOrHook(fn)) return;
         const param = fn.params[0]?.type === "AssignmentPattern" ? fn.params[0].left : fn.params[0];
         // `{ items = [] }` in the signature, or `const { items = [] } = props` at the top of the body.
         const patterns = param?.type === "ObjectPattern" ? [param] : param?.type === "Identifier" ? destructured(fn, param.name) : [];
         /** @type {Map<string, any>} */
         const defaults = new Map();
-        for (const p of patterns.flatMap((pattern) => pattern.properties)) {
+        for (const p of patterns.flatMap((/** @type {any} */ pattern) => pattern.properties)) {
           if (p.value?.type === "AssignmentPattern" && p.value.left.type === "Identifier" && fresh.test(p.value.right.type)) defaults.set(p.value.left.name, p.value);
         }
         if (!defaults.size) return;

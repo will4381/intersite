@@ -66,7 +66,7 @@ export const rule = defineRule({
         });
         const average = total / fns.length;
         if (average >= MAX_AVERAGE) return;
-        context.report({ node: program.body.find((/** @type {any} */ s) => exportedFunctions(s).includes(fns[0])), messageId: "shallow", data: { count: String(fns.length), average: average.toFixed(1) } });
+        context.report({ node: /** @type {any} */ (program.body.find((/** @type {any} */ s) => exportedFunctions(s).includes(fns[0]))), messageId: "shallow", data: { count: String(fns.length), average: average.toFixed(1) } });
       },
     };
   },

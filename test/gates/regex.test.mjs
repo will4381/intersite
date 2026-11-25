@@ -2,12 +2,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { regex } from "../../gates/regex.mjs";
+import { gates } from "../../cli/gate.mjs";
 import { TEST_PATHS } from "../../shared/config.mjs";
 import { repo } from "./repo.mjs";
 
 /** @param {string} cwd */
-const check = async (cwd) => (await regex({ cwd, base: "base", testPaths: TEST_PATHS, testCmd: "", setup: "", duplicateLines: 6, mutants: 0, timeout: 0, entryPaths: [], artifacts: [] })).findings.map((f) => f.message);
+const check = async (cwd) => (await gates.regex({ cwd, base: "base", testPaths: TEST_PATHS, testCmd: "", setup: "", duplicateLines: 6, mutants: 0, timeout: 0, entryPaths: [], artifacts: [], protected: [] })).findings.map((f) => f.message);
 
 test("a pattern whose backtracking doubles with each character is reported, and safe ones are not", async () => {
   const r = repo({ "src/a.ts": "export const ok = 1;\n" });

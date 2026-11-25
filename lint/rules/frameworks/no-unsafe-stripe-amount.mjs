@@ -67,7 +67,7 @@ export const rule = defineRule({
         const key = /** @type {any} */ (node.key);
         if (!AMOUNT.test(key.name ?? key.value ?? "")) return;
         // Inside the params of a Stripe call: `stripe.paymentIntents.create({ amount })`, `getStripe().refunds.create(...)`.
-        let call = node.parent;
+        let call = /** @type {any} */ (node.parent);
         while (call && call.type !== "CallExpression") call = call.parent;
         if (!call || !/stripe/i.test(context.sourceCode.getText(call.callee))) return;
         if (isFloat(node.value)) context.report({ node: node.value, messageId: "float" });

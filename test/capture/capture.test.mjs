@@ -173,7 +173,7 @@ test("skips replayed traffic and excluded or not-included paths", async () => {
 
 test("oversized and non-JSON request bodies are omitted with a marker", async () => {
   const { instance, cases } = capture({ maxBodyBytes: 64 });
-  const record = (/** @type {RequestInit} */ init) => instance.record({ request: req("https://a.test/v1/x", { method: "POST", ...init }), response: Response.json({}), route: "/v1/x", actor: { kind: "user" }, session: "s" });
+  const record = (/** @type {RequestInit & { duplex?: "half" }} */ init) => instance.record({ request: req("https://a.test/v1/x", { method: "POST", ...init }), response: Response.json({}), route: "/v1/x", actor: { kind: "user" }, session: "s" });
   await record({ headers: { "content-type": "application/json" }, body: JSON.stringify({ note: "x".repeat(100) }) });
   await record({ headers: { "content-type": "text/plain" }, body: "alice@example.com" });
   await record({ headers: { "content-type": "application/json" }, body: "{not json" });
@@ -241,7 +241,7 @@ test("captureOptions hands intersite.yml's capture section and project to create
   assert.deepEqual(options.redactKeys, ["nickname"]);
   /** @type {any[]} */
   const sent = [];
-  const fetcher = { fetch: async (/** @type {string} */ _url, /** @type {RequestInit} */ init) => (sent.push(...JSON.parse(String(init.body)).cases), Response.json({ accepted: 1, dropped: [] })) };
+  const fetcher = /** @type {{ fetch: typeof globalThis.fetch }} */ ({ fetch: async (/** @type {string} */ _url, /** @type {RequestInit} */ init) => (sent.push(...JSON.parse(String(init.body)).cases), Response.json({ accepted: 1, dropped: [] })) });
   const capture = createCapture({ ...options, url: "http://collector.test", token: "t", release: "r", fetcher });
   const response = () => Response.json({ ok: true });
   await capture.record({ request: new Request("https://a.test/webhooks/stripe", { method: "POST" }), response: response(), route: "/webhooks/stripe" });

@@ -56,7 +56,7 @@ export const rule = defineRule({
     }
     return {
       CallExpression(node) {
-        const callee = node.callee;
+        const callee = /** @type {any} */ (node.callee);
         if (callee.type !== "MemberExpression") return;
         if (MATCHERS.test(callee.property.name) && callee.object.type === "CallExpression" && callee.object.callee.name === "expect") check(node, callee.object.arguments[0], node.arguments[0]);
         else if (ASSERTS.has(callee.property.name) && callee.object.name !== "Object") check(node, node.arguments[0], node.arguments[1]);

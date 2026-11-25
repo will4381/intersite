@@ -26,7 +26,7 @@ export const rule = defineRule({
   createOnce(context) {
     return {
       CallExpression(node) {
-        const [callback, deps] = node.arguments;
+        const [callback, deps] = /** @type {any[]} */ (node.arguments);
         // With no dependencies the effect runs once, so no newer request can be overtaken.
         if (!isHookCall(node, EFFECT) || !callback?.type.endsWith("FunctionExpression") || deps?.type !== "ArrayExpression" || !deps.elements.length) return;
         if (callback.body.type === "BlockStatement" && callback.body.body.some((/** @type {any} */ s) => s.type === "ReturnStatement" && s.argument)) return;

@@ -27,7 +27,7 @@ function isSecret(node) {
   return n !== undefined && SECRET.test(n) && !HARMLESS.test(n);
 }
 
-/** @param {any} node the logged values worth checking: the argument, a template's parts, an object's values */
+/** @param {any} node the logged values worth checking: the argument, a template's parts, an object's values @returns {any[]} */
 function parts(node) {
   if (node.type === "TemplateLiteral") return node.expressions;
   if (node.type === "BinaryExpression" && node.operator === "+") return [...parts(node.left), ...parts(node.right)];

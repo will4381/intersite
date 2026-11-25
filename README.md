@@ -18,6 +18,10 @@ npx intersite check
 ```
 
 `init` writes the config, the agent rules and skills, and records today's lint findings so only new ones fail.
+Beside your code Intersite keeps one file, `intersite.yml`. Everything else it writes goes in `.intersite/`, whose own
+`.gitignore` commits only the baseline (`.intersite/baseline.json`) and the replay adapter (`.intersite/adapter.mjs`)
+and keeps the rest (recorded cases, the run ledger, generated oxlint configs) out of git. A project set up by an
+older version gets its baselines and adapter moved there by `npx intersite init`.
 
 The gates' analysis runs in Intersite's Rust engine, which builds itself with cargo the first time a check needs it
 (a minute or two, once), so install Rust first: `curl https://sh.rustup.rs -sSf | sh`.
@@ -125,7 +129,7 @@ every file; record what is there today and only new findings fail, as with lint:
 npx intersite gate duplicates --all --write
 ```
 
-That writes `intersite-gates-baseline.json`. Fix a recorded finding and run it again to lower the count. With `--all`, `sql` treats migrations already written as history: it judges the schema they leave and the queries in code, not the locks a past migration took.
+That records them in `.intersite/baseline.json`. Fix a recorded finding and run it again to lower the count. With `--all`, `sql` treats migrations already written as history: it judges the schema they leave and the queries in code, not the locks a past migration took.
 
 Output is written for agents: one line on success, one line per finding with the command that reruns only that
 finding, exit code 0, 1 or 2.
@@ -325,7 +329,7 @@ Fastify, Next.js and browser-only (`wrapFetch`) forms are shown at the top of
   `npx playwright install chromium-headless-shell` makes it use Chrome Headless Shell instead of full Chrome (about
   half the memory and a third of the browser CPU in our benchmark). Lightpanda (`replay.browser: lightpanda`) is lighter still but has no real layout, so clicks and visibility checks may not
   work; it is unverified with Intersite.
-- **The adapter** (`intersite.adapter.mjs`) tells replay how to sign in a seeded test user and which seeded record
+- **The adapter** (`.intersite/adapter.mjs`) tells replay how to sign in a seeded test user and which seeded record
   stands in for an ID from production. Its optional `state()` returns what the app holds as JSON (counts, balances),
   which invariants get from before and after each session (money conserved, one credit per payment) and `twice`
   compares around a repeated write. Capture stores no headers, so anything every request needs (an API version,
@@ -431,12 +435,16 @@ The same code deploys to Cloudflare as a Worker with D1 (`intersite deploy`). Ca
 
 ## Developing Intersite
 
+`npm test` runs the Rust engine's unit tests, then every Node test; `npm run check` runs Intersite on its own change,
+the JSDoc type check (`npm run typecheck`) among its checks. CI runs both, plus `cargo fmt --check` and
+`cargo clippy -- -D warnings`, on Linux and macOS.
+
 ```bash
 npm test
 ```
 
 ```bash
-npm run lint
+npm run check
 ```
 
 The formats and rules every part agrees on are in [CONTRACT.md](CONTRACT.md).

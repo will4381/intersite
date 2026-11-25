@@ -48,7 +48,7 @@ export const rule = defineRule({
           const span = body[i - 1].loc.end.line - body[start].loc.start.line + 1;
           // One-line statements of one kind (route registrations, declarations) are a list, which reads fine.
           const run = body.slice(start, i);
-          const list = run.every((n) => n.type === run[0].type && n.loc.start.line === n.loc.end.line);
+          const list = run.every((/** @type {any} */ n) => n.type === run[0].type && n.loc.start.line === n.loc.end.line);
           if (count >= STATEMENTS && span >= LINES && !list) context.report({ node: body[start], messageId: "wall", data: { count: String(count), lines: String(span) } });
           start = i;
         }

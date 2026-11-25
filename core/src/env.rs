@@ -10,24 +10,77 @@ use oxc_span::GetSpan;
 use oxc_syntax::operator::LogicalOperator;
 use rayon::prelude::*;
 use regex::Regex;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::sync::LazyLock;
 
-use crate::decisions::{is_env_module, is_env_object, string};
+use crate::js::{is_env_module, is_env_object};
 use crate::text::{self, Lines};
 use crate::{Answer, Finding, Request};
 
 /// Variables set by the platform, the runtime or the tooling, never by the project's own deploy.
 const EXEMPT: [&str; 44] = [
-    "NODE_ENV", "CI", "PORT", "HOST", "HOSTNAME", "TZ", "HOME", "PATH", "PWD", "USER", "SHELL", "TERM", "LANG", "DEBUG", "TMPDIR",
-    "NODE_OPTIONS", "NODE_DEBUG", "MODE", "DEV", "PROD", "SSR", "BASE_URL", "NEXT_RUNTIME", "NEXT_PHASE", "ANALYZE",
-    "SKIP_ENV_VALIDATION", "FORCE_COLOR", "NO_COLOR", "INIT_CWD", "JEST_WORKER_ID", "VITEST", "TEST", "DYNO", "K_SERVICE",
-    "LAMBDA_TASK_ROOT", "AWS_REGION", "AWS_EXECUTION_ENV", "CODESPACES", "EDITOR", "VISUAL", "XDG_CONFIG_HOME", "APPDATA",
-    "LOCALAPPDATA", "USERPROFILE",
+    "NODE_ENV",
+    "CI",
+    "PORT",
+    "HOST",
+    "HOSTNAME",
+    "TZ",
+    "HOME",
+    "PATH",
+    "PWD",
+    "USER",
+    "SHELL",
+    "TERM",
+    "LANG",
+    "DEBUG",
+    "TMPDIR",
+    "NODE_OPTIONS",
+    "NODE_DEBUG",
+    "MODE",
+    "DEV",
+    "PROD",
+    "SSR",
+    "BASE_URL",
+    "NEXT_RUNTIME",
+    "NEXT_PHASE",
+    "ANALYZE",
+    "SKIP_ENV_VALIDATION",
+    "FORCE_COLOR",
+    "NO_COLOR",
+    "INIT_CWD",
+    "JEST_WORKER_ID",
+    "VITEST",
+    "TEST",
+    "DYNO",
+    "K_SERVICE",
+    "LAMBDA_TASK_ROOT",
+    "AWS_REGION",
+    "AWS_EXECUTION_ENV",
+    "CODESPACES",
+    "EDITOR",
+    "VISUAL",
+    "XDG_CONFIG_HOME",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "USERPROFILE",
 ];
 const EXEMPT_PREFIX: [&str; 16] = [
-    "npm_", "VERCEL", "NEXT_PUBLIC_VERCEL", "VITE_VERCEL", "NETLIFY", "CF_PAGES", "RENDER", "RAILWAY_", "FLY_", "GITHUB_",
-    "RUNNER_", "HEROKU_", "AWS_LAMBDA_", "VITEST_", "PLAYWRIGHT_", "GITPOD_",
+    "npm_",
+    "VERCEL",
+    "NEXT_PUBLIC_VERCEL",
+    "VITE_VERCEL",
+    "NETLIFY",
+    "CF_PAGES",
+    "RENDER",
+    "RAILWAY_",
+    "FLY_",
+    "GITHUB_",
+    "RUNNER_",
+    "HEROKU_",
+    "AWS_LAMBDA_",
+    "VITEST_",
+    "PLAYWRIGHT_",
+    "GITPOD_",
 ];
 
 fn exempt(name: &str) -> bool {
@@ -50,7 +103,23 @@ fn deploy_file(path: &str) -> bool {
     let name = path.rsplit('/').next().unwrap_or(path);
     name.starts_with(".env")
         || name == ".dev.vars"
-        || matches!(name, "wrangler.toml" | "wrangler.json" | "wrangler.jsonc" | "turbo.json" | "fly.toml" | "render.yaml" | "netlify.toml" | "app.json" | "vercel.json" | "railway.json" | "railway.toml" | "Procfile" | "serverless.yml" | "serverless.yaml")
+        || matches!(
+            name,
+            "wrangler.toml"
+                | "wrangler.json"
+                | "wrangler.jsonc"
+                | "turbo.json"
+                | "fly.toml"
+                | "render.yaml"
+                | "netlify.toml"
+                | "app.json"
+                | "vercel.json"
+                | "railway.json"
+                | "railway.toml"
+                | "Procfile"
+                | "serverless.yml"
+                | "serverless.yaml"
+        )
         || name.starts_with("Dockerfile")
         || name.starts_with("docker-compose")
         || name.starts_with("compose.")
@@ -113,7 +182,9 @@ impl<'a> Visit<'a> for Collector<'_> {
 
     fn visit_logical_expression(&mut self, it: &LogicalExpression<'a>) {
         // Every operand of `a || b ?? c` but the last has a fallback.
-        if matches!(it.operator, LogicalOperator::Coalesce | LogicalOperator::Or) && !matches!(&it.right, Expression::Identifier(i) if i.name == "undefined") {
+        if matches!(it.operator, LogicalOperator::Coalesce | LogicalOperator::Or)
+            && !matches!(&it.right, Expression::Identifier(i) if i.name == "undefined")
+        {
             let mut left = &it.left;
             loop {
                 self.defaulted.insert(left.span().start);
@@ -138,7 +209,7 @@ impl<'a> Visit<'a> for Collector<'_> {
 
     fn visit_computed_member_expression(&mut self, it: &ComputedMemberExpression<'a>) {
         if is_env_object(self.text(it.object.span())) {
-            if let Some(name) = string(&it.expression) {
+            if let Some(name) = crate::js::string(&it.expression, true).map(str::to_string) {
                 self.read(name, it.span);
             }
         }
@@ -164,7 +235,7 @@ impl<'a> Visit<'a> for Collector<'_> {
         let callee = self.text(it.callee.span()).to_string();
         let args: Vec<&Expression> = it.arguments.iter().filter_map(|a| a.as_expression()).collect();
         if callee == "Deno.env.get" {
-            if let Some(name) = args.first().and_then(|a| string(a)) {
+            if let Some(name) = args.first().and_then(|a| crate::js::string(a, true).map(str::to_string)) {
                 self.read(name, it.span);
             }
         }
@@ -173,7 +244,10 @@ impl<'a> Visit<'a> for Collector<'_> {
             if let Some(Expression::ObjectExpression(o)) = args.first() {
                 for p in &o.properties {
                     if let ObjectPropertyKind::ObjectProperty(p) = p {
-                        if matches!(p.key.static_name().as_deref(), Some("server" | "client" | "shared" | "runtimeEnv" | "experimental__runtimeEnv" | "vars")) {
+                        if matches!(
+                            p.key.static_name().as_deref(),
+                            Some("server" | "client" | "shared" | "runtimeEnv" | "experimental__runtimeEnv" | "vars")
+                        ) {
                             if let Expression::ObjectExpression(inner) = &p.value {
                                 self.facts.schema.extend(keys(inner));
                             }
@@ -199,7 +273,14 @@ impl<'a> Visit<'a> for Collector<'_> {
 
 fn collect(path: &str, src: &str) -> Option<Facts> {
     crate::js::parse(path, src, |program| {
-        let mut c = Collector { src, lines: Lines::new(src), facts: Facts::default(), env_module: is_env_module(path), defaulted: HashSet::new(), assigned: HashSet::new() };
+        let mut c = Collector {
+            src,
+            lines: Lines::new(src),
+            facts: Facts::default(),
+            env_module: is_env_module(path),
+            defaulted: HashSet::new(),
+            assigned: HashSet::new(),
+        };
         c.visit_program(program);
         c.facts
     })
@@ -215,33 +296,21 @@ fn declared_in(path: &str, text: &str) -> Vec<String> {
     }
 }
 
-fn distance(a: &str, b: &str) -> usize {
-    let b: Vec<char> = b.chars().collect();
-    let mut row: Vec<usize> = (0..=b.len()).collect();
-    for (i, ca) in a.chars().enumerate() {
-        let mut prev = row[0];
-        row[0] = i + 1;
-        for (j, cb) in b.iter().enumerate() {
-            let cur = row[j + 1];
-            row[j + 1] = (prev + usize::from(ca != *cb)).min(row[j] + 1).min(row[j + 1] + 1);
-            prev = cur;
-        }
-    }
-    row[b.len()]
-}
-
-fn dir(path: &str) -> &str {
-    path.rsplit_once('/').map_or("", |d| d.0)
-}
-
 /// Whether `ancestor` is `path`'s folder or one above it ("" is the repository top).
 fn within(path: &str, ancestor: &str) -> bool {
     ancestor.is_empty() || path.starts_with(&format!("{ancestor}/"))
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Options {
+    /// The product code files among `files` (which also holds env templates and configs).
+    product: HashSet<String>,
+}
+
 pub fn run(request: &Request) -> Result<Answer, String> {
-    let product: HashSet<&str> = request.options.get("product").and_then(|p| p.as_array()).map(|a| a.iter().filter_map(|s| s.as_str()).collect()).unwrap_or_default();
-    let code: Vec<&String> = request.files.iter().filter(|f| product.contains(f.as_str())).collect();
+    let Options { product } = request.options()?;
+    let code: Vec<&String> = request.files.iter().filter(|f| product.contains(*f)).collect();
     let facts: Vec<(&String, Facts)> = code.par_iter().filter_map(|f| Some((*f, collect(f, &text::read(&request.root, f)?)?))).collect();
 
     let mut declared: HashSet<String> = HashSet::new();
@@ -252,7 +321,7 @@ pub fn run(request: &Request) -> Result<Answer, String> {
         let Some(text) = text::read(&request.root, f) else { continue };
         let name = f.rsplit('/').next().unwrap_or(f);
         if template(name) {
-            triggers.push((dir(f).to_string(), f.clone()));
+            triggers.push((crate::graph::parent(f).to_string(), f.clone()));
         }
         if name == "turbo.json" {
             static WILD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""([A-Z][A-Z0-9_]*)\*""#).unwrap());
@@ -264,7 +333,7 @@ pub fn run(request: &Request) -> Result<Answer, String> {
     for (f, fx) in &facts {
         if !fx.schema.is_empty() {
             declared.extend(fx.schema.iter().cloned());
-            triggers.push((crate::decisions::package_of(&request.root, f, &mut cache), (*f).clone()));
+            triggers.push((crate::graph::package_of(&request.root, f, &mut cache), (*f).clone()));
         }
     }
     let names: Vec<&String> = {
@@ -273,7 +342,7 @@ pub fn run(request: &Request) -> Result<Answer, String> {
         v
     };
 
-    let mut findings: BTreeMap<String, (Finding, usize)> = BTreeMap::new();
+    let mut found: Vec<(String, Finding)> = vec![];
     let mut checked = 0;
     for (f, fx) in &facts {
         // The nearest declaring source above the file; none means the project does not list its variables here.
@@ -295,7 +364,11 @@ pub fn run(request: &Request) -> Result<Answer, String> {
             // A misspelling is one or two letters off a declared name; one the file also reads is a deliberate
             // alternative (`IDS || ID`), not a typo.
             let limit = if r.name.len() < 10 { 1 } else { 2 };
-            let close = names.iter().map(|n| (distance(&r.name, n), *n)).filter(|(d, n)| *d > 0 && *d <= limit && !fx.reads.iter().any(|o| &o.name == *n)).min();
+            let close = names
+                .iter()
+                .map(|n| (crate::text::distance(&r.name, n), *n))
+                .filter(|(d, n)| *d > 0 && *d <= limit && !fx.reads.iter().any(|o| &o.name == *n))
+                .min();
             // A variable read with a fallback is optional: the deploy needs it only when it is a misspelling.
             if r.defaulted && close.is_none() {
                 continue;
@@ -303,20 +376,12 @@ pub fn run(request: &Request) -> Result<Answer, String> {
             let hint = close.map(|(_, n)| format!(" (did you mean {n}?)")).unwrap_or_default();
             let shown_source = crate::rel(&request.prefix, source);
             let message = format!("{f}:{} {} is not declared in {shown_source}{hint}: fix the name if it is a typo, or list it there so whoever deploys knows to set it", r.line, r.name);
-            findings.entry(r.name.clone()).and_modify(|e| e.1 += 1).or_insert((Finding { file: (*f).clone(), line: r.line, target: format!("env:{}", r.name), message }, 0));
+            found.push((r.name.clone(), Finding { file: (*f).clone(), line: r.line, target: format!("env:{}", r.name), message }));
         }
     }
-    let mut findings: Vec<Finding> = findings
-        .into_values()
-        .map(|(mut f, more)| {
-            if more > 0 {
-                f.message = f.message.replacen(" is not declared", &format!(" (read {} times) is not declared", more + 1), 1);
-            }
-            f
-        })
-        .collect();
-    findings.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
-    Ok(Answer { findings, summary: format!("{checked} environment reads checked against {} declared names", declared.len()), data: None })
+    let findings =
+        crate::first_per_key(found, |m, more| m.replacen(" is not declared", &format!(" (read {} times) is not declared", more + 1), 1));
+    Ok(Answer::new(findings, format!("{checked} environment reads checked against {} declared names", declared.len())))
 }
 
 #[cfg(test)]
@@ -327,14 +392,20 @@ mod tests {
     fn collects_reads_and_schema_keys() {
         let f = collect("src/env.ts", "export const env = createEnv({ server: { DATABASE_URL: z.string() }, client: { NEXT_PUBLIC_URL: z.string() } });\nconst a = process.env.STRIPE_KEY;\nconst b = process.env.LOG_LEVEL ?? 'info';\nconst { RESEND_KEY, MAX = '3' } = process.env;\nprocess.env.TZ = 'UTC';\nconst c = import.meta.env['VITE_API'];\n").unwrap();
         let reads: Vec<(&str, u32, bool)> = f.reads.iter().map(|r| (r.name.as_str(), r.line, r.defaulted)).collect();
-        assert_eq!(reads, vec![("STRIPE_KEY", 2, false), ("LOG_LEVEL", 3, true), ("RESEND_KEY", 4, false), ("MAX", 4, true), ("VITE_API", 6, false)]);
+        assert_eq!(
+            reads,
+            vec![("STRIPE_KEY", 2, false), ("LOG_LEVEL", 3, true), ("RESEND_KEY", 4, false), ("MAX", 4, true), ("VITE_API", 6, false)]
+        );
         assert_eq!(f.schema, vec!["DATABASE_URL", "NEXT_PUBLIC_URL"]);
     }
 
     #[test]
     fn reads_templates_and_suggests_close_names() {
-        assert_eq!(declared_in(".env.example", "# Stripe\nSTRIPE_WEBHOOK_SECRET=\nexport RESEND_KEY=x\n# OPTIONAL_FLAG=1\n"), vec!["STRIPE_WEBHOOK_SECRET", "RESEND_KEY", "OPTIONAL_FLAG"]);
-        assert_eq!(distance("STRIPE_WEBHOOK_SECRT", "STRIPE_WEBHOOK_SECRET"), 1);
+        assert_eq!(
+            declared_in(".env.example", "# Stripe\nSTRIPE_WEBHOOK_SECRET=\nexport RESEND_KEY=x\n# OPTIONAL_FLAG=1\n"),
+            vec!["STRIPE_WEBHOOK_SECRET", "RESEND_KEY", "OPTIONAL_FLAG"]
+        );
+        assert_eq!(crate::text::distance("STRIPE_WEBHOOK_SECRT", "STRIPE_WEBHOOK_SECRET"), 1);
         assert!(template(".env.local.example") && template(".dev.vars.example") && !template(".env.test"));
     }
 }

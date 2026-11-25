@@ -42,7 +42,7 @@ export const rule = defineRule({
   createOnce(context) {
     /** Whether `name` is also bound where `id` is (`idStr` beside `id`): then the suffix tells two values apart. @param {any} id @param {string} name */
     const beside = (id, name) => {
-      for (let scope = context.sourceCode.getScope(id); scope; scope = scope.upper) if (scope.set.has(name)) return true;
+      for (let scope = /** @type {import("@oxlint/plugins").Scope | null} */ (context.sourceCode.getScope(id)); scope; scope = scope.upper) if (scope.set.has(name)) return true;
       return false;
     };
     /** @param {any} id @param {any} init */
@@ -58,7 +58,7 @@ export const rule = defineRule({
     return {
       before: () => !isTestFile(context),
       VariableDeclarator: (node) => check(node.id, node.init),
-      ":function"(fn) {
+      ":function"(/** @type {any} */ fn) {
         for (const p of fn.params) check(p.type === "AssignmentPattern" ? p.left : p, p.type === "AssignmentPattern" ? p.right : undefined);
       },
     };

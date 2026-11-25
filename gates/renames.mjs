@@ -2,9 +2,8 @@
 // Fails when the change renames an identifier everywhere in code but leaves its old name in strings, comments and
 // docs, where the compiler does not look: a log line, an error message, an API doc or a config key that now names
 // nothing. The work is in core/renames.rs.
-import { posix } from "node:path";
 
-import { located, runCore } from "./core.mjs";
+import { fromEngine, runCore } from "./core.mjs";
 import { EMPTY_TREE, SKIP, listFiles, projectPrefix, resolveBase, topLevel, workingDiff } from "./lib.mjs";
 
 /** Files that hold code or prose a reader acts on. */
@@ -20,6 +19,5 @@ export async function renames({ cwd, base }) {
   if (!patch.trim()) return { findings: [], summary: "no changes" };
   const files = listFiles(top).filter((f) => TEXT.test(f) && !SKIP.test(f));
   const answer = runCore({ command: "renames", root: top, files, prefix, options: { patch } });
-  const name = (/** @type {string} */ file) => posix.relative(prefix || ".", file);
-  return { findings: answer.findings.map((f) => ({ ...located(f, name), target: f.target, message: f.message.replace(f.file, name(f.file)) })), summary: answer.summary };
+  return { findings: fromEngine(answer.findings, prefix), summary: answer.summary };
 }

@@ -68,7 +68,11 @@ enum Node {
     Chars(Set),
     Seq(Vec<Node>),
     Alt(Vec<Node>),
-    Repeat { node: Box<Node>, min: u32, max: Option<u32> },
+    Repeat {
+        node: Box<Node>,
+        min: u32,
+        max: Option<u32>,
+    },
     /// Lookarounds, anchors and backreferences: they consume nothing the analysis can follow.
     ZeroWidth,
 }
@@ -405,7 +409,11 @@ fn exponential(n: &Node) -> Option<(&'static str, String)> {
             for (i, item) in items.iter().enumerate() {
                 let inner = innermost_unbounded(item);
                 if let Some(inner_set) = inner {
-                    let rest_ambiguous = items.iter().enumerate().filter(|(j, _)| *j != i).all(|(_, other)| nullable(other) || first(other).overlaps(&inner_set));
+                    let rest_ambiguous = items
+                        .iter()
+                        .enumerate()
+                        .filter(|(j, _)| *j != i)
+                        .all(|(_, other)| nullable(other) || first(other).overlaps(&inner_set));
                     if rest_ambiguous && !inner_set.is_empty() {
                         found = Some(("exponential", "a repeated group whose inside repeats too, matching the same characters".into()));
                         return;
@@ -452,7 +460,23 @@ fn walk(n: &Node, f: &mut impl FnMut(&Node)) {
 /// differs by entity on purpose, so those are left out.
 const CONCEPTS: [&str; 5] = ["email", "phone", "uuid", "url", "ip"];
 /// Words a pattern's name may add around the concept without narrowing it: EMAIL_RE, emailSchema, isValidPhone.
-const GENERIC: [&str; 15] = ["re", "regex", "regexp", "rx", "pattern", "schema", "valid", "validation", "validator", "is", "shape", "format", "string", "matcher", "address"];
+const GENERIC: [&str; 15] = [
+    "re",
+    "regex",
+    "regexp",
+    "rx",
+    "pattern",
+    "schema",
+    "valid",
+    "validation",
+    "validator",
+    "is",
+    "shape",
+    "format",
+    "string",
+    "matcher",
+    "address",
+];
 
 /// The concept a pattern's name is purely about: `EMAIL_PATTERN` is email; `BASE64URL` or `creatorEmail` are not.
 fn concept(name: &str) -> Option<&'static str> {
@@ -511,7 +535,7 @@ pub fn run(request: &Request) -> Result<Answer, String> {
             message: format!("{file}:{} {name} validates {c} as /{}/ but {} at {}:{} uses /{}/, so the two disagree on what is a valid {c}: keep one pattern in a module both import", site.line, site.pattern, other.1.name.as_deref().unwrap_or("?"), other.0, other.1.line, other.1.pattern),
         });
     }
-    Ok(Answer { findings, summary: format!("{} regular expressions read", sites.len()), data: None })
+    Ok(Answer::new(findings, format!("{} regular expressions read", sites.len())))
 }
 
 #[cfg(test)]

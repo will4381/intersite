@@ -4,7 +4,7 @@
 
 use rayon::prelude::*;
 use regex::Regex;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::LazyLock;
 
@@ -15,7 +15,7 @@ static TRIVIAL: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(?:[\[\](){};,]*|import\b.*|export\s+(?:\*|\{[^}]*\})\s*from\b.*|\}?\s*from\s.*|[\w$.]+[;,]?|\}?\s*else\s*\{?|//.*|/?\*.*|#.*|</[\w.]+>)$").unwrap()
 });
 static SPACES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
-const MAX_BYTES: usize = 256 * 1024;
+const MAX_BYTES: u64 = 256 * 1024;
 
 /// A file's non-blank lines: number, hash of the normalised text, and whether it is trivial.
 struct Lines {
@@ -26,11 +26,7 @@ struct Lines {
 
 /// The file's lines, or None for missing, binary, generated or minified text.
 fn read(root: &str, file: &str) -> Option<Lines> {
-    let text = std::fs::read_to_string(std::path::Path::new(root).join(file)).ok()?;
-    let head: String = text.chars().take(500).collect();
-    if text.len() > MAX_BYTES || text.contains('\0') || head.contains("@generated") || head.contains("DO NOT EDIT") {
-        return None;
-    }
+    let text = crate::text::read_up_to(root, file, MAX_BYTES)?;
     let raw: Vec<&str> = text.split('\n').collect();
     if text.len() / raw.len().max(1) > 200 {
         return None;
@@ -61,12 +57,21 @@ fn window(f: &Lines, i: usize, n: usize) -> Option<u64> {
     (real * 2 >= n).then(|| h.finish())
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Options {
+    /// A block is this many lines or more.
+    lines: usize,
+    /// The changed files in the order the diff lists them, so findings come out in that order.
+    changed: Vec<String>,
+    /// Judging the whole repository: every line is new.
+    whole: bool,
+}
+
 pub fn run(request: &Request) -> Result<Answer, String> {
-    let n = request.options.get("lines").and_then(|v| v.as_u64()).unwrap_or(6) as usize;
-    // The changed files in the order the diff lists them, so findings come out in that order.
-    let order: Vec<String> = request.options.get("changed").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
-    let added: HashMap<&str, HashSet<u32>> = request.added_sets().unwrap_or_default();
-    let whole = request.added.is_none() || request.options.get("whole").and_then(|v| v.as_bool()).unwrap_or(false);
+    let Options { lines: n, changed: order, whole } = request.options()?;
+    let added = request.added.clone().unwrap_or_default();
+    let whole = request.added.is_none() || whole;
     let all: Vec<Option<Lines>> = request.files.par_iter().map(|f| read(&request.root, f)).collect();
     // One index of every window of pre-existing lines, first occurrence first. Windows touching added lines are left
     // out, so the added block never matches itself, and code moved within the change has no original to match.
@@ -98,12 +103,21 @@ pub fn run(request: &Request) -> Result<Answer, String> {
                     file: file.clone(),
                     line: f.line[first],
                     target: file.clone(),
-                    message: format!("{file}:{} repeats {}:{line} ({} lines): reuse it", f.line[first], request.files[fi], last - first + n),
+                    message: format!(
+                        "{file}:{} repeats {}:{line} ({} lines): reuse it",
+                        f.line[first],
+                        request.files[fi],
+                        last - first + n
+                    ),
                 });
             }
         };
         for i in 0..(f.line.len() + 1).saturating_sub(n) {
-            let at = if f.line[i..i + n].iter().all(|l| fresh.contains(l)) { window(&f, i, n).and_then(|k| index.get(&k).copied()) } else { None };
+            let at = if f.line[i..i + n].iter().all(|l| fresh.contains(l)) {
+                window(&f, i, n).and_then(|k| index.get(&k).copied())
+            } else {
+                None
+            };
             // A block inside its own original is not a copy; one that only overlaps it (a repeating pattern) is not either.
             let own_overlap = at.is_some_and(|(fi, line)| Some(fi) == own && (line as i64 - f.line[i] as i64).unsigned_abs() < n as u64);
             match at {
@@ -116,5 +130,5 @@ pub fn run(request: &Request) -> Result<Answer, String> {
         }
         flush(&mut run, &mut findings);
     }
-    Ok(Answer { findings, summary: format!("{checked} changed source files checked against {} tracked files", request.files.len()), data: None })
+    Ok(Answer::new(findings, format!("{checked} changed source files checked against {} tracked files", request.files.len())))
 }

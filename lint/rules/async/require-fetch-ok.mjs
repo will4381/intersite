@@ -71,9 +71,9 @@ export const rule = defineRule({
       },
       // fetch(url).then((res) => res.json())
       CallExpression(node) {
-        const callee = node.callee;
+        const callee = /** @type {any} */ (node.callee);
         if (callee.type !== "MemberExpression" || callee.property.name !== "then" || !isFetch(callee.object)) return;
-        const handler = node.arguments[0];
+        const handler = /** @type {any} */ (node.arguments[0]);
         if (!handler?.type.endsWith("FunctionExpression") || handler.params[0]?.type !== "Identifier") return;
         const variable = context.sourceCode.getDeclaredVariables(handler).find((v) => v.name === handler.params[0].name);
         if (variable && readsUnchecked(variable, context.sourceCode)) context.report({ node: handler, messageId: "unchecked" });

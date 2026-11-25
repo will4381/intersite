@@ -9,7 +9,8 @@ use std::sync::LazyLock;
 use crate::graph::{self, Graph, Kind, Module, Package, Target};
 use crate::{rel, Answer, Finding, Request};
 
-static FIXTURE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|/)(?:__)?(?:test[-_])?fixtures?(?:__)?/|(?:^|/)(?:testdata|examples?|templates?)/").unwrap());
+static FIXTURE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:^|/)(?:__)?(?:test[-_])?fixtures?(?:__)?/|(?:^|/)(?:testdata|examples?|templates?)/").unwrap());
 /// Tests, scripts, configs and tooling: they may reach into a sibling package's files, the product may not.
 static TOOLING: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?:^|/)(?:scripts?|tests?|__tests__|e2e|qa|lint|tools?|bench(?:marks?)?|load-tests?|[\w-]*acceptance|stories|storybook|\.storybook)/|\.(?:test|spec|stories|config)\.[cm]?[jt]sx?$|(?:^|/)(?:babel|metro)\.config\.").unwrap()
@@ -20,16 +21,73 @@ static BUILT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:\./)?(?:dist|b
 
 /// Packages that only work on a server: database drivers and ORMs, secrets-holding SDKs, Node's system modules.
 const SERVER_PACKAGES: [&str; 33] = [
-    "server-only", "@prisma/client", "prisma", "pg", "postgres", "mysql", "mysql2", "better-sqlite3", "sqlite3", "mongodb", "mongoose", "ioredis", "redis", "firebase-admin", "stripe", "resend", "nodemailer", "@sendgrid/mail", "bcrypt", "argon2", "@node-rs/argon2", "@node-rs/bcrypt", "jsonwebtoken", "twilio", "openai", "@anthropic-ai/sdk", "googleapis", "@neondatabase/serverless", "@vercel/postgres", "@planetscale/database", "@clerk/backend", "drizzle-kit", "knex",
+    "server-only",
+    "@prisma/client",
+    "prisma",
+    "pg",
+    "postgres",
+    "mysql",
+    "mysql2",
+    "better-sqlite3",
+    "sqlite3",
+    "mongodb",
+    "mongoose",
+    "ioredis",
+    "redis",
+    "firebase-admin",
+    "stripe",
+    "resend",
+    "nodemailer",
+    "@sendgrid/mail",
+    "bcrypt",
+    "argon2",
+    "@node-rs/argon2",
+    "@node-rs/bcrypt",
+    "jsonwebtoken",
+    "twilio",
+    "openai",
+    "@anthropic-ai/sdk",
+    "googleapis",
+    "@neondatabase/serverless",
+    "@vercel/postgres",
+    "@planetscale/database",
+    "@clerk/backend",
+    "drizzle-kit",
+    "knex",
 ];
-const SERVER_PREFIXES: [&str; 6] = ["@aws-sdk/", "@google-cloud/", "drizzle-orm/node-postgres", "drizzle-orm/postgres-js", "drizzle-orm/mysql2", "drizzle-orm/better-sqlite3"];
+const SERVER_PREFIXES: [&str; 6] = [
+    "@aws-sdk/",
+    "@google-cloud/",
+    "drizzle-orm/node-postgres",
+    "drizzle-orm/postgres-js",
+    "drizzle-orm/mysql2",
+    "drizzle-orm/better-sqlite3",
+];
 const SERVER_SPECS: [&str; 3] = ["next/headers", "@clerk/nextjs/server", "next/server"];
 /// Node modules a browser bundle has no stand-in for (Next.js polyfills path, crypto, buffer and the like).
-const NODE_ONLY: [&str; 13] = ["fs", "fs/promises", "child_process", "net", "tls", "dgram", "dns", "cluster", "worker_threads", "readline", "module", "v8", "inspector"];
+const NODE_ONLY: [&str; 13] = [
+    "fs",
+    "fs/promises",
+    "child_process",
+    "net",
+    "tls",
+    "dgram",
+    "dns",
+    "cluster",
+    "worker_threads",
+    "readline",
+    "module",
+    "v8",
+    "inspector",
+];
 
 fn server_import(spec: &str) -> bool {
     let package = graph::package_name(spec);
-    SERVER_PACKAGES.contains(&package) || SERVER_PREFIXES.iter().any(|p| spec.starts_with(p)) || SERVER_SPECS.contains(&spec) || spec.starts_with("node:") || NODE_ONLY.contains(&spec)
+    SERVER_PACKAGES.contains(&package)
+        || SERVER_PREFIXES.iter().any(|p| spec.starts_with(p))
+        || SERVER_SPECS.contains(&spec)
+        || spec.starts_with("node:")
+        || NODE_ONLY.contains(&spec)
 }
 
 /// Why a module is server-only, if it is: a server package imported, or a secret read when it loads.
@@ -49,14 +107,6 @@ fn package_of<'g>(graph: &'g Graph, file: &str) -> Option<&'g Package> {
     graph.packages_of(file).into_iter().find(|p| !FIXTURE.is_match(&format!("{}/", p.dir)))
 }
 
-fn no_ext(path: &str) -> &str {
-    let name = path.rfind('/').map_or(0, |i| i + 1);
-    match path[name..].find('.') {
-        Some(i) if i > 0 => &path[..name + i],
-        _ => path,
-    }
-}
-
 /// Whether an index file is what its package publishes: a package entry, or a folder an `exports` subpath names.
 fn is_entry(graph: &Graph, file: &str, entry_globs: &[Regex], prefix: &str) -> bool {
     if entry_globs.iter().any(|g| g.is_match(file.strip_prefix(prefix).unwrap_or(file))) {
@@ -65,14 +115,42 @@ fn is_entry(graph: &Graph, file: &str, entry_globs: &[Regex], prefix: &str) -> b
     let Some(p) = package_of(graph, file) else { return false };
     let inside = if p.dir.is_empty() { file } else { &file[p.dir.len() + 1..] };
     let short = BUILT.replace(inside, "");
-    if no_ext(&short) == "index" {
+    if graph::no_exts(&short) == "index" {
         return true;
     }
     p.entries.iter().any(|e| {
         let e = if p.dir.is_empty() { e.as_str() } else { e.strip_prefix(&format!("{}/", p.dir)).unwrap_or(e) };
         let e = BUILT.replace(e, "");
-        no_ext(&e) == no_ext(&short) || format!("{}/index", no_ext(&e)) == no_ext(&short)
+        graph::no_exts(&e) == graph::no_exts(&short) || format!("{}/index", graph::no_exts(&e)) == graph::no_exts(&short)
     })
+}
+
+/// What gates/imports.mjs `graphGate` sends, plus the config's entry paths, layers and features.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Options {
+    /// Files the change added.
+    fresh: HashSet<String>,
+    #[serde(default)]
+    entry_paths: Vec<String>,
+    #[serde(default)]
+    layers: Vec<Layer>,
+    /// A glob whose `*` is a feature folder, as `src/features/*`.
+    #[serde(default)]
+    features: Option<String>,
+    #[serde(rename = "changed")]
+    _changed: serde::de::IgnoredAny,
+    #[serde(rename = "gone")]
+    _gone: serde::de::IgnoredAny,
+    #[serde(rename = "base")]
+    _base: serde::de::IgnoredAny,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Layer {
+    name: String,
+    paths: Vec<String>,
 }
 
 struct Layers {
@@ -81,14 +159,9 @@ struct Layers {
 }
 
 impl Layers {
-    fn read(options: &serde_json::Value) -> Layers {
-        let layers = options["layers"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|l| Some((l["name"].as_str()?.to_string(), l["paths"].as_array()?.iter().filter_map(|g| graph::glob(g.as_str()?)).collect())))
-            .collect();
-        let features = options["features"].as_str().and_then(|f| {
+    fn read(layers: &[Layer], features: Option<&str>) -> Layers {
+        let layers = layers.iter().map(|l| (l.name.clone(), l.paths.iter().filter_map(|g| graph::glob(g)).collect())).collect();
+        let features = features.and_then(|f| {
             let pattern = graph::glob(f)?.as_str().trim_end_matches('$').replacen("[^/]*", "([^/]+)", 1);
             Regex::new(&format!("{pattern}(?:/|$)")).ok()
         });
@@ -106,13 +179,13 @@ impl Layers {
 
 pub fn run(request: &Request) -> Result<Answer, String> {
     let graph = Graph::build(&request.root, &request.files);
-    let o = &request.options;
-    let fresh: HashSet<String> = serde_json::from_value(o["fresh"].clone()).unwrap_or_default();
-    let entry_globs: Vec<Regex> = o["entryPaths"].as_array().into_iter().flatten().filter_map(|g| graph::glob(g.as_str()?)).collect();
-    let layers = Layers::read(o);
+    let Options { fresh, entry_paths, layers, features, .. } = request.options()?;
+    let entry_globs: Vec<Regex> = entry_paths.iter().filter_map(|g| graph::glob(g)).collect();
+    let layers = Layers::read(&layers, features.as_deref());
     let prefix = request.prefix.as_str();
     let mut findings = Vec::new();
-    let mut project: Vec<&String> = graph.modules.keys().filter(|f| f.starts_with(prefix) && !f.ends_with(".d.ts") && !FIXTURE.is_match(f)).collect();
+    let mut project: Vec<&String> =
+        graph.modules.keys().filter(|f| f.starts_with(prefix) && !f.ends_with(".d.ts") && !FIXTURE.is_match(f)).collect();
     project.sort();
     let edge_count: usize = project.iter().map(|f| graph.modules[*f].imports.len()).sum();
 
@@ -130,7 +203,13 @@ pub fn run(request: &Request) -> Result<Answer, String> {
             if let (Target::File(t), Some(own)) = (target, own) {
                 let theirs = package_of(&graph, t);
                 if spec.starts_with('.') && !own.dir.is_empty() && !TOOLING.is_match(file) && graph::CODE.is_match(t) {
-                    if let Some(theirs) = theirs.filter(|p| p.name.is_some() && p.dir != own.dir && !p.dir.is_empty() && !own.dir.starts_with(&format!("{}/", p.dir)) && !p.dir.starts_with(&format!("{}/", own.dir))) {
+                    if let Some(theirs) = theirs.filter(|p| {
+                        p.name.is_some()
+                            && p.dir != own.dir
+                            && !p.dir.is_empty()
+                            && !own.dir.starts_with(&format!("{}/", p.dir))
+                            && !p.dir.starts_with(&format!("{}/", own.dir))
+                    }) {
                         let pkg = theirs.name.clone().unwrap_or_else(|| theirs.dir.clone());
                         findings.push(Finding {
                             file: (*file).clone(),
@@ -187,7 +266,11 @@ pub fn run(request: &Request) -> Result<Answer, String> {
     }
 
     // 3. Barrels: a new index file of re-exports, or an existing one growing, unless the project keeps barrels.
-    let barrels: Vec<&String> = project.iter().copied().filter(|f| INDEX.is_match(f) && graph.modules[f.as_str()].barrel && !is_entry(&graph, f, &entry_globs, prefix)).collect();
+    let barrels: Vec<&String> = project
+        .iter()
+        .copied()
+        .filter(|f| INDEX.is_match(f) && graph.modules[f.as_str()].barrel && !is_entry(&graph, f, &entry_globs, prefix))
+        .collect();
     let whole = request.added.is_none();
     let kept = barrels.iter().filter(|f| whole || !fresh.contains(f.as_str())).count();
     if kept < 3 {
@@ -197,9 +280,19 @@ pub fn run(request: &Request) -> Result<Answer, String> {
             let message = "every import of it loads all it re-exports (slower builds, tests and pages, and import cycles through it): import the files directly";
             if whole || fresh.contains(file.as_str()) {
                 let new = if whole { "a barrel file" } else { "a new barrel file" };
-                findings.push(Finding { file: file.clone(), line: 1, target: format!("boundaries:{name}"), message: format!("{name} is {new}, made only of re-exports: {message}; do not add index files to group exports") });
+                findings.push(Finding {
+                    file: file.clone(),
+                    line: 1,
+                    target: format!("boundaries:{name}"),
+                    message: format!("{name} is {new}, made only of re-exports: {message}; do not add index files to group exports"),
+                });
             } else if let Some(i) = m.imports.iter().find(|i| i.star && request.added.is_some() && request.changed(file, i.line)) {
-                findings.push(Finding { file: file.clone(), line: i.line, target: format!("boundaries:{name}"), message: format!("{name}:{} adds `export * from \"{}\"` to a barrel file: {message}", i.line, i.spec) });
+                findings.push(Finding {
+                    file: file.clone(),
+                    line: i.line,
+                    target: format!("boundaries:{name}"),
+                    message: format!("{name}:{} adds `export * from \"{}\"` to a barrel file: {message}", i.line, i.spec),
+                });
             }
         }
     }
@@ -208,7 +301,7 @@ pub fn run(request: &Request) -> Result<Answer, String> {
     findings.extend(client_server(&graph, request, &project));
     findings.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
     findings.dedup_by(|a, b| a.target == b.target && a.line == b.line);
-    Ok(Answer { findings, summary: format!("{edge_count} imports in {} files checked", project.len()), data: None })
+    Ok(Answer::new(findings, format!("{edge_count} imports in {} files checked", project.len())))
 }
 
 /// An edge the bundler follows: a value import of a project file that is not a client or server-action module
@@ -224,7 +317,11 @@ fn follows<'g>(graph: &'g Graph, file: &str) -> impl Iterator<Item = (usize, &'g
 
 fn chain(prefix: &str, path: &[&str], reason: &str) -> String {
     let names: Vec<String> = path.iter().map(|p| rel(prefix, p)).collect();
-    let shown = if names.len() > 6 { format!("{} → … → {}", names[..2].join(" → "), names[names.len() - 3..].join(" → ")) } else { names.join(" → ") };
+    let shown = if names.len() > 6 {
+        format!("{} → … → {}", names[..2].join(" → "), names[names.len() - 3..].join(" → "))
+    } else {
+        names.join(" → ")
+    };
     format!("{shown} ({reason})")
 }
 
@@ -318,17 +415,22 @@ mod tests {
         assert!(!server_import("path") && !server_import("@stripe/stripe-js") && !server_import("zod"));
         let m = graph::read_module("db.ts", "import { Pool } from 'pg';\nexport const pool = new Pool();\n").unwrap();
         assert_eq!(server_reason(&m).as_deref(), Some("imports pg"));
-        let env = graph::read_module("env.ts", "export const url = process.env.DATABASE_URL;\nexport const pub = process.env.NEXT_PUBLIC_URL;\n").unwrap();
+        let env =
+            graph::read_module("env.ts", "export const url = process.env.DATABASE_URL;\nexport const pub = process.env.NEXT_PUBLIC_URL;\n")
+                .unwrap();
         assert_eq!(server_reason(&env).as_deref(), Some("reads DATABASE_URL"));
         let lazy = graph::read_module("x.ts", "export function url() { return process.env.DATABASE_URL; }\n").unwrap();
         assert_eq!(server_reason(&lazy), None);
-        let t3 = graph::read_module("env.ts", "export const env = createEnv({ runtimeEnv: { DATABASE_URL: process.env.DATABASE_URL } });\n").unwrap();
+        let t3 =
+            graph::read_module("env.ts", "export const env = createEnv({ runtimeEnv: { DATABASE_URL: process.env.DATABASE_URL } });\n")
+                .unwrap();
         assert_eq!(server_reason(&t3), None);
     }
 
     #[test]
     fn layers_and_features() {
-        let l = Layers::read(&serde_json::json!({ "layers": [{ "name": "app", "paths": ["src/app/**"] }, { "name": "shared", "paths": ["src/shared/**"] }], "features": "src/features/*" }));
+        let layer = |name: &str, glob: &str| Layer { name: name.into(), paths: vec![glob.into()] };
+        let l = Layers::read(&[layer("app", "src/app/**"), layer("shared", "src/shared/**")], Some("src/features/*"));
         assert_eq!(l.layer("src/app/page.tsx"), Some(0));
         assert_eq!(l.layer("src/shared/ui/button.tsx"), Some(1));
         assert_eq!(l.feature("src/features/cart/api.ts"), Some("cart"));

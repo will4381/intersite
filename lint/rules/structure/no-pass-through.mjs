@@ -1,15 +1,11 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { isTestFile } from "../shared.mjs";
+import { isTestFile, returned } from "../shared.mjs";
 
-/** The call or `new` a function body only returns, under `await`. @param {any} body */
-function onlyCall(body) {
-  let value = body;
-  if (body.type === "BlockStatement") {
-    if (body.body.length !== 1 || body.body[0].type !== "ReturnStatement") return undefined;
-    value = body.body[0].argument;
-  }
+/** The call or `new` a function only returns, under `await`. @param {any} fn */
+function onlyCall(fn) {
+  let value = returned(fn);
   if (value?.type === "AwaitExpression") value = value.argument;
   return value?.type === "CallExpression" || value?.type === "NewExpression" ? value : undefined;
 }
@@ -51,12 +47,12 @@ export const rule = defineRule({
       const name = declaredName(node);
       // A type parameter or return type can make a wrapper narrow a loose API, which is work of its own.
       if (!name || !node.params.length || node.typeParameters || node.returnType) return;
-      const call = onlyCall(node.body);
+      const call = onlyCall(node);
       // A plain function name only: (value) => pattern.test(value) binds a receiver, which is work of its own.
       if (!call || call.callee.type !== "Identifier" || call.typeArguments) return;
       const params = node.params.map(paramName);
       const args = call.arguments.map(argName);
-      if (params.includes(undefined) || params.length !== args.length || params.some((p, i) => p !== args[i])) return;
+      if (params.includes(undefined) || params.length !== args.length || params.some((/** @type {string | undefined} */ p, /** @type {number} */ i) => p !== args[i])) return;
       const callee = call.callee.name;
       // A function that calls itself under the same name, or a hook renamed for a component, is not a pass-through.
       if (callee === name) return;

@@ -20,7 +20,7 @@ export const rule = defineRule({
     return {
       before: () => !isTestFile(context),
       // ponytail: also reports APIs the project cannot change (`event.initEvent(type, true, true)`); an allowlist if they show up.
-      "CallExpression, NewExpression"(node) {
+      "CallExpression, NewExpression"(/** @type {any} */ node) {
         const count = node.arguments.filter(isBooleanLiteral).length;
         if (count >= 2) context.report({ node, messageId: "call", data: { count: String(count) } });
       },

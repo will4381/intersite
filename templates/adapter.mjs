@@ -9,7 +9,7 @@
  * @returns {Promise<Record<string, string>>}
  */
 export async function signIn(actorKind, { target, other }) {
-  throw new Error(`intersite.adapter.mjs: signIn is not written yet (asked for ${other ? "another " : ""}${actorKind} at ${target})`);
+  throw new Error(`.intersite/adapter.mjs: signIn is not written yet (asked for ${other ? "another " : ""}${actorKind} at ${target})`);
 }
 
 /**

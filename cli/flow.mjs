@@ -5,12 +5,12 @@ import { dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
-import { LOCAL_HOST, getCase } from "../replay/collector.mjs";
+import { LOCAL_HOST, collectorOf, getCase } from "../replay/collector.mjs";
 import { flowProblem, runFlows, toFlow } from "../replay/flow.mjs";
-import { collectorTokens, loadConfig } from "../shared/config.mjs";
+import { INTERSITE_DIR, loadConfig } from "../shared/config.mjs";
 import { named } from "./replay.mjs";
 
-const FLOWS = ".intersite/flows";
+const FLOWS = `${INTERSITE_DIR}/flows`;
 const USAGE = "usage: intersite flow [<file>...] [--network recorded|none] [--timing fast|recorded] [--concurrency <n>] [--headed] [--allow-remote] [--json]"
   + " | intersite flow --from <caseId> [--out <file>] (writes the session up to that case as a flow)";
 
@@ -44,8 +44,7 @@ export default async function flow(argv, { cwd, print = console.log }) {
  * @param {string} cwd @param {import("../shared/config.mjs").Config} config @param {string} id @param {string | undefined} out @param {(line: string) => void} print
  */
 async function write(cwd, config, id, out, print) {
-  const collector = { url: config.collector.url, token: collectorTokens(config).read, project: config.project };
-  const { cases } = await getCase(collector, id);
+  const { cases } = await getCase(collectorOf(config), id);
   const made = toFlow(cases);
   const file = out ?? join(FLOWS, `${id.replace(/[^A-Za-z0-9._-]/g, "_")}.json`);
   mkdirSync(dirname(resolve(cwd, file)), { recursive: true });

@@ -2,8 +2,11 @@
 // `intersite audit [--sample 200] [--json]`: every value capture KEPT (did not replace with a fake), per key, widest
 // first. An enum has a handful of values; a key with hundreds of distinct kept values is probably personal data that
 // slipped through, and belongs in `capture.redactKeys`; an enum key whose values were faked belongs in `capture.keepKeys`. Reading this list is the review to do before production.
+import { parseArgs } from "node:util";
+
 import { createScrubber } from "../capture/scrub.mjs";
-import { callCollector, SetupError } from "../collector/client.mjs";
+import { callCollector } from "../collector/client.mjs";
+import { GateError } from "../gates/lib.mjs";
 import { loadConfig } from "../shared/config.mjs";
 
 const FAKE = /^(?:text-[0-9a-f]{8}|u[0-9a-f]{8}@example\.test|https:\/\/example\.test\/[0-9a-f]{8}|\+1555\d{7})$/;
@@ -45,11 +48,35 @@ function pathValues(path, route) {
   });
 }
 
+/**
+ * The values the sessions' cases kept and faked as text, by key, and how many cases there were.
+ * @param {{ cases: import("../shared/case.mjs").Case[] }[]} sessions @param {RegExp} id
+ */
+function keptValues(sessions, id) {
+  /** @type {Map<string, Map<string, number>>} */
+  const kept = new Map();
+  /** @type {Map<string, Set<string>>} */
+  const faked = new Map();
+  const cases = sessions.flatMap((session) => session.cases);
+  for (const item of cases) {
+    collect(item.request.body, "body", id, kept, faked);
+    collect(item.request.query, "query", id, kept, faked);
+    collect(pathValues(item.request.path, item.request.route), `path ${item.request.route}`, id, kept, faked);
+    if (item.action) collect(item.action.page.split("/").filter((segment) => segment !== "_"), "page", id, kept, faked);
+  }
+  return { cases: cases.length, kept, faked };
+}
+
 /** @param {string[]} argv @param {{ cwd: string }} context @returns {Promise<number>} */
 export default async function audit(argv, { cwd }) {
-  const json = argv.includes("--json");
-  const rest = argv.filter((arg) => arg !== "--json");
-  const sample = rest.length === 0 ? 200 : rest[0] === "--sample" && rest.length === 2 ? Number(rest[1]) : NaN;
+  let values;
+  try {
+    ({ values } = parseArgs({ args: argv, options: { sample: { type: "string", default: "200" }, json: { type: "boolean" } } }));
+  } catch {
+    values = { sample: "" };
+  }
+  const { json } = values;
+  const sample = values.sample === "" ? NaN : Number(values.sample);
   if (!Number.isInteger(sample) || sample < 1 || sample > 200) {
     console.error("usage: intersite audit [--sample <1-200 sessions>] [--json]");
     return 2;
@@ -57,31 +84,15 @@ export default async function audit(argv, { cwd }) {
   /** @type {{ cases: import("../shared/case.mjs").Case[] }[]} */
   let sessions;
   try {
-    const { status, body } = await callCollector(cwd, "GET", `/v1/sessions?sample=${sample}&seed=1`);
-    if (status !== 200) throw new SetupError(`collector GET /v1/sessions: ${status} ${body.error ?? ""}`.trim());
-    sessions = body.sessions;
+    sessions = (await callCollector(cwd, "GET", `/v1/sessions?sample=${sample}&seed=1`)).body.sessions;
   } catch (error) {
-    if (!(error instanceof SetupError)) throw error;
+    if (!(error instanceof GateError)) throw error;
     console.error(error.message);
     return 2;
   }
 
   const { capture } = loadConfig(cwd);
-  const id = new RegExp(capture.idPattern);
-  /** @type {Map<string, Map<string, number>>} */
-  const kept = new Map();
-  /** @type {Map<string, Set<string>>} */
-  const faked = new Map();
-  let cases = 0;
-  for (const session of sessions) {
-    for (const item of session.cases) {
-      cases += 1;
-      collect(item.request.body, "body", id, kept, faked);
-      collect(item.request.query, "query", id, kept, faked);
-      collect(pathValues(item.request.path, item.request.route), `path ${item.request.route}`, id, kept, faked);
-      if (item.action) collect(item.action.page.split("/").filter((segment) => segment !== "_"), "page", id, kept, faked);
-    }
-  }
+  const { cases, kept, faked } = keptValues(sessions, new RegExp(capture.idPattern));
   const rows = [...kept].map(([key, values]) => ({ key, distinct: values.size, values: [...values].sort((a, b) => b[1] - a[1]).map(([value]) => value) }))
     .sort((a, b) => b.distinct - a.distinct || a.key.localeCompare(b.key));
   const replaced = await replacedNow(rows, capture);

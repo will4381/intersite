@@ -11,6 +11,7 @@ use std::path::Path;
 use crate::{Answer, Finding, Request};
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct File {
     path: String,
     lines: Vec<u32>,
@@ -42,10 +43,18 @@ fn called(dir: &str, root: &Path) -> HashMap<String, HashSet<String>> {
     out
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Options {
+    /// The NODE_V8_COVERAGE folder the test run wrote.
+    dir: String,
+    files: Vec<File>,
+}
+
 pub fn run(request: &Request) -> Result<Answer, String> {
-    let files: Vec<File> = serde_json::from_value(request.options["files"].clone()).map_err(|e| e.to_string())?;
+    let Options { dir, files } = request.options()?;
     let root = Path::new(&request.root);
-    let called = called(request.options["dir"].as_str().unwrap_or(""), root);
+    let called = called(&dir, root);
     if called.is_empty() {
         return Err("the test command ran none of the project's code under V8 coverage: this gate needs tests that run the project's JavaScript or TypeScript in Node (node --test, vitest, jest, mocha), not a browser, Bun or Deno".into());
     }
@@ -56,10 +65,15 @@ pub fn run(request: &Request) -> Result<Answer, String> {
             let Some(text) = crate::text::read(&request.root, &file.path) else { return (0, vec![]) };
             let Some(shape) = crate::functions::read(&file.path, &text) else { return (0, vec![]) };
             let ran = called.get(&file.path).unwrap_or(&none);
-            let changed: Vec<&crate::functions::Func> = shape.funcs.iter().filter(|f| !f.callback && !f.empty && file.lines.iter().any(|l| (f.line..=f.end_line).contains(l))).collect();
+            let changed: Vec<&crate::functions::Func> = shape
+                .funcs
+                .iter()
+                .filter(|f| !f.callback && !f.empty && file.lines.iter().any(|l| (f.line..=f.end_line).contains(l)))
+                .collect();
             let unrun: Vec<&&crate::functions::Func> = changed.iter().filter(|f| !ran.contains(&f.name)).collect();
             // A function inside one that never ran never ran either: the outer one is the finding.
-            let inside = |f: &crate::functions::Func| unrun.iter().any(|g| !std::ptr::eq(**g, f) && g.line <= f.line && f.end_line <= g.end_line);
+            let inside =
+                |f: &crate::functions::Func| unrun.iter().any(|g| !std::ptr::eq(**g, f) && g.line <= f.line && f.end_line <= g.end_line);
             let findings = unrun
                 .iter()
                 .filter(|f| !inside(f))
@@ -67,7 +81,10 @@ pub fn run(request: &Request) -> Result<Answer, String> {
                     file: file.path.clone(),
                     line: f.line,
                     target: format!("{}:{}", file.path, f.name),
-                    message: format!("{}:{} {} runs in no test: add a test that calls it and checks what it returns or does", file.path, f.line, f.name),
+                    message: format!(
+                        "{}:{} {} runs in no test: add a test that calls it and checks what it returns or does",
+                        file.path, f.line, f.name
+                    ),
                 })
                 .collect();
             (changed.len(), findings)
@@ -76,7 +93,7 @@ pub fn run(request: &Request) -> Result<Answer, String> {
     let checked: usize = judged.iter().map(|(n, _)| n).sum();
     let mut findings: Vec<Finding> = judged.into_iter().flat_map(|(_, f)| f).collect();
     findings.sort_by(|a, b| a.file.cmp(&b.file).then(a.line.cmp(&b.line)));
-    Ok(Answer { findings, summary: format!("{checked} changed functions checked against the tests' V8 coverage"), data: None })
+    Ok(Answer::new(findings, format!("{checked} changed functions checked against the tests' V8 coverage")))
 }
 
 #[cfg(test)]

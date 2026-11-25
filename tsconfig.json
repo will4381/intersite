@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "strict": true,
+    "module": "nodenext",
+    "target": "es2024",
+    "types": ["node"],
+    "skipLibCheck": true
+  },
+  "include": ["bin", "capture", "cli", "collector", "gates", "lint", "replay", "shared", "track", "test"],
+  "exclude": ["test/**/fixtures", "lint/rules/*/examples"]
+}

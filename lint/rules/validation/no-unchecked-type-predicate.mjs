@@ -29,7 +29,7 @@ function hasShape(t) {
 /**
  * True when an expression only tests that `name` exists or is an object: `true`, `x`, `!!x`, `Boolean(x)`, `x != null`,
  * `typeof x === "object"`, joined with &&. Reading a field, `in`, or calling a helper is a real check.
- * @param {any} e @param {string} name
+ * @param {any} e @param {string} name @returns {boolean}
  */
 function shallow(e, name) {
   if (!e) return false;

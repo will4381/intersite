@@ -27,7 +27,7 @@ export const rule = defineRule({
   createOnce(context) {
     return {
       CallExpression(node) {
-        const [callback, deps] = node.arguments;
+        const [callback, deps] = /** @type {any[]} */ (node.arguments);
         if (!isHookCall(node, EFFECT) || !callback?.type.endsWith("FunctionExpression") || deps?.type !== "ArrayExpression" || !deps.elements.length) return;
         const component = enclosingFunction(node);
         if (!component) return;
@@ -35,7 +35,7 @@ export const rule = defineRule({
         const depNames = new Set(deps.elements.map(root));
         /** @type {any[]} */
         const calls = [];
-        /** Only setter calls, optionally under ifs. @param {any} s */
+        /** Only setter calls, optionally under ifs. @param {any} s @returns {boolean} */
         const onlySets = (s) => {
           if (!s) return true;
           if (s.type === "BlockStatement") return s.body.every(onlySets);

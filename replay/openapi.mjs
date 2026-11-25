@@ -2,13 +2,10 @@
 // An OpenAPI 3 document as contract evidence, so `intersite replay --mode contract --openapi <file>` lints the
 // documented contract with no server and no traffic: one synthetic case per documented JSON answer, its shape built
 // from the schema, and the request body built from the request schema.
-import { shapeOf } from "../shared/shape.mjs";
+import { isObject, shapeOf } from "../shared/shape.mjs";
 
 const METHODS = ["get", "put", "post", "patch", "delete"];
 const DEPTH = 12;
-
-/** @param {unknown} value @returns {value is Record<string, any>} */
-const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 
 /**
  * The object a local `$ref` (`#/components/schemas/Order`) points at, or undefined.
@@ -39,6 +36,11 @@ function example(doc, schema, refs = []) {
   if (Array.isArray(schema.allOf)) return Object.assign({}, ...schema.allOf.map((part) => example(doc, part, refs)).filter(isObject));
   const variants = schema.oneOf ?? schema.anyOf;
   if (Array.isArray(variants)) return example(doc, variants.find((variant) => variant?.type !== "null") ?? variants[0], refs);
+  return typedExample(doc, schema, refs);
+}
+
+/** example() for a schema by its `type`. @param {Record<string, any>} doc @param {Record<string, any>} schema @param {string[]} refs */
+function typedExample(doc, schema, refs) {
   const type = Array.isArray(schema.type) ? schema.type.find((name) => name !== "null") : schema.type;
   if (type === "object" || isObject(schema.properties)) {
     return Object.fromEntries(Object.entries(schema.properties ?? {}).map(([key, property]) => [key, example(doc, property, refs)]));

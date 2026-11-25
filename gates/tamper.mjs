@@ -6,8 +6,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { defaults, loadConfig } from "../shared/config.mjs";
-import { located, runCore } from "./core.mjs";
+import { BASELINE, OLD_BASELINES, defaults } from "../shared/config.mjs";
+import { fromEngine, runCore } from "./core.mjs";
 import { changes, resolveBase, showMany } from "./lib.mjs";
 
 /** Files that hold an evaluator's settings; core/tamper.rs decides exactly what each one is. */
@@ -18,25 +18,23 @@ const SOURCE = /\.(?:[cm]?[jt]sx?|swift)$/;
 
 /**
  * What core/tamper.rs needs besides the files: the defaults to compare a config against when it leaves a list out,
- * and the baseline files the config names.
- * @param {import("../shared/config.mjs").Config} config
+ * and the baseline files (today's and the ones older versions wrote).
  */
-export const tamperContext = (config) => ({
+export const TAMPER_CONTEXT = {
   defaults: { run: defaults.gates.run, packs: defaults.lint.packs, testPaths: defaults.gates.testPaths },
-  baselines: [config.lint.baseline, config.gates.baseline],
-});
+  baselines: [BASELINE, ...Object.values(OLD_BASELINES)],
+};
 
 /**
  * @param {import("./lib.mjs").GateOptions} options
  * @returns {Promise<import("./lib.mjs").GateResult>}
  */
 export async function tamper({ cwd, base }) {
-  const config = loadConfig(cwd);
-  const context = tamperContext(config);
+  const context = TAMPER_CONTEXT;
   const sha = resolveBase(cwd, base);
   const now = (/** @type {string} */ path) => (existsSync(join(cwd, path)) ? readFileSync(join(cwd, path), "utf8") : undefined);
   const list = changes(cwd, sha).filter((c) => (c.status !== "A" && (EVALUATOR.test(c.from) || context.baselines.includes(c.from))) || (SOURCE.test(c.path) && c.status !== "D" && PRAGMA.test(now(c.path) ?? "")));
   const before = showMany(cwd, sha, list.map((c) => c.from));
   const answer = runCore({ command: "tamper", root: cwd, options: { context, changes: list.map((c) => ({ path: c.path, before: before.get(c.from) ?? "", now: c.status === "D" ? null : now(c.path) ?? null })) } });
-  return { findings: answer.findings.map((f) => ({ ...located(f), target: f.target, message: f.message })), summary: answer.summary };
+  return { findings: fromEngine(answer.findings), summary: answer.summary };
 }

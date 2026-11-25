@@ -4,7 +4,7 @@
 // core/special.rs.
 import { posix } from "node:path";
 
-import { located, runCore } from "./core.mjs";
+import { fromEngine, runCore } from "./core.mjs";
 import { NOT_PRODUCT, SKIP, changeOf, matches } from "./lib.mjs";
 
 const CODE = /\.(?:[cm]?[jt]sx?|swift)$/;
@@ -22,5 +22,5 @@ export async function specialCase({ cwd, base, testPaths }) {
   const production = code.filter((f) => !isTest(f) && !NOT_PRODUCT.test(f) && !SETUP.test(f));
   if (!production.length) return { findings: [], summary: "no added production code" };
   const answer = runCore({ command: "special-case", root: top, files: production, added: Object.fromEntries(added), prefix, options: { tests, production } });
-  return { findings: answer.findings.map((f) => ({ ...located(f, inProject), target: f.target, message: f.message })), summary: answer.summary };
+  return { findings: fromEngine(answer.findings, prefix), summary: answer.summary };
 }

@@ -14,7 +14,7 @@ const modifiers = new Set(["only", "concurrent", "sequential", "serial", "fails"
 /**
  * True for `it(...)`/`test(...)`, their modifiers (`it.only`, `test.concurrent`) and tables (`it.each(rows)(...)`,
  * test.each`rows`(...)), but not hooks, groups, `.todo` or `.skip`.
- * @param {any} callee
+ * @param {any} callee @returns {boolean}
  */
 export function isTestCall(callee) {
   if (callee.type === "CallExpression" || callee.type === "TaggedTemplateExpression") {
@@ -30,6 +30,9 @@ export function isTestCall(callee) {
   );
 }
 
+/** A test with its body: `it("…", () => …)`. @param {any} node a CallExpression */
+export const isTest = (node) => isTestCall(node.callee) && node.arguments.some((/** @type {any} */ a) => a.type.endsWith("FunctionExpression"));
+
 /**
  * True when any name in the callee chain looks like an assertion: `expect(x)`, `assert.equal`, `t.assert.ok`,
  * `request.expect(200)`, `expectTypeOf`.
@@ -42,6 +45,43 @@ export function isAssertion(callee) {
     if (node.type !== "MemberExpression" && node.type !== "CallExpression") return false;
   }
   return false;
+}
+
+/**
+ * Visitors that follow each test and the outermost assertions inside it: `test(node)` gives the frame kept for a test
+ * call, `assertion(node, frame)` sees each assertion that is not inside another, and `done(frame, node)` the test's end.
+ * @template T
+ * @param {any} context
+ * @param {{ test: (node: any) => T, assertion: (node: any, frame: T) => void, done?: (frame: T, node: any) => void }} on
+ */
+export function testAssertions(context, { test, assertion, done }) {
+  /** @type {T[]} */
+  let tests = [];
+  /** @type {any[]} the assertion being visited; calls inside it (`expect(x)`, `expect.any()`) are part of it */
+  let inside = [];
+  return {
+    before() {
+      tests = [];
+      inside = [];
+      return hasTestCalls(context);
+    },
+    /** @param {any} node */
+    CallExpression(node) {
+      if (isTest(node)) {
+        tests.push(test(node));
+      } else if (!inside.length && tests.length && isAssertion(node.callee)) {
+        inside.push(node);
+        assertion(node, /** @type {T} */ (tests.at(-1)));
+      }
+    },
+    /** @param {any} node */
+    "CallExpression:exit"(node) {
+      if (inside.at(-1) === node) inside.pop();
+      if (!isTest(node)) return;
+      const frame = /** @type {T} */ (tests.pop());
+      done?.(frame, node);
+    },
+  };
 }
 
 /** `assert.fail()`, `expect.fail()`, `expect.unreachable()`, Jest's global `fail()`: a call that fails the test where it runs. @param {any} node */
@@ -123,7 +163,7 @@ export const rule = defineRule({
         functions.pop();
       },
       CallExpression(node) {
-        if (isTestCall(node.callee) && node.arguments.some((/** @type {any} */ a) => a.type.endsWith("FunctionExpression"))) {
+        if (isTest(node)) {
           open.push({ node, asserted: false, calls: new Set() });
         } else if (isAssertion(node.callee) || isDiscardedCheck(node)) {
           for (const frame of open) frame.asserted = true;

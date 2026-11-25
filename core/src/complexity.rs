@@ -158,16 +158,22 @@ fn judge(root: &str, file: &File, base: &Base) -> (usize, Vec<Finding>) {
     (checked, findings)
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Options {
+    files: Vec<File>,
+    #[serde(default)]
+    base: Vec<BaseFile>,
+}
+
 pub fn run(request: &Request) -> Result<Answer, String> {
-    let read = |key: &str| request.options.get(key).cloned().unwrap_or(serde_json::Value::Array(vec![]));
-    let files: Vec<File> = serde_json::from_value(read("files")).map_err(|e| e.to_string())?;
-    let base: Vec<BaseFile> = serde_json::from_value(read("base")).map_err(|e| e.to_string())?;
+    let Options { files, base } = request.options()?;
     let base = Base::new(&request.root, &base);
     let judged: Vec<(usize, Vec<Finding>)> = files.par_iter().map(|f| judge(&request.root, f, &base)).collect();
     let checked: usize = judged.iter().map(|(n, _)| n).sum();
     let mut findings: Vec<Finding> = judged.into_iter().flat_map(|(_, f)| f).collect();
     findings.sort_by(|a, b| a.file.cmp(&b.file).then(a.line.cmp(&b.line)));
-    Ok(Answer { findings, summary: format!("{checked} changed functions checked"), data: None })
+    Ok(Answer::new(findings, format!("{checked} changed functions checked")))
 }
 
 #[cfg(test)]

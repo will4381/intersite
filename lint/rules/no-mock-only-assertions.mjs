@@ -1,7 +1,7 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { hasTestCalls, isAssertion, isTestCall } from "./require-assertion.mjs";
+import { testAssertions } from "./require-assertion.mjs";
 
 /**
  * `toHaveBeenCalledWith`, `toHaveBeenCalledOnce`, `toHaveReturnedWith`, `fn.mock.calls`, node:test `fn.mock.callCount()`,
@@ -22,35 +22,18 @@ export const rule = defineRule({
     },
   },
   createOnce(context) {
-    /** @type {{ node: any, total: number, mock: number }[]} */
-    let tests = [];
-    /** @type {any[]} the assertion being visited; calls inside it (`expect(x)`, `expect.any()`) are part of it */
-    let inside = [];
-    return {
-      before() {
-        tests = [];
-        inside = [];
-        return hasTestCalls(context);
+    return testAssertions(context, {
+      test: () => ({ total: 0, mock: 0 }),
+      assertion(node, frame) {
+        const text = context.sourceCode.getText(node);
+        if (notCalled.test(text)) return;
+        frame.total++;
+        if (mockCheck.test(text)) frame.mock++;
       },
-      CallExpression(node) {
-        if (isTestCall(node.callee) && node.arguments.some((/** @type {any} */ a) => a.type.endsWith("FunctionExpression"))) {
-          tests.push({ node, total: 0, mock: 0 });
-        } else if (!inside.length && tests.length && isAssertion(node.callee)) {
-          inside.push(node);
-          const frame = /** @type {{ total: number, mock: number }} */ (tests.at(-1));
-          const text = context.sourceCode.getText(node);
-          if (notCalled.test(text)) return;
-          frame.total++;
-          if (mockCheck.test(text)) frame.mock++;
-        }
-      },
-      "CallExpression:exit"(node) {
-        if (inside.at(-1) === node) inside.pop();
-        if (tests.at(-1)?.node !== node) return;
-        const frame = /** @type {{ node: any, total: number, mock: number }} */ (tests.pop());
+      done(frame, node) {
         if (frame.total > 0 && frame.mock === frame.total) context.report({ node, messageId: "mockOnly" });
       },
-    };
+    });
   },
 });
 

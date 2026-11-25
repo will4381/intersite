@@ -95,6 +95,19 @@ test("Express routes mounted from another file get the mount's prefix; a mount t
   assert.deepEqual(lines(out), ["components/x.tsx:3 no route handles /api/order: call an existing route or add the handler", "components/x.tsx:4 GET /api/orders: the route handles only POST"]);
 });
 
+test("a router in a .tsx or .jsx file is followed like any other", async () => {
+  const r = repo({
+    "package.json": JSON.stringify({ name: "api", dependencies: { express: "4.0.0", next: "15.0.0" } }),
+    "app/page.tsx": "export default function Home() { return null; }\n",
+    "server/admin.tsx": 'import { Router } from "express";\nconst router = Router();\nrouter.get("/stats", (req, res) => res.json({}));\nexport default router;\n',
+    "server/index.ts": 'import express from "express";\nimport admin from "./admin";\nconst app = express();\napp.use("/api/admin", admin);\n',
+  });
+  r.write({ "components/x.tsx": 'export const a = () => fetch("/api/admin/stats");\nexport const b = () => fetch("/api/admin/stat");\n' });
+  const { code, out } = await run(r.cwd, ["routes"]);
+  assert.equal(code, 1);
+  assert.deepEqual(lines(out), ["components/x.tsx:2 no route handles /api/admin/stat: call an existing route or add the handler"]);
+});
+
 test("a middleware that rewrites turns page-link checks off, and a project with no route source is not checked", async () => {
   const r = repo({ ...next, "middleware.ts": "export function middleware(req) { return NextResponse.rewrite(new URL('/x', req.url)); }\n" });
   r.write({ "components/nav.tsx": 'export const Nav = () => <a href="/anything">x</a>;\n' });

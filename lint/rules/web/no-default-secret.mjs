@@ -15,7 +15,7 @@ const isConstant = (node) =>
   (node?.type === "Literal" && typeof node.value === "string" && node.value !== "") ||
   (node?.type === "TemplateLiteral" && !node.expressions.length && node.quasis[0].value.cooked !== "");
 
-/** A non-empty string written in the source, here or in the `const` it names, or `new TextEncoder().encode(it)`. @param {any} node @param {any} sourceCode @param {number} [depth] */
+/** A non-empty string written in the source, here or in the `const` it names, or `new TextEncoder().encode(it)`. @param {any} node @param {any} sourceCode @param {number} [depth] @returns {boolean} */
 function isWrittenSecret(node, sourceCode, depth = 0) {
   node = unwrap(node);
   if (calleeName(node) === "encode" && node.arguments.length === 1) node = unwrap(node.arguments[0]);
@@ -34,7 +34,7 @@ function envName(node) {
   return undefined;
 }
 
-/** `process.env.JWT_SECRET`, also inside `process.env.A || process.env.B`, behind `as string` or `!`. @param {any} node */
+/** `process.env.JWT_SECRET`, also inside `process.env.A || process.env.B`, behind `as string` or `!`. @param {any} node @returns {boolean} */
 function isSecretEnv(node) {
   node = unwrap(node);
   if (node?.type === "LogicalExpression") return node.operator !== "&&" && (isSecretEnv(node.left) || isSecretEnv(node.right));
@@ -93,7 +93,7 @@ export const rule = defineRule({
       CallExpression(node) {
         const name = calleeName(node);
         const args = /** @type {any[]} */ (node.arguments);
-        if (/^(sign|verify)$/.test(name) && /^(jwt|jsonwebtoken|jws)$/i.test(node.callee.object?.name ?? "")) written(args[1]);
+        if (/^(sign|verify)$/.test(name) && /^(jwt|jsonwebtoken|jws)$/i.test(/** @type {any} */ (node.callee).object?.name ?? "")) written(args[1]);
         else if (name === "createHmac" || name === "jwtVerify") written(args[1]);
         else if (name === "sign" && args.length === 1 && /SignJWT|setProtectedHeader/.test(context.sourceCode.getText(node.callee))) written(args[0]);
         else if (name === "cookieParser") written(args[0]);

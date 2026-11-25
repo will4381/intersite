@@ -1,27 +1,13 @@
 // @ts-check
 // intersite stats [--json]: per gate and lint rule, the findings `check` raised, how many were fixed and how many
 // acknowledged, from .intersite/ledger.jsonl and every acknowledgment. The counting is in core/stats.rs.
-import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 
 import { runCore } from "../gates/core.mjs";
-import { GateError } from "../gates/lib.mjs";
+import { GateError, ackTrailers } from "../gates/lib.mjs";
 import { loadConfig } from "../shared/config.mjs";
-
-/**
- * Every `Intersite-Ack: <gate>: <why>` trailer in the repository's history, one per commit and gate.
- * @param {string} cwd
- */
-function trailers(cwd) {
-  const log = spawnSync("git", ["log", "--all", "--format=%H%x09%(trailers:key=Intersite-Ack,valueonly,separator=%x1f)"], { cwd, encoding: "utf8", maxBuffer: 1 << 30 });
-  if (log.status !== 0) return [];
-  return log.stdout.split("\n").flatMap((line) => {
-    const [sha, values = ""] = line.split("\t");
-    return values.split("\x1f").map((value) => value.split(":")[0].trim()).filter(Boolean).map((gate) => ({ sha, gate }));
-  });
-}
 
 /** @param {number} part @param {number} whole */
 const percent = (part, whole) => `${Math.round((100 * part) / Math.max(whole, 1))}%`;
@@ -39,7 +25,7 @@ export default async function stats(argv, { cwd }) {
   const ledger = existsSync(ledgerPath) ? readFileSync(ledgerPath, "utf8") : "";
   let answer;
   try {
-    answer = runCore({ command: "stats", root: cwd, options: { ledger, acknowledged: loadConfig(cwd).gates.acknowledged, trailers: trailers(cwd) } });
+    answer = runCore({ command: "stats", root: cwd, options: { ledger, acknowledged: loadConfig(cwd).gates.acknowledged, trailers: ackTrailers(cwd, "--all").map(({ sha, gate }) => ({ sha, gate })) } });
   } catch (error) {
     if (!(error instanceof GateError)) throw error;
     console.error(`stats: ${error.message}`);

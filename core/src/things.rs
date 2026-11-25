@@ -4,13 +4,11 @@
 //! a local that shadows an import is not a use of it. A mutation is code that changes a field of a class instance
 //! from outside the class: an assignment, `++`, `delete` or a mutating call (`push`, `set`…) on the field.
 
-use oxc_allocator::Allocator;
 use oxc_ast::ast::*;
 use oxc_ast_visit::{walk, Visit};
 use oxc_ecmascript::BoundNames;
-use oxc_parser::Parser;
 use oxc_semantic::{Scoping, SemanticBuilder};
-use oxc_span::{GetSpan, SourceType};
+use oxc_span::GetSpan;
 use oxc_syntax::symbol::SymbolId;
 use std::collections::HashMap;
 
@@ -135,7 +133,8 @@ pub struct FileModel {
     pub calls: Vec<Call>,
 }
 
-const MUTATORS: [&str; 14] = ["push", "pop", "shift", "unshift", "splice", "sort", "reverse", "fill", "copyWithin", "set", "delete", "clear", "add", "append"];
+const MUTATORS: [&str; 14] =
+    ["push", "pop", "shift", "unshift", "splice", "sort", "reverse", "fill", "copyWithin", "set", "delete", "clear", "add", "append"];
 
 fn type_name<'b>(t: &'b TSType<'b>) -> Option<&'b IdentifierReference<'b>> {
     match t {
@@ -198,7 +197,9 @@ fn forwards(body: &FunctionBody) -> bool {
 /// `this.items`, the field name.
 fn this_field<'b>(e: &'b Expression<'b>) -> Option<&'b str> {
     match unwrap_expr(e) {
-        Expression::StaticMemberExpression(m) if matches!(unwrap_expr(&m.object), Expression::ThisExpression(_)) => Some(m.property.name.as_str()),
+        Expression::StaticMemberExpression(m) if matches!(unwrap_expr(&m.object), Expression::ThisExpression(_)) => {
+            Some(m.property.name.as_str())
+        }
         _ => None,
     }
 }
@@ -217,10 +218,14 @@ fn read_class(c: &oxc_ast::ast::Class, lines: &Lines) -> Class {
             ClassElement::PropertyDefinition(p) if !p.r#static => {
                 class.decorated |= !p.decorators.is_empty();
                 // A property holding a function is a method written as an arrow.
-                if matches!(p.value.as_ref().map(unwrap_expr), Some(Expression::ArrowFunctionExpression(_) | Expression::FunctionExpression(_))) {
+                if matches!(
+                    p.value.as_ref().map(unwrap_expr),
+                    Some(Expression::ArrowFunctionExpression(_) | Expression::FunctionExpression(_))
+                ) {
                     continue;
                 }
-                let public = !matches!(p.key, PropertyKey::PrivateIdentifier(_)) && !matches!(p.accessibility, Some(TSAccessibility::Private | TSAccessibility::Protected));
+                let public = !matches!(p.key, PropertyKey::PrivateIdentifier(_))
+                    && !matches!(p.accessibility, Some(TSAccessibility::Private | TSAccessibility::Protected));
                 if let Some(name) = p.key.static_name() {
                     field(&name, at(p.span.start), public, &mut class);
                 }
@@ -244,7 +249,9 @@ fn read_class(c: &oxc_ast::ast::Class, lines: &Lines) -> Class {
                             if let Statement::ExpressionStatement(e) = s {
                                 if let Expression::AssignmentExpression(a) = &e.expression {
                                     if let Some(member) = a.left.as_member_expression() {
-                                        if let (Expression::ThisExpression(_), Some(name)) = (&member.object(), member.static_property_name()) {
+                                        if let (Expression::ThisExpression(_), Some(name)) =
+                                            (&member.object(), member.static_property_name())
+                                        {
                                             field(name, at(a.span.start), true, &mut class);
                                         }
                                     }
@@ -261,7 +268,8 @@ fn read_class(c: &oxc_ast::ast::Class, lines: &Lines) -> Class {
     for element in &c.body.body {
         let (name, private, function, kind) = match element {
             ClassElement::MethodDefinition(m) if !m.r#static && m.kind != MethodDefinitionKind::Constructor => {
-                let private = matches!(m.key, PropertyKey::PrivateIdentifier(_)) || matches!(m.accessibility, Some(TSAccessibility::Private | TSAccessibility::Protected));
+                let private = matches!(m.key, PropertyKey::PrivateIdentifier(_))
+                    || matches!(m.accessibility, Some(TSAccessibility::Private | TSAccessibility::Protected));
                 (m.key.static_name(), private, Some(&*m.value), m.kind)
             }
             _ => continue,
@@ -290,7 +298,8 @@ fn read_class(c: &oxc_ast::ast::Class, lines: &Lines) -> Class {
         }
         let mut uses = Uses(&fields, false);
         uses.visit_function_body(body);
-        let wrapper = matches!(body.statements.as_slice(), [Statement::ReturnStatement(r)] if r.argument.as_ref().and_then(this_field).is_some());
+        let wrapper =
+            matches!(body.statements.as_slice(), [Statement::ReturnStatement(r)] if r.argument.as_ref().and_then(this_field).is_some());
         let line = function.map_or(0, |f| at(f.span.start));
         class.methods.push((name.to_string(), line, private, uses.1 && !wrapper));
     }
@@ -331,6 +340,21 @@ impl Walker<'_> {
         self.symbol_of(id).and_then(|s| self.origins.get(&s).cloned())
     }
 
+    /// A use of `member` of the namespace `id` names (`ns.member`); false when `id` is not a namespace.
+    fn namespace_use(&mut self, id: &IdentifierReference, member: &str, type_only: bool) -> bool {
+        let Some(origin) = self.origin_of(id).filter(|o| self.is_namespace(o)) else { return false };
+        let line = self.line(id.span.start);
+        self.model.uses.push(Use {
+            from: self.current,
+            to: origin,
+            member: Some(member.to_string()),
+            line,
+            type_only,
+            scope: self.scope(),
+        });
+        true
+    }
+
     fn is_namespace(&self, origin: &Origin) -> bool {
         matches!(origin, Origin::Import(b) if self.model.bindings[*b].imported == Imported::Namespace)
     }
@@ -346,31 +370,32 @@ impl Walker<'_> {
                 }
                 self.origins.get(&symbol).filter(|o| !self.is_namespace(o)).map(|o| Typed::Value(o.clone()))
             }
-            Expression::StaticMemberExpression(m) if matches!(unwrap_expr(&m.object), Expression::ThisExpression(_)) => self.props.last()?.get(m.property.name.as_str()).map(|o| Typed::Instance(o.clone())),
+            Expression::StaticMemberExpression(m) if matches!(unwrap_expr(&m.object), Expression::ThisExpression(_)) => {
+                self.props.last()?.get(m.property.name.as_str()).map(|o| Typed::Instance(o.clone()))
+            }
             _ => None,
         }
     }
 
     /// The field a member chain reaches on a known instance: `queue.items[0].x` is (queue, items).
-    fn reached(&self, e: &Expression) -> Option<(Typed, String)> {
-        let member = unwrap_expr(e).as_member_expression()?;
+    fn reached(&self, member: &MemberExpression) -> Option<(Typed, String)> {
         if let MemberExpression::StaticMemberExpression(m) = member {
             if let Some(t) = self.typed(&m.object) {
                 return Some((t, m.property.name.to_string()));
             }
         }
-        self.reached(member.object())
+        self.reached(unwrap_expr(member.object()).as_member_expression()?)
     }
 
-    fn mutation(&mut self, target: &Expression, span: oxc_span::Span) {
-        if let Some((base, field)) = self.reached(target) {
-            let mut code: String = self.src[span.start as usize..span.end as usize].split_whitespace().collect::<Vec<_>>().join(" ");
-            if code.chars().count() > 60 {
-                code = code.chars().take(57).collect::<String>() + "…";
-            }
-            let line = self.line(span.start);
-            self.model.mutations.push(Mutation { from: self.current, base, field, line, code });
+    /// A write through `member`, when it reaches a field of a known instance; `span` is the code shown.
+    fn mutation(&mut self, member: &MemberExpression, span: oxc_span::Span) {
+        let Some((base, field)) = self.reached(member) else { return };
+        let mut code: String = self.src[span.start as usize..span.end as usize].split_whitespace().collect::<Vec<_>>().join(" ");
+        if code.chars().count() > 60 {
+            code = code.chars().take(57).collect::<String>() + "…";
         }
+        let line = self.line(span.start);
+        self.model.mutations.push(Mutation { from: self.current, base, field, line, code });
     }
 
     fn class_of(&self, t: &TSTypeAnnotation) -> Option<Origin> {
@@ -410,14 +435,19 @@ impl<'a> Visit<'a> for Walker<'_> {
             return;
         }
         let line = self.line(it.span.start);
-        self.model.uses.push(Use { from: self.current, to: origin, member: None, line, type_only: reference.is_type() && !reference.is_value(), scope: self.scope() });
+        self.model.uses.push(Use {
+            from: self.current,
+            to: origin,
+            member: None,
+            line,
+            type_only: reference.is_type() && !reference.is_value(),
+            scope: self.scope(),
+        });
     }
 
     fn visit_static_member_expression(&mut self, it: &StaticMemberExpression<'a>) {
         if let Expression::Identifier(id) = &it.object {
-            if let Some(origin) = self.origin_of(id).filter(|o| self.is_namespace(o)) {
-                let line = self.line(id.span.start);
-                self.model.uses.push(Use { from: self.current, to: origin, member: Some(it.property.name.to_string()), line, type_only: false, scope: self.scope() });
+            if self.namespace_use(id, &it.property.name, false) {
                 return;
             }
         }
@@ -426,9 +456,7 @@ impl<'a> Visit<'a> for Walker<'_> {
 
     fn visit_ts_qualified_name(&mut self, it: &TSQualifiedName<'a>) {
         if let TSTypeName::IdentifierReference(id) = &it.left {
-            if let Some(origin) = self.origin_of(id).filter(|o| self.is_namespace(o)) {
-                let line = self.line(id.span.start);
-                self.model.uses.push(Use { from: self.current, to: origin, member: Some(it.right.name.to_string()), line, type_only: true, scope: self.scope() });
+            if self.namespace_use(id, &it.right.name, true) {
                 return;
             }
         }
@@ -437,9 +465,7 @@ impl<'a> Visit<'a> for Walker<'_> {
 
     fn visit_jsx_member_expression(&mut self, it: &JSXMemberExpression<'a>) {
         if let JSXMemberExpressionObject::IdentifierReference(id) = &it.object {
-            if let Some(origin) = self.origin_of(id).filter(|o| self.is_namespace(o)) {
-                let line = self.line(id.span.start);
-                self.model.uses.push(Use { from: self.current, to: origin, member: Some(it.property.name.to_string()), line, type_only: false, scope: self.scope() });
+            if self.namespace_use(id, &it.property.name, false) {
                 return;
             }
         }
@@ -448,7 +474,8 @@ impl<'a> Visit<'a> for Walker<'_> {
 
     fn visit_variable_declarator(&mut self, it: &VariableDeclarator<'a>) {
         if let BindingPattern::BindingIdentifier(id) = &it.id {
-            let class = it.type_annotation.as_ref().and_then(|t| self.class_of(t)).or_else(|| it.init.as_ref().and_then(|e| self.new_of(e)));
+            let class =
+                it.type_annotation.as_ref().and_then(|t| self.class_of(t)).or_else(|| it.init.as_ref().and_then(|e| self.new_of(e)));
             if let (Some(symbol), Some(class)) = (id.symbol_id.get(), class) {
                 self.typed.insert(symbol, class);
             }
@@ -470,14 +497,17 @@ impl<'a> Visit<'a> for Walker<'_> {
         for element in &it.body.body {
             match element {
                 ClassElement::PropertyDefinition(p) => {
-                    let class = p.type_annotation.as_ref().and_then(|t| self.class_of(t)).or_else(|| p.value.as_ref().and_then(|e| self.new_of(e)));
+                    let class =
+                        p.type_annotation.as_ref().and_then(|t| self.class_of(t)).or_else(|| p.value.as_ref().and_then(|e| self.new_of(e)));
                     if let (Some(name), Some(class)) = (p.key.static_name(), class) {
                         props.insert(name.to_string(), class);
                     }
                 }
                 ClassElement::MethodDefinition(m) if m.kind == MethodDefinitionKind::Constructor => {
                     for p in &m.value.params.items {
-                        if let (BindingPattern::BindingIdentifier(id), Some(class)) = (&p.pattern, p.type_annotation.as_ref().and_then(|t| self.class_of(t))) {
+                        if let (BindingPattern::BindingIdentifier(id), Some(class)) =
+                            (&p.pattern, p.type_annotation.as_ref().and_then(|t| self.class_of(t)))
+                        {
                             if p.accessibility.is_some() || p.readonly {
                                 props.insert(id.name.to_string(), class);
                             }
@@ -494,25 +524,23 @@ impl<'a> Visit<'a> for Walker<'_> {
 
     fn visit_assignment_expression(&mut self, it: &AssignmentExpression<'a>) {
         if let Some(member) = it.left.as_member_expression() {
-            if let Some((base, field)) = self.reached_member(member) {
-                self.push_mutation(base, field, it.left.span());
-            }
+            self.mutation(member, it.left.span());
         }
         walk::walk_assignment_expression(self, it);
     }
 
     fn visit_update_expression(&mut self, it: &UpdateExpression<'a>) {
         if let Some(member) = it.argument.as_member_expression() {
-            if let Some((base, field)) = self.reached_member(member) {
-                self.push_mutation(base, field, it.span);
-            }
+            self.mutation(member, it.span);
         }
         walk::walk_update_expression(self, it);
     }
 
     fn visit_unary_expression(&mut self, it: &UnaryExpression<'a>) {
-        if it.operator == oxc_syntax::operator::UnaryOperator::Delete {
-            self.mutation(&it.argument, it.argument.span());
+        if let Some(member) =
+            unwrap_expr(&it.argument).as_member_expression().filter(|_| it.operator == oxc_syntax::operator::UnaryOperator::Delete)
+        {
+            self.mutation(member, it.argument.span());
         }
         walk::walk_unary_expression(self, it);
     }
@@ -524,34 +552,11 @@ impl<'a> Visit<'a> for Walker<'_> {
                 let scope = self.scope();
                 self.model.calls.push(Call { from: self.current, base, method: m.property.name.to_string(), line, scope });
             }
-            if MUTATORS.contains(&m.property.name.as_str()) {
-                if let Some((base, field)) = self.reached(&m.object) {
-                    let span = oxc_span::Span::new(it.span.start, m.property.span.end);
-                    self.push_mutation(base, field, span);
-                }
+            if let Some(member) = unwrap_expr(&m.object).as_member_expression().filter(|_| MUTATORS.contains(&m.property.name.as_str())) {
+                self.mutation(member, oxc_span::Span::new(it.span.start, m.property.span.end));
             }
         }
         walk::walk_call_expression(self, it);
-    }
-}
-
-impl Walker<'_> {
-    fn reached_member(&self, member: &MemberExpression) -> Option<(Typed, String)> {
-        if let MemberExpression::StaticMemberExpression(m) = member {
-            if let Some(t) = self.typed(&m.object) {
-                return Some((t, m.property.name.to_string()));
-            }
-        }
-        self.reached(member.object())
-    }
-
-    fn push_mutation(&mut self, base: Typed, field: String, span: oxc_span::Span) {
-        let mut code: String = self.src[span.start as usize..span.end as usize].split_whitespace().collect::<Vec<_>>().join(" ");
-        if code.chars().count() > 60 {
-            code = code.chars().take(57).collect::<String>() + "…";
-        }
-        let line = self.line(span.start);
-        self.model.mutations.push(Mutation { from: self.current, base, field, line, code });
     }
 }
 
@@ -560,8 +565,24 @@ fn imported_name(n: &ModuleExportName) -> String {
 }
 
 /// Adds a thing, and the symbol that names it.
-fn thing(model: &mut FileModel, origins: &mut HashMap<SymbolId, Origin>, lines: &Lines, id: Option<&BindingIdentifier>, name: &str, kind: ThingKind, at: u32) -> usize {
-    model.things.push(Thing { name: name.to_string(), kind, line: lines.line(at as usize), class: None, instance_of: None, forwards: false, component: false });
+fn thing(
+    model: &mut FileModel,
+    origins: &mut HashMap<SymbolId, Origin>,
+    lines: &Lines,
+    id: Option<&BindingIdentifier>,
+    name: &str,
+    kind: ThingKind,
+    at: u32,
+) -> usize {
+    model.things.push(Thing {
+        name: name.to_string(),
+        kind,
+        line: lines.line(at as usize),
+        class: None,
+        instance_of: None,
+        forwards: false,
+        component: false,
+    });
     let index = model.things.len() - 1;
     if let Some(symbol) = id.and_then(|id| id.symbol_id.get()) {
         origins.insert(symbol, Origin::Local(index));
@@ -570,7 +591,13 @@ fn thing(model: &mut FileModel, origins: &mut HashMap<SymbolId, Origin>, lines: 
 }
 
 /// The things a declaration adds, each with the span whose code is its own.
-fn declare(model: &mut FileModel, origins: &mut HashMap<SymbolId, Origin>, lines: &Lines, jsx: bool, decl: &Declaration) -> Vec<(oxc_span::Span, usize)> {
+fn declare(
+    model: &mut FileModel,
+    origins: &mut HashMap<SymbolId, Origin>,
+    lines: &Lines,
+    jsx: bool,
+    decl: &Declaration,
+) -> Vec<(oxc_span::Span, usize)> {
     let mut out = vec![];
     match decl {
         Declaration::FunctionDeclaration(f) => {
@@ -616,9 +643,15 @@ fn declare(model: &mut FileModel, origins: &mut HashMap<SymbolId, Origin>, lines
                 out.push((d.span, i));
             }
         }
-        Declaration::TSTypeAliasDeclaration(t) => out.push((t.span, thing(model, origins, lines, Some(&t.id), &t.id.name, ThingKind::Type, t.span.start))),
-        Declaration::TSInterfaceDeclaration(t) => out.push((t.span, thing(model, origins, lines, Some(&t.id), &t.id.name, ThingKind::Type, t.span.start))),
-        Declaration::TSEnumDeclaration(t) => out.push((t.span, thing(model, origins, lines, Some(&t.id), &t.id.name, ThingKind::Value, t.span.start))),
+        Declaration::TSTypeAliasDeclaration(t) => {
+            out.push((t.span, thing(model, origins, lines, Some(&t.id), &t.id.name, ThingKind::Type, t.span.start)))
+        }
+        Declaration::TSInterfaceDeclaration(t) => {
+            out.push((t.span, thing(model, origins, lines, Some(&t.id), &t.id.name, ThingKind::Type, t.span.start)))
+        }
+        Declaration::TSEnumDeclaration(t) => {
+            out.push((t.span, thing(model, origins, lines, Some(&t.id), &t.id.name, ThingKind::Value, t.span.start)))
+        }
         _ => {}
     }
     out
@@ -626,158 +659,172 @@ fn declare(model: &mut FileModel, origins: &mut HashMap<SymbolId, Origin>, lines
 
 /// Reads one file, or None when it does not parse.
 pub fn read(path: &str, src: &str) -> Option<FileModel> {
-    let allocator = Allocator::default();
-    let parsed = Parser::new(&allocator, src, SourceType::from_path(path).unwrap_or_default()).parse();
-    if parsed.panicked {
-        return None;
-    }
-    let program = &parsed.program;
-    let semantic = SemanticBuilder::new().build(program).semantic;
-    let scoping = semantic.scoping();
-    let lines = Lines::new(src);
-    let mut model = FileModel::default();
-    let mut origins: HashMap<SymbolId, Origin> = HashMap::new();
-    let jsx = is_jsx_file(path);
-    let mut owners: Vec<Vec<(oxc_span::Span, usize)>> = Vec::new();
-    let mut pending_local_exports: Vec<(String, String)> = vec![];
-    for statement in &program.body {
-        let mut owned = vec![];
-        match statement {
-            Statement::ImportDeclaration(d) => {
-                for s in d.specifiers.iter().flatten() {
-                    let (local, imported) = match s {
-                        ImportDeclarationSpecifier::ImportSpecifier(s) => (&s.local, Imported::Name(imported_name(&s.imported))),
-                        ImportDeclarationSpecifier::ImportDefaultSpecifier(s) => (&s.local, Imported::Name("default".into())),
-                        ImportDeclarationSpecifier::ImportNamespaceSpecifier(s) => (&s.local, Imported::Namespace),
-                    };
-                    model.bindings.push(Binding { spec: d.source.value.to_string(), imported });
-                    if let Some(symbol) = local.symbol_id.get() {
-                        origins.insert(symbol, Origin::Import(model.bindings.len() - 1));
+    crate::js::parse(path, src, |program| {
+        let semantic = SemanticBuilder::new().build(program).semantic;
+        let scoping = semantic.scoping();
+        let lines = Lines::new(src);
+        let mut model = FileModel::default();
+        let mut origins: HashMap<SymbolId, Origin> = HashMap::new();
+        let jsx = is_jsx_file(path);
+        let mut owners: Vec<Vec<(oxc_span::Span, usize)>> = Vec::new();
+        let mut pending_local_exports: Vec<(String, String)> = vec![];
+        for statement in &program.body {
+            let mut owned = vec![];
+            match statement {
+                Statement::ImportDeclaration(d) => {
+                    for s in d.specifiers.iter().flatten() {
+                        let (local, imported) = match s {
+                            ImportDeclarationSpecifier::ImportSpecifier(s) => (&s.local, Imported::Name(imported_name(&s.imported))),
+                            ImportDeclarationSpecifier::ImportDefaultSpecifier(s) => (&s.local, Imported::Name("default".into())),
+                            ImportDeclarationSpecifier::ImportNamespaceSpecifier(s) => (&s.local, Imported::Namespace),
+                        };
+                        model.bindings.push(Binding { spec: d.source.value.to_string(), imported });
+                        if let Some(symbol) = local.symbol_id.get() {
+                            origins.insert(symbol, Origin::Import(model.bindings.len() - 1));
+                        }
                     }
                 }
-            }
-            Statement::ExportNamedDeclaration(d) => {
-                if let Some(decl) = &d.declaration {
-                    owned = declare(&mut model, &mut origins, &lines, jsx, decl);
-                    for (_, i) in &owned {
-                        model.exports.push(Export::Local { exported: model.things[*i].name.clone(), origin: Origin::Local(*i) });
-                    }
-                    if let Declaration::VariableDeclaration(v) = decl {
-                        for d in &v.declarations {
-                            if !matches!(d.id, BindingPattern::BindingIdentifier(_)) {
-                                d.id.bound_names(&mut |id| pending_local_exports.push((id.name.to_string(), id.name.to_string())));
+                Statement::ExportNamedDeclaration(d) => {
+                    if let Some(decl) = &d.declaration {
+                        owned = declare(&mut model, &mut origins, &lines, jsx, decl);
+                        for (_, i) in &owned {
+                            model.exports.push(Export::Local { exported: model.things[*i].name.clone(), origin: Origin::Local(*i) });
+                        }
+                        if let Declaration::VariableDeclaration(v) = decl {
+                            for d in &v.declarations {
+                                if !matches!(d.id, BindingPattern::BindingIdentifier(_)) {
+                                    d.id.bound_names(&mut |id| pending_local_exports.push((id.name.to_string(), id.name.to_string())));
+                                }
                             }
                         }
                     }
-                }
-                for s in &d.specifiers {
-                    let exported = imported_name(&s.exported);
-                    match &d.source {
-                        Some(source) => model.exports.push(Export::From { exported, spec: source.value.to_string(), imported: Imported::Name(imported_name(&s.local)) }),
-                        None => pending_local_exports.push((imported_name(&s.local), exported)),
-                    }
-                }
-            }
-            Statement::ExportAllDeclaration(d) => match &d.exported {
-                Some(name) => model.exports.push(Export::From { exported: imported_name(name), spec: d.source.value.to_string(), imported: Imported::Namespace }),
-                None => model.exports.push(Export::Star { spec: d.source.value.to_string() }),
-            },
-            Statement::ExportDefaultDeclaration(d) => match &d.declaration {
-                ExportDefaultDeclarationKind::FunctionDeclaration(f) => {
-                    let name = f.id.as_ref().map_or("default", |id| id.name.as_str());
-                    let i = thing(&mut model, &mut origins, &lines, f.id.as_ref(), name, ThingKind::Function, f.span.start);
-                    if let Some(body) = &f.body {
-                        model.things[i].forwards = forwards(body);
-                        model.things[i].component = jsx && (name == "default" || name.starts_with(char::is_uppercase)) && returns_jsx(body);
-                    }
-                    model.exports.push(Export::Local { exported: "default".into(), origin: Origin::Local(i) });
-                    owned.push((f.span, i));
-                }
-                ExportDefaultDeclarationKind::ClassDeclaration(c) => {
-                    let name = c.id.as_ref().map_or("default", |id| id.name.as_str());
-                    let i = thing(&mut model, &mut origins, &lines, c.id.as_ref(), name, ThingKind::Class, c.span.start);
-                    model.things[i].class = Some(read_class(c, &lines));
-                    model.exports.push(Export::Local { exported: "default".into(), origin: Origin::Local(i) });
-                    owned.push((c.span, i));
-                }
-                ExportDefaultDeclarationKind::TSInterfaceDeclaration(t) => {
-                    let i = thing(&mut model, &mut origins, &lines, Some(&t.id), &t.id.name, ThingKind::Type, t.span.start);
-                    model.exports.push(Export::Local { exported: "default".into(), origin: Origin::Local(i) });
-                    owned.push((t.span, i));
-                }
-                other => {
-                    let expr = other.as_expression();
-                    match expr.map(unwrap_expr) {
-                        // `export default a`: a is declared elsewhere in the file, settled after.
-                        Some(Expression::Identifier(id)) => pending_local_exports.push((id.name.to_string(), "default".into())),
-                        _ => {
-                            let kind = if matches!(expr.map(unwrap_expr), Some(Expression::ArrowFunctionExpression(_) | Expression::FunctionExpression(_))) { ThingKind::Function } else { ThingKind::Value };
-                            let i = thing(&mut model, &mut origins, &lines, None, "default", kind, d.span.start);
-                            model.exports.push(Export::Local { exported: "default".into(), origin: Origin::Local(i) });
-                            owned.push((d.span, i));
+                    for s in &d.specifiers {
+                        let exported = imported_name(&s.exported);
+                        match &d.source {
+                            Some(source) => model.exports.push(Export::From {
+                                exported,
+                                spec: source.value.to_string(),
+                                imported: Imported::Name(imported_name(&s.local)),
+                            }),
+                            None => pending_local_exports.push((imported_name(&s.local), exported)),
                         }
                     }
                 }
-            },
-            other => {
-                if let Some(decl) = other.as_declaration() {
-                    owned = declare(&mut model, &mut origins, &lines, jsx, decl);
+                Statement::ExportAllDeclaration(d) => match &d.exported {
+                    Some(name) => model.exports.push(Export::From {
+                        exported: imported_name(name),
+                        spec: d.source.value.to_string(),
+                        imported: Imported::Namespace,
+                    }),
+                    None => model.exports.push(Export::Star { spec: d.source.value.to_string() }),
+                },
+                Statement::ExportDefaultDeclaration(d) => match &d.declaration {
+                    ExportDefaultDeclarationKind::FunctionDeclaration(f) => {
+                        let name = f.id.as_ref().map_or("default", |id| id.name.as_str());
+                        let i = thing(&mut model, &mut origins, &lines, f.id.as_ref(), name, ThingKind::Function, f.span.start);
+                        if let Some(body) = &f.body {
+                            model.things[i].forwards = forwards(body);
+                            model.things[i].component =
+                                jsx && (name == "default" || name.starts_with(char::is_uppercase)) && returns_jsx(body);
+                        }
+                        model.exports.push(Export::Local { exported: "default".into(), origin: Origin::Local(i) });
+                        owned.push((f.span, i));
+                    }
+                    ExportDefaultDeclarationKind::ClassDeclaration(c) => {
+                        let name = c.id.as_ref().map_or("default", |id| id.name.as_str());
+                        let i = thing(&mut model, &mut origins, &lines, c.id.as_ref(), name, ThingKind::Class, c.span.start);
+                        model.things[i].class = Some(read_class(c, &lines));
+                        model.exports.push(Export::Local { exported: "default".into(), origin: Origin::Local(i) });
+                        owned.push((c.span, i));
+                    }
+                    ExportDefaultDeclarationKind::TSInterfaceDeclaration(t) => {
+                        let i = thing(&mut model, &mut origins, &lines, Some(&t.id), &t.id.name, ThingKind::Type, t.span.start);
+                        model.exports.push(Export::Local { exported: "default".into(), origin: Origin::Local(i) });
+                        owned.push((t.span, i));
+                    }
+                    other => {
+                        let expr = other.as_expression();
+                        match expr.map(unwrap_expr) {
+                            // `export default a`: a is declared elsewhere in the file, settled after.
+                            Some(Expression::Identifier(id)) => pending_local_exports.push((id.name.to_string(), "default".into())),
+                            _ => {
+                                let kind = if matches!(
+                                    expr.map(unwrap_expr),
+                                    Some(Expression::ArrowFunctionExpression(_) | Expression::FunctionExpression(_))
+                                ) {
+                                    ThingKind::Function
+                                } else {
+                                    ThingKind::Value
+                                };
+                                let i = thing(&mut model, &mut origins, &lines, None, "default", kind, d.span.start);
+                                model.exports.push(Export::Local { exported: "default".into(), origin: Origin::Local(i) });
+                                owned.push((d.span, i));
+                            }
+                        }
+                    }
+                },
+                other => {
+                    if let Some(decl) = other.as_declaration() {
+                        owned = declare(&mut model, &mut origins, &lines, jsx, decl);
+                    }
                 }
             }
+            owners.push(owned);
         }
-        owners.push(owned);
-    }
-    // `export { a as b }` and `export default a`: a local thing or an import passed on.
-    let by_name: HashMap<&str, SymbolId> = scoping.iter_bindings_in(scoping.root_scope_id()).map(|s| (scoping.symbol_name(s), s)).collect();
-    for (local, exported) in pending_local_exports {
-        if let Some(origin) = by_name.get(local.as_str()).and_then(|s| origins.get(s)) {
-            model.exports.push(Export::Local { exported, origin: origin.clone() });
+        // `export { a as b }` and `export default a`: a local thing or an import passed on.
+        let by_name: HashMap<&str, SymbolId> =
+            scoping.iter_bindings_in(scoping.root_scope_id()).map(|s| (scoping.symbol_name(s), s)).collect();
+        for (local, exported) in pending_local_exports {
+            if let Some(origin) = by_name.get(local.as_str()).and_then(|s| origins.get(s)) {
+                model.exports.push(Export::Local { exported, origin: origin.clone() });
+            }
         }
-    }
-    let mut walker = Walker { src, lines, scoping, model, origins, typed: HashMap::new(), current: None, props: vec![], scopes: vec![] };
-    for (statement, owned) in program.body.iter().zip(owners) {
-        if matches!(statement, Statement::ImportDeclaration(_)) {
-            continue;
-        }
-        // Re-exports forward names; they are not uses.
-        if let Statement::ExportNamedDeclaration(d) = statement {
-            if d.declaration.is_none() {
+        let mut walker =
+            Walker { src, lines, scoping, model, origins, typed: HashMap::new(), current: None, props: vec![], scopes: vec![] };
+        for (statement, owned) in program.body.iter().zip(owners) {
+            if matches!(statement, Statement::ImportDeclaration(_)) {
                 continue;
             }
-        }
-        if matches!(statement, Statement::ExportAllDeclaration(_)) {
-            continue;
-        }
-        if owned.is_empty() {
-            walker.current = None;
-            walker.visit_statement(statement);
-            continue;
-        }
-        // Each declarator or declaration is walked as its thing's code.
-        let declarations: Vec<&VariableDeclarator> = match statement {
-            Statement::VariableDeclaration(v) => v.declarations.iter().collect(),
-            Statement::ExportNamedDeclaration(d) => match &d.declaration {
-                Some(Declaration::VariableDeclaration(v)) => v.declarations.iter().collect(),
-                _ => vec![],
-            },
-            _ => vec![],
-        };
-        if declarations.is_empty() {
-            walker.current = owned.first().map(|(_, i)| *i);
-            walker.visit_statement(statement);
-            continue;
-        }
-        for d in declarations {
-            walker.current = owned.iter().find(|(span, _)| *span == d.span).map(|(_, i)| *i);
-            if let (Some(i), Some(init)) = (walker.current, &d.init) {
-                if let Some(class) = walker.new_of(init) {
-                    walker.model.things[i].instance_of = Some(class);
+            // Re-exports forward names; they are not uses.
+            if let Statement::ExportNamedDeclaration(d) = statement {
+                if d.declaration.is_none() {
+                    continue;
                 }
             }
-            walker.visit_variable_declarator(d);
+            if matches!(statement, Statement::ExportAllDeclaration(_)) {
+                continue;
+            }
+            if owned.is_empty() {
+                walker.current = None;
+                walker.visit_statement(statement);
+                continue;
+            }
+            // Each declarator or declaration is walked as its thing's code.
+            let declarations: Vec<&VariableDeclarator> = match statement {
+                Statement::VariableDeclaration(v) => v.declarations.iter().collect(),
+                Statement::ExportNamedDeclaration(d) => match &d.declaration {
+                    Some(Declaration::VariableDeclaration(v)) => v.declarations.iter().collect(),
+                    _ => vec![],
+                },
+                _ => vec![],
+            };
+            if declarations.is_empty() {
+                walker.current = owned.first().map(|(_, i)| *i);
+                walker.visit_statement(statement);
+                continue;
+            }
+            for d in declarations {
+                walker.current = owned.iter().find(|(span, _)| *span == d.span).map(|(_, i)| *i);
+                if let (Some(i), Some(init)) = (walker.current, &d.init) {
+                    if let Some(class) = walker.new_of(init) {
+                        walker.model.things[i].instance_of = Some(class);
+                    }
+                }
+                walker.visit_variable_declarator(d);
+            }
         }
-    }
-    Some(walker.model)
+        walker.model
+    })
 }
 
 #[cfg(test)]
@@ -792,7 +839,12 @@ mod tests {
         assert_eq!(names, ["queue", "admit", "other"]);
         assert_eq!(m.things[0].instance_of, Some(Origin::Import(0)));
         // `other` shadows Queue, so it uses nothing; admit uses Queue (type), Row (type) and fmt.line.
-        let admit: Vec<(String, bool)> = m.uses.iter().filter(|u| u.from == Some(1)).map(|u| (format!("{:?}{}", u.to, u.member.clone().unwrap_or_default()), u.type_only)).collect();
+        let admit: Vec<(String, bool)> = m
+            .uses
+            .iter()
+            .filter(|u| u.from == Some(1))
+            .map(|u| (format!("{:?}{}", u.to, u.member.clone().unwrap_or_default()), u.type_only))
+            .collect();
         assert_eq!(admit, [("Import(0)".to_string(), true), ("Import(2)".to_string(), true), ("Import(1)line".to_string(), false)]);
         assert!(m.uses.iter().all(|u| u.from != Some(2)));
         assert_eq!(m.mutations.len(), 1);

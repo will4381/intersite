@@ -73,8 +73,8 @@ test("a page's load gives its web vitals and the project scripts it ran", async 
   await new Promise((ok) => server.listen(0, "127.0.0.1", () => ok(undefined)));
   t.after(() => server.close());
   const address = /** @type {import("node:net").AddressInfo} */ (server.address());
-  const result = await run(r.cwd, ["--page", `http://127.0.0.1:${address.port}/`, "--touched"]).catch((error) => ({ code: -1, out: [], err: [String(error)] }));
-  if (result.err.some((e) => /Chrome|playwright/.test(e))) return t.skip(`no Chrome to drive: ${result.err.join(" ")}`);
+  const result = await run(r.cwd, ["--page", `http://127.0.0.1:${address.port}/`, "--touched"]).catch((error) => ({ code: -1, out: /** @type {string[]} */ ([]), err: [String(error)] }));
+  if (!process.env.CI && result.err.some((e) => /Chrome|playwright/.test(e))) return t.skip(`no Chrome to drive: ${result.err.join(" ")}`);
   assert.equal(result.code, 0, [...result.out, ...result.err].join("\n"));
   assert.ok(result.out.some((l) => /^vitals: TTFB \S+, FCP \S+, LCP \S+, CLS [\d.]+, blocking \S+ in \d+ long tasks, \d+ requests, \d+ KB$/.test(l)), result.out.join("\n"));
   assert.ok(result.out.includes("  app.js:1 paintList ×1"), result.out.join("\n"));

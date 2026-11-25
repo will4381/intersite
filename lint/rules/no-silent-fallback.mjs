@@ -89,19 +89,20 @@ export const rule = defineRule({
         const only = fallbackReturn(node.body, node.param);
         if (!only || explained(node.body, node.body)) return;
         // `try { new URL(s); return true; } catch { return false; }` is a predicate, not a fallback.
-        if (unwrap(only.argument).value === false && returns(node.parent.block).some((r) => isBooleanShaped(r.argument))) return;
+        if (unwrap(only.argument).value === false && returns(/** @type {import("@oxlint/plugins").ESTree.TryStatement} */ (node.parent).block).some((r) => isBooleanShaped(r.argument))) return;
         context.report({ node: only, messageId: "fallback" });
       },
       // promise.catch(() => null), promise.catch((error) => { log(error); return []; })
       CallExpression(node) {
-        const handler = node.callee.type === "MemberExpression" && node.callee.property.name === "catch" ? node.arguments[0] : undefined;
+        const callee = /** @type {any} */ (node.callee);
+        const handler = callee.type === "MemberExpression" && callee.property.name === "catch" ? node.arguments[0] : undefined;
         if (handler?.type !== "ArrowFunctionExpression" && handler?.type !== "FunctionExpression") return;
         // Nothing reads a discarded `p.catch(() => undefined)` (no-empty-catch's case), and an unreadable body
         // (`await res.json().catch(() => null)`) has one meaning, which the schema or status check after it handles.
-        if (isDiscarded(node) || bodyRead.test(calleeName(node.callee.object))) return;
+        if (isDiscarded(node) || bodyRead.test(calleeName(callee.object))) return;
         // `verify(sig).catch(() => false)`: a failed check answering no is a yes/no result, not disguised data.
-        if (handler.body.type === "Literal" && handler.body.value === false) return;
-        const fake = handler.body.type === "BlockStatement" ? fallbackReturn(handler.body, handler.params[0]) : isFakeValue(handler.body) && handler.body;
+        if (handler.body?.type === "Literal" && handler.body.value === false) return;
+        const fake = handler.body?.type === "BlockStatement" ? fallbackReturn(handler.body, handler.params[0]) : isFakeValue(handler.body) && handler.body;
         if (fake && !explained(handler.body, node)) context.report({ node: fake, messageId: "fallback" });
       },
     };

@@ -6,7 +6,7 @@ import { dirname, resolve } from "node:path";
 
 import { startNodeCollector } from "../collector/node.mjs";
 import { LOCAL_HOST } from "../replay/collector.mjs";
-import { collectorTokens, loadConfig } from "../shared/config.mjs";
+import { collectorTokens, intersiteDir, loadConfig } from "../shared/config.mjs";
 
 const USAGE = "usage: intersite collector [--port 8790] [--db .intersite/cases.db]";
 
@@ -36,6 +36,7 @@ export default async function collector(argv, { cwd }) {
   const db = flags["--db"];
   const dbPath = db === ":memory:" ? db : resolve(cwd, db);
   if (dbPath !== ":memory:") mkdirSync(dirname(dbPath), { recursive: true });
+  if (db === ".intersite/cases.db") intersiteDir(cwd);
   const tokens = collectorTokens(config);
   /** @type {Awaited<ReturnType<typeof startNodeCollector>>} */
   let running;

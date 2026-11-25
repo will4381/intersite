@@ -42,56 +42,72 @@ export async function ingest(db, items, cap, now) {
   for (const item of valid) byProject.set(item.project, [...(byProject.get(item.project) ?? []), item]);
 
   const day = new Date(now).toISOString().slice(0, 10);
+  /** @type {any[]} */
   const statements = [];
   let accepted = 0;
   for (const [project, cases] of byProject) {
-    const existing = new Set();
-    for (let i = 0; i < cases.length; i += PARAM_CHUNK) {
-      const ids = cases.slice(i, i + PARAM_CHUNK).map((item) => item.id);
-      const { results } = await db
-        .prepare(`SELECT id FROM cases WHERE project = ? AND id IN (${ids.map(() => "?").join(",")})`)
-        .bind(project, ...ids)
-        .all();
-      for (const row of results) existing.add(row.id);
-    }
-    const { results: counts } = await db.prepare("SELECT class, n FROM daily_counts WHERE project = ? AND day = ?").bind(project, day).all();
-    /** @type {Record<string, number>} */
-    const used = { ok: 0, other: 0 };
-    for (const row of counts) used[row.class] = row.n;
-    /** @type {Record<string, number>} */
-    const added = { ok: 0, other: 0 };
-
-    for (const item of cases) {
-      if (existing.has(item.id)) continue; // duplicate: capture retried, ignore silently
-      existing.add(item.id);
-      const cls = classOf(item.outcome);
-      if (used[cls] + added[cls] >= cap[/** @type {"ok" | "other"} */ (cls)]) {
-        dropped.push({ id: item.id, reason: "cap" });
-        continue;
-      }
-      added[cls]++;
-      accepted++;
-      const atMs = Date.parse(item.at);
-      statements.push(
-        db
-          .prepare(
-            "INSERT OR IGNORE INTO cases (project, id, session, seq, at_ms, outcome, route, expires, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-          )
-          .bind(project, item.id, item.session, item.seq, atMs, item.outcome, item.request.route, atMs + item.ttlDays * DAY_MS, JSON.stringify(item)),
-      );
-    }
-    // ponytail: soft cap, two concurrent requests can both pass the check; move the check into the upsert's WHERE if overshoot matters.
-    for (const cls of ["ok", "other"]) {
-      if (!added[cls]) continue;
-      statements.push(
-        db
-          .prepare("INSERT INTO daily_counts (project, day, class, n) VALUES (?, ?, ?, ?) ON CONFLICT DO UPDATE SET n = n + excluded.n")
-          .bind(project, day, cls, added[cls]),
-      );
-    }
+    const staged = await stageProject(db, project, cases, cap, day);
+    statements.push(...staged.statements);
+    dropped.push(...staged.dropped);
+    accepted += staged.accepted;
   }
   if (statements.length) await db.batch(statements);
   return { accepted, dropped };
+}
+
+/**
+ * The inserts for one project's valid cases, skipping duplicates and dropping those over the daily cap.
+ * @param {D1} db @param {string} project @param {Case[]} cases @param {{ ok: number, other: number }} cap @param {string} day
+ */
+async function stageProject(db, project, cases, cap, day) {
+  /** @type {{ id: string, reason: string }[]} */
+  const dropped = [];
+  /** @type {any[]} */
+  const statements = [];
+  const existing = new Set();
+  for (let i = 0; i < cases.length; i += PARAM_CHUNK) {
+    const ids = cases.slice(i, i + PARAM_CHUNK).map((item) => item.id);
+    const { results } = await db
+      .prepare(`SELECT id FROM cases WHERE project = ? AND id IN (${ids.map(() => "?").join(",")})`)
+      .bind(project, ...ids)
+      .all();
+    for (const row of results) existing.add(row.id);
+  }
+  const { results: counts } = await db.prepare("SELECT class, n FROM daily_counts WHERE project = ? AND day = ?").bind(project, day).all();
+  /** @type {Record<string, number>} */
+  const used = { ok: 0, other: 0 };
+  for (const row of counts) used[row.class] = row.n;
+  /** @type {Record<string, number>} */
+  const added = { ok: 0, other: 0 };
+
+  for (const item of cases) {
+    if (existing.has(item.id)) continue; // duplicate: capture retried, ignore silently
+    existing.add(item.id);
+    const cls = classOf(item.outcome);
+    if (used[cls] + added[cls] >= cap[/** @type {"ok" | "other"} */ (cls)]) {
+      dropped.push({ id: item.id, reason: "cap" });
+      continue;
+    }
+    added[cls]++;
+    const atMs = Date.parse(item.at);
+    statements.push(
+      db
+        .prepare(
+          "INSERT OR IGNORE INTO cases (project, id, session, seq, at_ms, outcome, route, expires, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(project, item.id, item.session, item.seq, atMs, item.outcome, item.request.route, atMs + item.ttlDays * DAY_MS, JSON.stringify(item)),
+    );
+  }
+  // ponytail: soft cap, two concurrent requests can both pass the check; move the check into the upsert's WHERE if overshoot matters.
+  for (const cls of ["ok", "other"]) {
+    if (!added[cls]) continue;
+    statements.push(
+      db
+        .prepare("INSERT INTO daily_counts (project, day, class, n) VALUES (?, ?, ?, ?) ON CONFLICT DO UPDATE SET n = n + excluded.n")
+        .bind(project, day, cls, added[cls]),
+    );
+  }
+  return { statements, dropped, accepted: added.ok + added.other };
 }
 
 /**
@@ -132,6 +148,7 @@ export async function sessions(db, query) {
     .prepare(`SELECT session FROM cases WHERE ${where.join(" AND ")} GROUP BY session ORDER BY MAX(at_ms) DESC LIMIT ${CANDIDATE_SESSIONS}`)
     .bind(...params)
     .all();
+  /** @type {string[]} */
   const candidates = results.map((/** @type {any} */ row) => /** @type {string} */ (row.session)).sort();
 
   const random = mulberry32(query.seed);

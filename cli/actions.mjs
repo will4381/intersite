@@ -1,32 +1,34 @@
 // @ts-check
 // `intersite actions [--since 7d] [--json]`: every named action the collector has seen, per page, errors first.
-import { callCollector, SetupError } from "../collector/client.mjs";
+import { parseArgs } from "node:util";
+
+import { callCollector } from "../collector/client.mjs";
+import { GateError } from "../gates/lib.mjs";
 
 const UNITS = { h: 3_600_000, d: 86_400_000 };
 
 /** @param {string[]} argv @param {{ cwd: string }} context @returns {Promise<number>} */
 export default async function actions(argv, { cwd }) {
-  const json = argv.includes("--json");
-  const rest = argv.filter((arg) => arg !== "--json");
-  /** @type {string | undefined} */
-  let since;
-  if (rest[0] === "--since" && rest.length === 2) {
-    const relative = /^(\d+)([hd])$/.exec(rest[1]);
-    const at = relative ? Date.now() - Number(relative[1]) * UNITS[/** @type {"h" | "d"} */ (relative[2])] : Date.parse(rest[1]);
-    if (!Number.isNaN(at)) since = new Date(at).toISOString();
+  let values;
+  try {
+    ({ values } = parseArgs({ args: argv, options: { since: { type: "string" }, json: { type: "boolean" } } }));
+  } catch {
+    values = { since: "" };
   }
-  if (rest.length && since === undefined) {
+  const relative = /^(\d+)([hd])$/.exec(values.since ?? "");
+  const at = relative ? Date.now() - Number(relative[1]) * UNITS[/** @type {"h" | "d"} */ (relative[2])] : Date.parse(values.since ?? "");
+  const since = values.since === undefined || Number.isNaN(at) ? undefined : new Date(at).toISOString();
+  const json = values.json;
+  if (values.since !== undefined && since === undefined) {
     console.error("usage: intersite actions [--since <n>d | <n>h | <ISO timestamp>] [--json]");
     return 2;
   }
   /** @type {{ name: string, page: string, ok: number, warn: number, rejected: number, error: number, lastAt: string }[]} */
   let rows;
   try {
-    const { status, body } = await callCollector(cwd, "GET", `/v1/actions${since ? `?since=${encodeURIComponent(since)}` : ""}`);
-    if (status !== 200) throw new SetupError(`collector GET /v1/actions: ${status} ${body.error ?? ""}`.trim());
-    rows = body.actions;
+    rows = (await callCollector(cwd, "GET", `/v1/actions${since ? `?since=${encodeURIComponent(since)}` : ""}`)).body.actions;
   } catch (error) {
-    if (!(error instanceof SetupError)) throw error;
+    if (!(error instanceof GateError)) throw error;
     console.error(error.message);
     return 2;
   }

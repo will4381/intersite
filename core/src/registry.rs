@@ -46,7 +46,10 @@ fn lookup(agent: &ureq::Agent, registry: &str, name: &str, today: i64) -> Option
     };
     let versions = doc["versions"].as_object().map_or(0, |v| v.len());
     let days = if versions <= FEW_VERSIONS {
-        get(agent, &url, false).ok().and_then(|full| full["time"]["created"].as_str().and_then(epoch_days)).map(|d| (today - d).max(0) as u64)
+        get(agent, &url, false)
+            .ok()
+            .and_then(|full| full["time"]["created"].as_str().and_then(epoch_days))
+            .map(|d| (today - d).max(0) as u64)
     } else {
         None
     };

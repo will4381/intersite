@@ -10,14 +10,15 @@ use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::text::{self, Lines};
-use crate::{Answer, Finding, Request};
+use crate::{js, Answer, Finding, Request};
 
 /// A copy this many files wide is a decision made in several places.
 const MIN_FILES: usize = 3;
 /// Properties that name which variant a value is: branching on them in many files is a union nobody owns.
 const DISCRIMINANTS: [&str; 6] = ["kind", "type", "variant", "mode", "tier", "plan"];
 /// Calls that ask whether a feature flag is on.
-const FLAG_CALLS: [&str; 8] = ["isEnabled", "isFeatureEnabled", "useFlag", "useFeatureFlag", "getFlag", "featureEnabled", "useFeature", "flagEnabled"];
+const FLAG_CALLS: [&str; 8] =
+    ["isEnabled", "isFeatureEnabled", "useFlag", "useFeatureFlag", "getFlag", "featureEnabled", "useFeature", "flagEnabled"];
 /// Variables a bundler or runtime branches on by design; reading them everywhere is how they work.
 const ENV_EXEMPT: [&str; 9] = ["NODE_ENV", "CI", "DEBUG", "TZ", "DEV", "PROD", "MODE", "SSR", "BASE_URL"];
 
@@ -51,20 +52,6 @@ impl Collector<'_> {
     }
 }
 
-/// `process.env`, `import.meta.env`, `Bun.env`: the object an environment variable is read from.
-pub fn is_env_object(text: &str) -> bool {
-    matches!(text, "process.env" | "import.meta.env" | "Bun.env")
-}
-
-/// A string literal's value, or undefined.
-pub fn string(e: &Expression) -> Option<String> {
-    match e {
-        Expression::StringLiteral(s) => Some(s.value.to_string()),
-        Expression::TemplateLiteral(t) if t.expressions.is_empty() => t.quasis.first().map(|q| q.value.raw.to_string()),
-        _ => None,
-    }
-}
-
 /// The discriminant a comparison side reads, with the property it hangs off when there is one: `event.kind` is
 /// `.kind`, `event.result.kind` is `.result.kind`, so two unions that share a property name stay apart.
 fn discriminant(e: &Expression) -> Option<String> {
@@ -87,15 +74,15 @@ fn discriminant(e: &Expression) -> Option<String> {
 
 impl<'a> Visit<'a> for Collector<'_> {
     fn visit_static_member_expression(&mut self, it: &StaticMemberExpression<'a>) {
-        if is_env_object(self.text(it.object.span())) && !ENV_EXEMPT.contains(&it.property.name.as_str()) {
+        if js::is_env_object(self.text(it.object.span())) && !ENV_EXEMPT.contains(&it.property.name.as_str()) {
             self.add(Kind::Env, it.property.name.to_string(), it.span);
         }
         walk::walk_static_member_expression(self, it);
     }
 
     fn visit_computed_member_expression(&mut self, it: &ComputedMemberExpression<'a>) {
-        if is_env_object(self.text(it.object.span())) {
-            if let Some(name) = string(&it.expression).filter(|n| !ENV_EXEMPT.contains(&n.as_str())) {
+        if js::is_env_object(self.text(it.object.span())) {
+            if let Some(name) = js::string(&it.expression, true).filter(|n| !ENV_EXEMPT.contains(n)).map(str::to_string) {
                 self.add(Kind::Env, name, it.span);
             }
         }
@@ -104,7 +91,7 @@ impl<'a> Visit<'a> for Collector<'_> {
 
     fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
         let callee = self.text(it.callee.span()).to_string();
-        let first = it.arguments.first().and_then(|a| a.as_expression()).and_then(string);
+        let first = it.arguments.first().and_then(|a| a.as_expression()).and_then(|e| js::string(e, true).map(str::to_string));
         if let Some(name) = first {
             if callee == "Deno.env.get" && !ENV_EXEMPT.contains(&name.as_str()) {
                 self.add(Kind::Env, name, it.span);
@@ -116,8 +103,13 @@ impl<'a> Visit<'a> for Collector<'_> {
     }
 
     fn visit_binary_expression(&mut self, it: &BinaryExpression<'a>) {
-        if matches!(it.operator, BinaryOperator::StrictEquality | BinaryOperator::StrictInequality | BinaryOperator::Equality | BinaryOperator::Inequality) {
-            let pair = discriminant(&it.left).zip(string(&it.right)).or_else(|| discriminant(&it.right).zip(string(&it.left)));
+        if matches!(
+            it.operator,
+            BinaryOperator::StrictEquality | BinaryOperator::StrictInequality | BinaryOperator::Equality | BinaryOperator::Inequality
+        ) {
+            let pair = discriminant(&it.left)
+                .zip(js::string(&it.right, true).map(str::to_string))
+                .or_else(|| discriminant(&it.right).zip(js::string(&it.left, true).map(str::to_string)));
             if let Some((prop, value)) = pair {
                 self.add(Kind::Branch, format!("{prop} === \"{value}\""), it.span);
             }
@@ -128,7 +120,7 @@ impl<'a> Visit<'a> for Collector<'_> {
     fn visit_switch_statement(&mut self, it: &SwitchStatement<'a>) {
         if let Some(prop) = discriminant(&it.discriminant) {
             for case in &it.cases {
-                if let Some(value) = case.test.as_ref().and_then(string) {
+                if let Some(value) = case.test.as_ref().and_then(|e| js::string(e, true).map(str::to_string)) {
                     self.add(Kind::Branch, format!("{prop} === \"{value}\""), case.span);
                 }
             }
@@ -146,32 +138,6 @@ fn sites(path: &str, src: &str) -> Vec<Site> {
     .unwrap_or_default()
 }
 
-/// An env module: the one place a project reads and validates its environment, which is what the finding asks for.
-pub fn is_env_module(file: &str) -> bool {
-    let name = file.rsplit('/').next().unwrap_or(file);
-    let stem = name.split('.').next().unwrap_or(name);
-    matches!(stem, "env" | "config" | "settings" | "environment") || file.contains("/env/") || file.contains("/config/")
-}
-
-/// The package a file belongs to: the nearest folder above it with a package.json, or the repository. Separate
-/// packages of a monorepo are separate programs, each entitled to read its own environment and make its own decisions.
-pub fn package_of(root: &str, file: &str, cache: &mut std::collections::HashMap<String, String>) -> String {
-    let mut dir = file.rsplit_once('/').map_or("", |(d, _)| d).to_string();
-    let start = dir.clone();
-    loop {
-        if let Some(p) = cache.get(&dir) {
-            let p = p.clone();
-            cache.insert(start, p.clone());
-            return p;
-        }
-        if dir.is_empty() || std::path::Path::new(root).join(&dir).join("package.json").exists() {
-            cache.insert(start, dir.clone());
-            return dir;
-        }
-        dir = dir.rsplit_once('/').map_or("", |(d, _)| d).to_string();
-    }
-}
-
 /// A file and one site in it.
 type Located = (String, Site);
 /// Package, kind, subject (the variable, flag or property) and the files it is in.
@@ -187,10 +153,10 @@ pub fn run(request: &Request) -> Result<Answer, String> {
     let mut packages = std::collections::HashMap::new();
     let mut groups: BTreeMap<(String, Kind, String), Vec<&Located>> = BTreeMap::new();
     for s in &all {
-        if s.1.kind == Kind::Env && is_env_module(&s.0) {
+        if s.1.kind == Kind::Env && js::is_env_module(&s.0) {
             continue;
         }
-        groups.entry((package_of(&request.root, &s.0, &mut packages), s.1.kind, s.1.key.clone())).or_default().push(s);
+        groups.entry((crate::graph::package_of(&request.root, &s.0, &mut packages), s.1.kind, s.1.key.clone())).or_default().push(s);
     }
     // Values of one union branched on in the same files are one decision: `.type` checked for "a", "b" and "c" in the
     // same three files is one switch to write, not three findings.
@@ -216,10 +182,14 @@ pub fn run(request: &Request) -> Result<Answer, String> {
             continue;
         }
         let Some((file, site)) = list.iter().map(|s| (&s.0, &s.1)).find(|(f, s)| request.changed(f, s.line)) else { continue };
-        let mut places: Vec<String> = files.iter().filter(|f| **f != file.as_str()).map(|f| {
-            let line = list.iter().find(|(g, _)| g == f).map_or(0, |(_, s)| s.line);
-            format!("{f}:{line}")
-        }).collect();
+        let mut places: Vec<String> = files
+            .iter()
+            .filter(|f| **f != file.as_str())
+            .map(|f| {
+                let line = list.iter().find(|(g, _)| g == f).map_or(0, |(_, s)| s.line);
+                format!("{f}:{line}")
+            })
+            .collect();
         let more = places.len().saturating_sub(4);
         places.truncate(4);
         let elsewhere = format!("{}{}", places.join(", "), if more > 0 { format!(" and {more} more") } else { String::new() });
@@ -234,11 +204,18 @@ pub fn run(request: &Request) -> Result<Answer, String> {
         findings.push(Finding {
             file: file.clone(),
             line: site.line,
-            target: format!("decisions:{}:{slug}", match kind { Kind::Env => "env", Kind::Flag => "flag", Kind::Branch => "branch" }),
+            target: format!(
+                "decisions:{}:{slug}",
+                match kind {
+                    Kind::Env => "env",
+                    Kind::Flag => "flag",
+                    Kind::Branch => "branch",
+                }
+            ),
             message: format!("{file}:{} {what} (also {elsewhere}): {fix}", site.line),
         });
     }
-    Ok(Answer { findings, summary: format!("{} environment reads, flag checks and variant branches in {} files", all.len(), request.files.len()), data: None })
+    Ok(Answer::new(findings, format!("{} environment reads, flag checks and variant branches in {} files", all.len(), request.files.len())))
 }
 
 #[cfg(test)]
@@ -249,6 +226,15 @@ mod tests {
     fn finds_env_reads_flags_and_variant_branches() {
         let s = sites("a.ts", "const k = process.env.STRIPE_KEY;\nconst m = process.env.NODE_ENV;\nif (isEnabled('new-checkout')) go();\nif (event.kind === 'refund') undo();\nswitch (shape.type) { case 'circle': break; default: }\nconst e = import.meta.env['VITE_API'];\n");
         let got: Vec<(u32, String)> = s.iter().map(|s| (s.line, s.key.clone())).collect();
-        assert_eq!(got, vec![(1, "STRIPE_KEY".into()), (3, "new-checkout".into()), (4, ".kind === \"refund\"".into()), (5, ".type === \"circle\"".into()), (6, "VITE_API".into())]);
+        assert_eq!(
+            got,
+            vec![
+                (1, "STRIPE_KEY".into()),
+                (3, "new-checkout".into()),
+                (4, ".kind === \"refund\"".into()),
+                (5, ".type === \"circle\"".into()),
+                (6, "VITE_API".into())
+            ]
+        );
     }
 }

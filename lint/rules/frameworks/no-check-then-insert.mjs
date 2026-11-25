@@ -59,9 +59,7 @@ export const rule = defineRule({
   },
   createOnce(context) {
     return {
-      before() {
-        return !isScriptFile(context);
-      },
+      before: () => !isScriptFile(context),
       // Statements of one block: `const x = await read(...)` then `if (!x) { …create… }`.
       BlockStatement(node) {
         /** @type {Map<string, string>} name -> what it read */

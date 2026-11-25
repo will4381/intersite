@@ -51,11 +51,11 @@ export const rule = defineRule({
       CatchClause: (node) => check(node.body),
       // promise.catch(() => {}) and promise.then(onDone, () => {})
       CallExpression(node) {
-        const method = node.callee.type === "MemberExpression" ? node.callee.property.name : undefined;
+        const method = node.callee.type === "MemberExpression" ? /** @type {any} */ (node.callee.property).name : undefined;
         const handler = method === "catch" ? node.arguments[0] : method === "then" ? node.arguments[1] : undefined;
         if (handler?.type !== "ArrowFunctionExpression" && handler?.type !== "FunctionExpression") return;
         // `p.catch(() => undefined);` with the result thrown away swallows the error just as `() => {}` does.
-        if (handler.body.type !== "BlockStatement" && isNothing(handler.body) && isDiscarded(node)) return report(handler.body, node);
+        if (handler.body?.type !== "BlockStatement" && isNothing(handler.body) && isDiscarded(node)) return report(handler.body, node);
         check(handler.body);
       },
     };

@@ -11,7 +11,7 @@ const NEEDS = /credentials/i;
 const ORIGIN_READ = /headers\s*(\.\s*origin\b|\[\s*['"]origin['"]\s*\]|\.get\(\s*['"]origin['"])|\b(get|header)\(\s*['"]origin['"]\s*\)/i;
 const CREDENTIALS = /access-control-allow-credentials['"]\s*,\s*['"]?true/i;
 
-/** The request's own Origin header, read here or through a `const`, maybe behind `?? ''`. @param {any} node @param {any} sourceCode */
+/** The request's own Origin header, read here or through a `const`, maybe behind `?? ''`. @param {any} node @param {any} sourceCode @returns {boolean} */
 function echoesOrigin(node, sourceCode) {
   node = unwrap(node);
   while (node?.type === "LogicalExpression") node = unwrap(node.left);

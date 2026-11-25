@@ -12,7 +12,7 @@ use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::text::{self, Lines};
-use crate::{Answer, Finding, Request};
+use crate::{js, Answer, Finding, Request};
 
 #[derive(Clone, Debug, PartialEq)]
 enum Seg {
@@ -26,6 +26,8 @@ enum Seg {
 
 /// A route path before its optional parts are expanded: each segment and whether it may be left out.
 type Raw = Vec<(Seg, bool)>;
+/// Each (file, receiver) a router mount points at, with the prefixes it is mounted under.
+type Mounts = HashMap<(String, String), Vec<(String, String, String)>>;
 
 #[derive(Clone, Debug)]
 struct Route {
@@ -137,11 +139,7 @@ fn unwrap<'b, 'a>(mut e: &'b Expression<'a>) -> &'b Expression<'a> {
 }
 
 fn string(e: &Expression) -> Option<String> {
-    match unwrap(e) {
-        Expression::StringLiteral(s) => Some(s.value.to_string()),
-        Expression::TemplateLiteral(t) if t.expressions.is_empty() => t.quasis.first().and_then(|q| q.value.cooked.as_ref()).map(|c| c.to_string()),
-        _ => None,
-    }
+    js::string(unwrap(e), false).map(str::to_string)
 }
 
 fn export_name(n: &ModuleExportName) -> String {
@@ -178,7 +176,8 @@ fn path_from(raw: String) -> Option<(Vec<USeg>, String)> {
     }
     let cut = raw.find(['?', '#']).unwrap_or(raw.len());
     let path = &raw[..cut];
-    let segs: Vec<USeg> = path.split('/').filter(|s| !s.is_empty()).map(|s| if s.contains('\u{0}') { USeg::Dyn } else { USeg::Lit(s.to_string()) }).collect();
+    let segs: Vec<USeg> =
+        path.split('/').filter(|s| !s.is_empty()).map(|s| if s.contains('\u{0}') { USeg::Dyn } else { USeg::Lit(s.to_string()) }).collect();
     if let Some(USeg::Lit(last)) = segs.last() {
         if last.contains('.') {
             return None;
@@ -219,7 +218,7 @@ fn colon_path(path: &str) -> Raw {
 /// TanStack Router paths: `$id`, `$` (splat), `{-$opt}`, pathless `_layout` and `(group)` segments.
 fn tanstack_path(path: &str) -> Raw {
     path.split('/')
-        .filter(|s| !s.is_empty() && !s.starts_with('_') && !(s.starts_with('(') && s.ends_with(')')))
+        .filter(|s| !(s.is_empty() || s.starts_with('_') || (s.starts_with('(') && s.ends_with(')'))))
         .map(|s| {
             if s == "$" {
                 (Seg::OptSplat, false)
@@ -562,9 +561,12 @@ impl<'a> Visit<'a> for Collector<'_> {
             let made = match unwrap(init) {
                 Expression::CallExpression(c) => {
                     let callee = &self.src[c.callee.span().start as usize..c.callee.span().end as usize];
-                    SERVER_MAKERS.iter().any(|m| callee == *m || callee.ends_with(&format!(".{m}"))) || self.receiver(init).as_deref() == Some(name)
+                    SERVER_MAKERS.iter().any(|m| callee == *m || callee.ends_with(&format!(".{m}")))
+                        || self.receiver(init).as_deref() == Some(name)
                 }
-                Expression::NewExpression(n) => matches!(unwrap(&n.callee), Expression::Identifier(i) if SERVER_MAKERS.contains(&i.name.as_str())),
+                Expression::NewExpression(n) => {
+                    matches!(unwrap(&n.callee), Expression::Identifier(i) if SERVER_MAKERS.contains(&i.name.as_str()))
+                }
                 _ => false,
             };
             if made {
@@ -667,7 +669,9 @@ impl<'a> Visit<'a> for Collector<'_> {
             let here = match (attr("path").map(|a| &a.value), &base) {
                 (_, None) => None,
                 (Some(Some(JSXAttributeValue::StringLiteral(s))), Some(b)) => Some(join(b, &s.value)),
-                (Some(Some(JSXAttributeValue::ExpressionContainer(c))), Some(b)) => c.expression.as_expression().and_then(string).map(|p| join(b, &p)),
+                (Some(Some(JSXAttributeValue::ExpressionContainer(c))), Some(b)) => {
+                    c.expression.as_expression().and_then(string).map(|p| join(b, &p))
+                }
                 (Some(_), _) => None,
                 (None, Some(b)) => Some(b.clone()),
             };
@@ -718,7 +722,9 @@ impl<'a> Visit<'a> for Collector<'_> {
                             None => Some("GET".to_string()),
                             Some(Expression::ObjectExpression(o)) => {
                                 let m = o.properties.iter().find_map(|p| match p {
-                                    ObjectPropertyKind::ObjectProperty(p) if p.key.static_name().as_deref() == Some("method") => Some(string(&p.value)),
+                                    ObjectPropertyKind::ObjectProperty(p) if p.key.static_name().as_deref() == Some("method") => {
+                                        Some(string(&p.value))
+                                    }
                                     ObjectPropertyKind::SpreadProperty(_) => Some(None),
                                     _ => None,
                                 });
@@ -784,7 +790,10 @@ impl<'a> Visit<'a> for Collector<'_> {
             }
             Expression::ComputedMemberExpression(m) => {
                 if let Some(Expression::Identifier(o)) = Some(unwrap(&m.object)) {
-                    if (self.created.contains(o.name.as_str()) || router_name(&o.name)) && string(&m.expression).is_none() && first.and_then(string).is_some_and(|p| p.starts_with('/')) {
+                    if (self.created.contains(o.name.as_str()) || router_name(&o.name))
+                        && string(&m.expression).is_none()
+                        && first.and_then(string).is_some_and(|p| p.starts_with('/'))
+                    {
                         self.facts.opaque = true;
                     }
                 }
@@ -808,13 +817,19 @@ impl Collector<'_> {
         match prop {
             "use" | "route" | "group" if args.len() >= 2 => match path {
                 Some(prefix) if prefix.starts_with('/') => {
-                    let mounted = args[1..].iter().map(|a| a.and_then(|a| if let Expression::Identifier(i) = unwrap(a) { Some(i.name.to_string()) } else { None })).collect();
+                    let mounted = args[1..]
+                        .iter()
+                        .map(|a| a.and_then(|a| if let Expression::Identifier(i) = unwrap(a) { Some(i.name.to_string()) } else { None }))
+                        .collect();
                     self.facts.mounts.push(Mount { prefix, args: mounted });
                 }
                 Some(_) => {}
                 None => {
                     // `app.use(cors(), router)`: middleware first, maybe a router, no prefix.
-                    let mounted: Vec<Option<String>> = args.iter().map(|a| a.and_then(|a| if let Expression::Identifier(i) = unwrap(a) { Some(i.name.to_string()) } else { None })).collect();
+                    let mounted: Vec<Option<String>> = args
+                        .iter()
+                        .map(|a| a.and_then(|a| if let Expression::Identifier(i) = unwrap(a) { Some(i.name.to_string()) } else { None }))
+                        .collect();
                     if mounted.iter().any(|m| m.is_some()) {
                         self.facts.mounts.push(Mount { prefix: "/".into(), args: mounted });
                     }
@@ -843,7 +858,16 @@ impl Collector<'_> {
                 }
             }
             verb if VERBS.contains(&verb) => {
-                let handler_last = args.last().copied().flatten().is_some_and(|a| matches!(unwrap(a), Expression::ArrowFunctionExpression(_) | Expression::FunctionExpression(_) | Expression::Identifier(_) | Expression::CallExpression(_) | Expression::StaticMemberExpression(_)));
+                let handler_last = args.last().copied().flatten().is_some_and(|a| {
+                    matches!(
+                        unwrap(a),
+                        Expression::ArrowFunctionExpression(_)
+                            | Expression::FunctionExpression(_)
+                            | Expression::Identifier(_)
+                            | Expression::CallExpression(_)
+                            | Expression::StaticMemberExpression(_)
+                    )
+                });
                 if args.len() < 2 || !handler_last {
                     return;
                 }
@@ -889,7 +913,11 @@ fn deps(root: &str, pkg: &str) -> HashSet<String> {
     let path = if pkg.is_empty() { "package.json".to_string() } else { format!("{pkg}/package.json") };
     let Some(text) = text::read(root, &path) else { return HashSet::new() };
     let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else { return HashSet::new() };
-    ["dependencies", "devDependencies", "peerDependencies"].iter().filter_map(|k| json.get(*k).and_then(|d| d.as_object())).flat_map(|d| d.keys().cloned()).collect()
+    ["dependencies", "devDependencies", "peerDependencies"]
+        .iter()
+        .filter_map(|k| json.get(*k).and_then(|d| d.as_object()))
+        .flat_map(|d| d.keys().cloned())
+        .collect()
 }
 
 const SERVER_DEPS: [&str; 8] = ["express", "hono", "fastify", "elysia", "koa", "@koa/router", "koa-router", "@hono/zod-openapi"];
@@ -977,7 +1005,14 @@ fn flat_route(name: &str) -> Raw {
 }
 
 /// One package's routes, from its files and the facts of its code.
-fn table(root: &str, pkg: &str, files: &[&String], facts: &HashMap<&str, Facts>, product: &HashSet<String>, other_backend: bool) -> (Table, bool) {
+fn table(
+    root: &str,
+    pkg: &str,
+    files: &[&String],
+    facts: &HashMap<&str, Facts>,
+    product: &HashSet<String>,
+    other_backend: bool,
+) -> (Table, bool) {
     let d = deps(root, pkg);
     let has = |n: &str| d.contains(n);
     let mut t = Table::default();
@@ -989,7 +1024,10 @@ fn table(root: &str, pkg: &str, files: &[&String], facts: &HashMap<&str, Facts>,
     let svelte = has("@sveltejs/kit");
     let nuxt = has("nuxt");
     let astro = has("astro");
-    let rr_config = files.iter().find(|f| { let r = rel(f); r == "app/routes.ts" || r == "app/routes.js" });
+    let rr_config = files.iter().find(|f| {
+        let r = rel(f);
+        r == "app/routes.ts" || r == "app/routes.js"
+    });
 
     for f in files {
         let r = rel(f);
@@ -1021,7 +1059,11 @@ fn table(root: &str, pkg: &str, files: &[&String], facts: &HashMap<&str, Facts>,
             }
             for base in ["pages/", "src/pages/"] {
                 if let Some(inside) = r.strip_prefix(base) {
-                    if !PAGE_EXT.contains(&ext) || inside.contains(".test.") || inside.contains(".spec.") || inside.split('/').any(|p| p.starts_with('_')) {
+                    if !PAGE_EXT.contains(&ext)
+                        || inside.contains(".test.")
+                        || inside.contains(".spec.")
+                        || inside.split('/').any(|p| p.starts_with('_'))
+                    {
                         continue;
                     }
                     let dirs: Vec<&str> = inside.split('/').collect();
@@ -1035,7 +1077,10 @@ fn table(root: &str, pkg: &str, files: &[&String], facts: &HashMap<&str, Facts>,
                 }
             }
         }
-        if remix && CODE_EXT.contains(&ext) && (rr_config.is_none() || facts.get(rr_config.unwrap().as_str()).is_some_and(|c| c.flat_routes)) {
+        if remix
+            && CODE_EXT.contains(&ext)
+            && (rr_config.is_none() || facts.get(rr_config.unwrap().as_str()).is_some_and(|c| c.flat_routes))
+        {
             if let Some(inside) = r.strip_prefix("app/routes/") {
                 let route_name = match inside.split_once('/') {
                     None => Some(stem),
@@ -1054,7 +1099,12 @@ fn table(root: &str, pkg: &str, files: &[&String], facts: &HashMap<&str, Facts>,
                 let (dirs, file) = dirs.split_at(dirs.len() - 1);
                 if let Some(raw) = bracket_dirs(dirs, Fw::Svelte) {
                     if file[0] == "+page.svelte" {
-                        let actions = files.iter().any(|g| rel(g).strip_prefix("src/routes/").is_some_and(|i| i == inside.replace("+page.svelte", "+page.server.ts") || i == inside.replace("+page.svelte", "+page.server.js")));
+                        let actions = files.iter().any(|g| {
+                            rel(g).strip_prefix("src/routes/").is_some_and(|i| {
+                                i == inside.replace("+page.svelte", "+page.server.ts")
+                                    || i == inside.replace("+page.svelte", "+page.server.js")
+                            })
+                        });
                         t.add(&raw, if actions { set(&["GET", "POST"]) } else { set(&["GET"]) }, false);
                         page_source = true;
                     } else if stem == "+server" && CODE_EXT.contains(&ext) {
@@ -1064,7 +1114,9 @@ fn table(root: &str, pkg: &str, files: &[&String], facts: &HashMap<&str, Facts>,
             }
         }
         if nuxt {
-            for (base, prefix, api) in [("pages/", "", false), ("app/pages/", "", false), ("server/api/", "api", true), ("server/routes/", "", true)] {
+            for (base, prefix, api) in
+                [("pages/", "", false), ("app/pages/", "", false), ("server/api/", "api", true), ("server/routes/", "", true)]
+            {
                 if let Some(inside) = r.strip_prefix(base) {
                     let ok = if api { CODE_EXT.contains(&ext) } else { ext == "vue" };
                     if !ok {
@@ -1141,7 +1193,7 @@ fn table(root: &str, pkg: &str, files: &[&String], facts: &HashMap<&str, Facts>,
             let mut readable = !fx.computed_source || !sources.is_empty();
             for r in &fx.routing_refs {
                 let Some((spec, _)) = fx.imports.get(r) else { continue };
-                match resolve(&file_set, f, spec).and_then(|t| facts.get(t.as_str())) {
+                match crate::graph::resolve_relative(&file_set, f, spec).and_then(|t| facts.get(t.as_str())) {
                     Some(other) => sources.extend(other.source_props.iter().cloned()),
                     None => readable = false,
                 }
@@ -1199,8 +1251,18 @@ fn table(root: &str, pkg: &str, files: &[&String], facts: &HashMap<&str, Facts>,
         t.unknown(&Raw::new());
     }
     // A locale segment (`app/[locale]/about`) is usually added by the i18n library's Link and middleware.
-    let localized: Vec<Route> = t.routes.iter().filter(|r| !r.api && matches!(r.segs.first(), Some(Seg::Param))).map(|r| Route { segs: r.segs[1..].to_vec(), methods: r.methods.clone(), api: false }).collect();
-    let locale_folder = files.iter().any(|f| { let r = rel(f); ["app/[locale]/", "app/[lang]/", "src/app/[locale]/", "src/app/[lang]/", "app/[lng]/", "src/app/[lng]/"].iter().any(|p| r.starts_with(p)) });
+    let localized: Vec<Route> = t
+        .routes
+        .iter()
+        .filter(|r| !r.api && matches!(r.segs.first(), Some(Seg::Param)))
+        .map(|r| Route { segs: r.segs[1..].to_vec(), methods: r.methods.clone(), api: false })
+        .collect();
+    let locale_folder = files.iter().any(|f| {
+        let r = rel(f);
+        ["app/[locale]/", "app/[lang]/", "src/app/[locale]/", "src/app/[lang]/", "app/[lng]/", "src/app/[lng]/"]
+            .iter()
+            .any(|p| r.starts_with(p))
+    });
     if locale_folder {
         t.routes.extend(localized);
     }
@@ -1213,9 +1275,9 @@ fn table(root: &str, pkg: &str, files: &[&String], facts: &HashMap<&str, Facts>,
 /// from one this check can follow) gets the prefix; a mount that cannot be followed makes its prefix unknown.
 fn place_handlers(files: &[&String], facts: &HashMap<&str, Facts>, handlers: &[(&str, &Handler)], t: &mut Table) {
     let file_set: HashSet<&str> = files.iter().map(|f| f.as_str()).collect();
-    let resolve = |from: &str, spec: &str| resolve(&file_set, from, spec);
+    let resolve = |from: &str, spec: &str| crate::graph::resolve_relative(&file_set, from, spec);
     // Each (file, receiver) a mount points at, with the prefixes it is mounted under.
-    let mut mounters: HashMap<(String, String), Vec<(String, String, String)>> = HashMap::new();
+    let mut mounters: Mounts = HashMap::new();
     for f in files {
         let Some(fx) = facts.get(f.as_str()) else { continue };
         for m in &fx.mounts {
@@ -1231,7 +1293,8 @@ fn place_handlers(files: &[&String], facts: &HashMap<&str, Facts>, handlers: &[(
                 if let Some((spec, imported)) = fx.imports.get(a) {
                     if let Some(target) = resolve(f, spec) {
                         if let Some(tf) = facts.get(target.as_str()) {
-                            let local = if imported == "default" { tf.default_export.clone() } else { tf.export_locals.get(imported).cloned() };
+                            let local =
+                                if imported == "default" { tf.default_export.clone() } else { tf.export_locals.get(imported).cloned() };
                             if let Some(local) = local {
                                 mounters.entry((target.clone(), local)).or_default().push((f.to_string(), String::new(), m.prefix.clone()));
                                 followed = true;
@@ -1247,7 +1310,7 @@ fn place_handlers(files: &[&String], facts: &HashMap<&str, Facts>, handlers: &[(
         }
     }
     // Prefixes compose: a router mounted under /api that mounts users under /users serves /api/users.
-    fn prefixes(key: &(String, String), mounters: &HashMap<(String, String), Vec<(String, String, String)>>, facts: &HashMap<&str, Facts>, depth: usize) -> Vec<String> {
+    fn prefixes(key: &(String, String), mounters: &Mounts, facts: &HashMap<&str, Facts>, depth: usize) -> Vec<String> {
         let Some(list) = mounters.get(key) else { return vec![String::new()] };
         if depth > 6 {
             return vec![];
@@ -1255,12 +1318,19 @@ fn place_handlers(files: &[&String], facts: &HashMap<&str, Facts>, handlers: &[(
         let mut out = Vec::new();
         for (from_file, _, prefix) in list {
             // The receiver in `from_file` that did the mounting: any router there; its own prefixes apply.
-            let parents: Vec<String> = facts.get(from_file.as_str()).map(|fx| {
-                let mut names: BTreeSet<String> = fx.handlers.iter().map(|h| h.receiver.clone()).collect();
-                names.extend(fx.default_export.clone());
-                names.into_iter().filter(|n| mounters.contains_key(&(from_file.clone(), n.clone()))).collect()
-            }).unwrap_or_default();
-            let parent_prefixes = if parents.is_empty() { vec![String::new()] } else { parents.iter().flat_map(|p| prefixes(&(from_file.clone(), p.clone()), mounters, facts, depth + 1)).collect() };
+            let parents: Vec<String> = facts
+                .get(from_file.as_str())
+                .map(|fx| {
+                    let mut names: BTreeSet<String> = fx.handlers.iter().map(|h| h.receiver.clone()).collect();
+                    names.extend(fx.default_export.clone());
+                    names.into_iter().filter(|n| mounters.contains_key(&(from_file.clone(), n.clone()))).collect()
+                })
+                .unwrap_or_default();
+            let parent_prefixes = if parents.is_empty() {
+                vec![String::new()]
+            } else {
+                parents.iter().flat_map(|p| prefixes(&(from_file.clone(), p.clone()), mounters, facts, depth + 1)).collect()
+            };
             for pp in parent_prefixes {
                 out.push(format!("{}{}", pp.trim_end_matches('/'), if prefix == "/" { "" } else { prefix.as_str() }));
             }
@@ -1276,23 +1346,19 @@ fn place_handlers(files: &[&String], facts: &HashMap<&str, Facts>, handlers: &[(
     }
 }
 
-/// A relative import's file among `files`, trying the usual extensions and index files.
-fn resolve(files: &HashSet<&str>, from: &str, spec: &str) -> Option<String> {
-    if !spec.starts_with('.') {
-        return None;
-    }
-    let dir = from.rsplit_once('/').map_or("", |d| d.0);
-    let joined = crate::unused::normalize(&if dir.is_empty() { spec.to_string() } else { format!("{dir}/{spec}") });
-    let stem = joined.trim_end_matches(".js").trim_end_matches(".mjs");
-    [joined.clone(), format!("{stem}.ts"), format!("{stem}.js"), format!("{stem}.mts"), format!("{stem}.mjs"), format!("{stem}/index.ts"), format!("{stem}/index.js")].into_iter().find(|c| files.contains(c.as_str()))
-}
-
 fn is_code(f: &str) -> bool {
     matches!(split_ext(f).1, "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "mts" | "cts")
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Options {
+    /// The product code files among `files` (which also holds route files and configs).
+    product: HashSet<String>,
+}
+
 pub fn run(request: &Request) -> Result<Answer, String> {
-    let product: HashSet<String> = request.options.get("product").and_then(|p| p.as_array()).map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect()).unwrap_or_default();
+    let Options { product } = request.options()?;
     // Read: product code (uses and declared routes), route files whose exports name their methods, config files.
     let wanted: Vec<&String> = request
         .files
@@ -1302,25 +1368,47 @@ pub fn run(request: &Request) -> Result<Answer, String> {
                 return false;
             }
             let name = f.rsplit('/').next().unwrap_or(f);
-            product.contains(*f) || name.starts_with("next.config.") || name.starts_with("vite.config.") || name.starts_with("middleware.") || f.ends_with("app/routes.ts") || f.ends_with("app/routes.js") || split_ext(name).0 == "route" || split_ext(name).0 == "+server" 
+            product.contains(*f)
+                || name.starts_with("next.config.")
+                || name.starts_with("vite.config.")
+                || name.starts_with("middleware.")
+                || f.ends_with("app/routes.ts")
+                || f.ends_with("app/routes.js")
+                || split_ext(name).0 == "route"
+                || split_ext(name).0 == "+server"
         })
         .collect();
-    let facts: HashMap<&str, Facts> = wanted.par_iter().filter_map(|f| Some((f.as_str(), collect(f, &text::read(&request.root, f)?)?))).collect();
+    let facts: HashMap<&str, Facts> =
+        wanted.par_iter().filter_map(|f| Some((f.as_str(), collect(f, &text::read(&request.root, f)?)?))).collect();
 
     let mut cache = HashMap::new();
     let mut by_pkg: BTreeMap<String, Vec<&String>> = BTreeMap::new();
     for f in &request.files {
-        by_pkg.entry(crate::decisions::package_of(&request.root, f, &mut cache)).or_default().push(f);
+        by_pkg.entry(crate::graph::package_of(&request.root, f, &mut cache)).or_default().push(f);
     }
     // Another server in the repository (a backend package, a Python or Go service) may answer API paths this package
     // does not, so a missing API route is only reported when this package is the only server.
-    let servers: BTreeSet<&String> = by_pkg.keys().filter(|p| { let d = deps(&request.root, p); SERVER_DEPS.iter().any(|s| d.contains(*s)) || d.contains("@nestjs/core") }).collect();
-    let foreign = request.files.iter().any(|f| { let n = f.rsplit('/').next().unwrap_or(f); matches!(n, "requirements.txt" | "pyproject.toml" | "go.mod" | "Gemfile" | "pom.xml" | "composer.json" | "build.gradle" | "mix.exs") });
+    let servers: BTreeSet<&String> = by_pkg
+        .keys()
+        .filter(|p| {
+            let d = deps(&request.root, p);
+            SERVER_DEPS.iter().any(|s| d.contains(*s)) || d.contains("@nestjs/core")
+        })
+        .collect();
+    let foreign = request.files.iter().any(|f| {
+        let n = f.rsplit('/').next().unwrap_or(f);
+        matches!(n, "requirements.txt" | "pyproject.toml" | "go.mod" | "Gemfile" | "pom.xml" | "composer.json" | "build.gradle" | "mix.exs")
+    });
 
-    let mut findings: BTreeMap<String, (Finding, usize)> = BTreeMap::new();
+    let mut found: Vec<(String, Finding)> = vec![];
     let mut checked = 0;
     for (pkg, files) in &by_pkg {
-        let uses: Vec<(&str, &Use)> = files.iter().filter(|f| product.contains(f.as_str())).filter_map(|f| facts.get(f.as_str()).map(|fx| (f.as_str(), fx))).flat_map(|(f, fx)| fx.uses.iter().filter(move |u| request.changed(f, u.line)).map(move |u| (f, u))).collect();
+        let uses: Vec<(&str, &Use)> = files
+            .iter()
+            .filter(|f| product.contains(f.as_str()))
+            .filter_map(|f| facts.get(f.as_str()).map(|fx| (f.as_str(), fx)))
+            .flat_map(|(f, fx)| fx.uses.iter().filter(move |u| request.changed(f, u.line)).map(move |u| (f, u)))
+            .collect();
         if uses.is_empty() {
             continue;
         }
@@ -1333,20 +1421,46 @@ pub fn run(request: &Request) -> Result<Answer, String> {
             let matched: Vec<&Route> = t.routes.iter().filter(|r| matches(&r.segs, &u.path)).collect();
             let finding = match u.kind {
                 UseKind::Nav if !t.pages => None,
-                UseKind::Nav if matched.is_empty() => Some((format!("routes:{}", u.shown), format!("no page at {}: link to an existing route or add the page", u.shown))),
+                UseKind::Nav if matched.is_empty() => {
+                    Some((format!("routes:{}", u.shown), format!("no page at {}: link to an existing route or add the page", u.shown)))
+                }
                 UseKind::Api if matched.is_empty() => {
-                    let prefix_served = t.api && t.routes.iter().any(|r| r.api && r.segs.first() == u.path.first().map(|s| match s { USeg::Lit(l) => Seg::Lit(l.clone()), USeg::Dyn => Seg::Param }).as_ref());
-                    (prefix_served && !other_backend).then(|| (format!("routes:{}", u.shown), format!("no route handles {}: call an existing route or add the handler", u.shown)))
+                    let prefix_served = t.api
+                        && t.routes.iter().any(|r| {
+                            r.api
+                                && r.segs.first()
+                                    == u.path
+                                        .first()
+                                        .map(|s| match s {
+                                            USeg::Lit(l) => Seg::Lit(l.clone()),
+                                            USeg::Dyn => Seg::Param,
+                                        })
+                                        .as_ref()
+                        });
+                    (prefix_served && !other_backend).then(|| {
+                        (format!("routes:{}", u.shown), format!("no route handles {}: call an existing route or add the handler", u.shown))
+                    })
                 }
                 _ => {
                     let method = u.method.as_deref().map(|m| if m == "HEAD" { "GET" } else { m });
                     match method {
                         Some(m) if m != "OPTIONS" && matched.iter().all(|r| r.methods.as_ref().is_some_and(|ms| !ms.contains(m))) => {
-                            let mut handled: BTreeSet<&str> = matched.iter().flat_map(|r| r.methods.iter().flatten()).map(|s| s.as_str()).collect();
+                            let mut handled: BTreeSet<&str> =
+                                matched.iter().flat_map(|r| r.methods.iter().flatten()).map(|s| s.as_str()).collect();
                             handled.remove("HEAD");
                             let list: Vec<&str> = handled.into_iter().collect();
-                            let what = if u.kind == UseKind::Nav { format!("a link opens {} with GET", u.shown) } else { format!("{m} {}", u.shown) };
-                            Some((format!("routes:{m} {}", u.shown), format!("{what}: the route handles only {}", if list.is_empty() { "no method".to_string() } else { list.join(", ") })))
+                            let what = if u.kind == UseKind::Nav {
+                                format!("a link opens {} with GET", u.shown)
+                            } else {
+                                format!("{m} {}", u.shown)
+                            };
+                            Some((
+                                format!("routes:{m} {}", u.shown),
+                                format!(
+                                    "{what}: the route handles only {}",
+                                    if list.is_empty() { "no method".to_string() } else { list.join(", ") }
+                                ),
+                            ))
                         }
                         _ => None,
                     }
@@ -1354,21 +1468,17 @@ pub fn run(request: &Request) -> Result<Answer, String> {
             };
             checked += 1;
             if let Some((target, message)) = finding {
-                findings.entry(target.clone()).and_modify(|e| e.1 += 1).or_insert((Finding { file: file.to_string(), line: u.line, target, message: format!("{file}:{} {message}", u.line) }, 0));
+                found.push((
+                    target.clone(),
+                    Finding { file: file.to_string(), line: u.line, target, message: format!("{file}:{} {message}", u.line) },
+                ));
             }
         }
     }
-    let mut findings: Vec<Finding> = findings
-        .into_values()
-        .map(|(mut f, more)| {
-            if more > 0 {
-                f.message = f.message.replacen(": ", &format!(" (and {more} more place{}): ", if more == 1 { "" } else { "s" }), 1);
-            }
-            f
-        })
-        .collect();
-    findings.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
-    Ok(Answer { findings, summary: format!("{checked} links, navigations and API calls checked against the routes of {} packages", by_pkg.len()), data: None })
+    let findings = crate::first_per_key(found, |m, more| {
+        m.replacen(": ", &format!(" (and {more} more place{}): ", if more == 1 { "" } else { "s" }), 1)
+    });
+    Ok(Answer::new(findings, format!("{checked} links, navigations and API calls checked against the routes of {} packages", by_pkg.len())))
 }
 
 #[cfg(test)]
@@ -1400,7 +1510,10 @@ mod tests {
         assert!(matches(&docs, &p("'/docs'")) && matches(&docs, &p("'/docs/a/b'")));
         let splat = route(vec![(Seg::Lit("docs".into()), false), (Seg::Splat, false)]);
         assert!(!matches(&splat, &p("'/docs'")));
-        assert!(matches(&route(vec![(Seg::Lit("files".into()), false), (Seg::Lit("a".into()), false), (Seg::Lit("b".into()), false)]), &p("`/files/${path}`")));
+        assert!(matches(
+            &route(vec![(Seg::Lit("files".into()), false), (Seg::Lit("a".into()), false), (Seg::Lit("b".into()), false)]),
+            &p("`/files/${path}`")
+        ));
     }
 
     #[test]
@@ -1431,7 +1544,14 @@ const items = [{ href: "/team", label: "Team" }];
 "#;
         let f = collect("a.tsx", src).unwrap();
         let uses: Vec<(String, UseKind, Option<String>)> = f.uses.iter().map(|u| (u.shown.clone(), u.kind, u.method.clone())).collect();
-        assert_eq!(uses, vec![("/api/orders".into(), UseKind::Api, Some("POST".into())), ("/projects/${…}/edit".into(), UseKind::Nav, Some("GET".into())), ("/team".into(), UseKind::Nav, None)]);
+        assert_eq!(
+            uses,
+            vec![
+                ("/api/orders".into(), UseKind::Api, Some("POST".into())),
+                ("/projects/${…}/edit".into(), UseKind::Nav, Some("GET".into())),
+                ("/team".into(), UseKind::Nav, None)
+            ]
+        );
         assert_eq!(f.declared.len(), 2);
         assert_eq!(expand(&f.declared[1]), vec![vec![Seg::Lit("settings".into()), Seg::Lit("billing".into())]]);
         assert_eq!(f.handlers.len(), 1);

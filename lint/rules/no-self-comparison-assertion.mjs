@@ -20,7 +20,7 @@ export const rule = defineRule({
     const same = (a, b) => a && b && a.type !== "Literal" && context.sourceCode.getText(a) === context.sourceCode.getText(b);
     return {
       CallExpression(node) {
-        const callee = node.callee;
+        const callee = /** @type {any} */ (node.callee);
         if (callee.type !== "MemberExpression") return;
         const name = callee.property.name;
         // expect(x).toBe(x)

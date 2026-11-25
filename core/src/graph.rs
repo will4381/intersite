@@ -20,7 +20,10 @@ use crate::text::{self, Lines};
 pub static CODE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.(?:[cm]?[jt]sx?)$").unwrap());
 static SKIP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|/)(?:node_modules|bower_components|\.git)/|\.min\.[cm]?js$").unwrap());
 /// Extensions a specifier without one may stand for, in the order TypeScript and bundlers try them.
-pub const EXTENSIONS: [&str; 16] = [".ts", ".tsx", ".d.ts", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".d.mts", ".d.cts", ".json", ".vue", ".svelte", ".astro", ".node"];
+pub const EXTENSIONS: [&str; 16] = [
+    ".ts", ".tsx", ".d.ts", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".d.mts", ".d.cts", ".json", ".vue", ".svelte", ".astro",
+    ".node",
+];
 /// React Native and Expo pick a file per platform: `./Button` is `Button.ios.tsx` on iOS.
 const PLATFORMS: [&str; 5] = ["", ".ios", ".android", ".native", ".web"];
 
@@ -61,6 +64,10 @@ pub struct Import {
 }
 
 impl Import {
+    fn new(spec: String, kind: Kind, line: u32) -> Self {
+        Import { spec, kind, line, names: vec![], star: false, in_try: false }
+    }
+
     /// Gone once compiled: `import type`, or only `type` names.
     pub fn erased(&self) -> bool {
         self.kind == Kind::Type || (!self.names.is_empty() && self.names.iter().all(|n| n.type_only))
@@ -136,6 +143,48 @@ pub fn parent(p: &str) -> &str {
     p.rfind('/').map_or("", |i| &p[..i])
 }
 
+pub fn basename(p: &str) -> &str {
+    p.rfind('/').map_or(p, |i| &p[i + 1..])
+}
+
+/// A path without its last extension (`a/b.test.ts` is `a/b.test`); a dotfile keeps its name.
+pub fn no_ext(path: &str) -> &str {
+    let name = basename(path);
+    match name.rfind('.') {
+        Some(i) if i > 0 && i + 1 < name.len() => &path[..path.len() - name.len() + i],
+        _ => path,
+    }
+}
+
+/// A path without any extension (`a/b.test.ts` is `a/b`); a dotfile keeps its name.
+pub fn no_exts(path: &str) -> &str {
+    let name = basename(path);
+    match name.find('.') {
+        Some(i) if i > 0 => &path[..path.len() - name.len() + i],
+        _ => path,
+    }
+}
+
+/// The package a file belongs to, for checks that build no graph: the nearest folder above it with a package.json on
+/// disk, or the repository. Separate
+/// packages of a monorepo are separate programs, each entitled to read its own environment and make its own decisions.
+pub fn package_of(root: &str, file: &str, cache: &mut std::collections::HashMap<String, String>) -> String {
+    let mut dir = parent(file).to_string();
+    let start = dir.clone();
+    loop {
+        if let Some(p) = cache.get(&dir) {
+            let p = p.clone();
+            cache.insert(start, p.clone());
+            return p;
+        }
+        if dir.is_empty() || std::path::Path::new(root).join(&dir).join("package.json").exists() {
+            cache.insert(start, dir.clone());
+            return dir;
+        }
+        dir = parent(&dir).to_string();
+    }
+}
+
 /// POSIX normalisation of a repository path; None when it climbs above the top.
 pub fn normalize(path: &str) -> Option<String> {
     let mut out: Vec<&str> = Vec::new();
@@ -155,6 +204,22 @@ pub fn join(dir: &str, rel: &str) -> Option<String> {
     normalize(&if dir.is_empty() { rel.to_string() } else { format!("{dir}/{rel}") })
 }
 
+const CODE_EXTENSIONS: [&str; 8] = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
+
+/// The file among `files` a relative import from `from` names: as written, with each code extension (`./a.js` is
+/// `a.ts` in TypeScript), or as a folder's index file. None for a package import or a file not in `files`.
+pub fn resolve_relative(files: &HashSet<&str>, from: &str, spec: &str) -> Option<String> {
+    if !spec.starts_with('.') {
+        return None;
+    }
+    let base = join(parent(from), spec)?;
+    let stem = [".js", ".jsx", ".mjs", ".cjs"].iter().find_map(|e| base.strip_suffix(e)).unwrap_or(&base);
+    std::iter::once(base.clone())
+        .chain(CODE_EXTENSIONS.iter().map(|e| format!("{stem}{e}")))
+        .chain(CODE_EXTENSIONS.iter().map(|e| format!("{base}/index{e}")))
+        .find(|c| files.contains(c.as_str()))
+}
+
 /// The package a bare specifier names: `@scope/name` or `name`, without a subpath.
 pub fn package_name(spec: &str) -> &str {
     let mut parts = spec.splitn(3, '/');
@@ -166,7 +231,52 @@ pub fn package_name(spec: &str) -> &str {
 }
 
 const BUILTINS: [&str; 46] = [
-    "assert", "async_hooks", "buffer", "child_process", "cluster", "console", "constants", "crypto", "dgram", "diagnostics_channel", "dns", "domain", "events", "fs", "http", "http2", "https", "inspector", "module", "net", "os", "path", "perf_hooks", "process", "punycode", "querystring", "readline", "repl", "stream", "string_decoder", "sys", "timers", "tls", "trace_events", "tty", "url", "util", "v8", "vm", "wasi", "worker_threads", "zlib", "test", "sqlite", "sea", "events",
+    "assert",
+    "async_hooks",
+    "buffer",
+    "child_process",
+    "cluster",
+    "console",
+    "constants",
+    "crypto",
+    "dgram",
+    "diagnostics_channel",
+    "dns",
+    "domain",
+    "events",
+    "fs",
+    "http",
+    "http2",
+    "https",
+    "inspector",
+    "module",
+    "net",
+    "os",
+    "path",
+    "perf_hooks",
+    "process",
+    "punycode",
+    "querystring",
+    "readline",
+    "repl",
+    "stream",
+    "string_decoder",
+    "sys",
+    "timers",
+    "tls",
+    "trace_events",
+    "tty",
+    "url",
+    "util",
+    "v8",
+    "vm",
+    "wasi",
+    "worker_threads",
+    "zlib",
+    "test",
+    "sqlite",
+    "sea",
+    "events",
 ];
 
 pub fn is_builtin(spec: &str) -> bool {
@@ -238,18 +348,10 @@ impl Walker<'_> {
     }
 
     fn dynamic(&mut self, kind: Kind, arg: Option<&Expression>, offset: u32) {
-        let spec = match arg {
-            Some(Expression::StringLiteral(s)) => s.value.to_string(),
-            Some(Expression::TemplateLiteral(t)) if t.expressions.is_empty() => t.quasis.first().map(|q| q.value.raw.to_string()).unwrap_or_default(),
-            _ => return,
-        };
+        let Some(spec) = arg.and_then(|a| crate::js::string(a, true)).map(str::to_string) else { return };
         let line = self.line(offset);
-        self.module.imports.push(Import { spec, kind, line, names: vec![], star: false, in_try: self.tries > 0 });
+        self.module.imports.push(Import { in_try: self.tries > 0, ..Import::new(spec, kind, line) });
     }
-}
-
-fn is_env_object(text: &str) -> bool {
-    matches!(text, "process.env" | "import.meta.env")
 }
 
 impl<'a> Visit<'a> for Walker<'_> {
@@ -302,7 +404,7 @@ impl<'a> Visit<'a> for Walker<'_> {
     }
 
     fn visit_static_member_expression(&mut self, it: &StaticMemberExpression<'a>) {
-        if is_env_object(self.text(it.object.span())) {
+        if crate::js::is_env_object(self.text(it.object.span())) {
             let name = it.property.name.to_string();
             self.env(&name, it.span.start);
         }
@@ -310,7 +412,7 @@ impl<'a> Visit<'a> for Walker<'_> {
     }
 
     fn visit_computed_member_expression(&mut self, it: &ComputedMemberExpression<'a>) {
-        if is_env_object(self.text(it.object.span())) {
+        if crate::js::is_env_object(self.text(it.object.span())) {
             if let Expression::StringLiteral(s) = &it.expression {
                 let name = s.value.to_string();
                 self.env(&name, it.span.start);
@@ -321,7 +423,7 @@ impl<'a> Visit<'a> for Walker<'_> {
 
     fn visit_variable_declarator(&mut self, it: &VariableDeclarator<'a>) {
         if let (BindingPattern::ObjectPattern(pattern), Some(init)) = (&it.id, &it.init) {
-            if is_env_object(self.text(init.span())) {
+            if crate::js::is_env_object(self.text(init.span())) {
                 for p in &pattern.properties {
                     if let Some(name) = p.key.static_name() {
                         let name = name.to_string();
@@ -361,13 +463,25 @@ pub fn read_module(path: &str, src: &str) -> Option<Module> {
                     let mut names = vec![];
                     for s in d.specifiers.iter().flatten() {
                         match s {
-                            ImportDeclarationSpecifier::ImportSpecifier(s) => names.push(Name { name: export_name(&s.imported), line: w.line(s.span.start), type_only: s.import_kind.is_type() }),
-                            ImportDeclarationSpecifier::ImportDefaultSpecifier(s) => names.push(Name { name: "default".into(), line: w.line(s.span.start), type_only: false }),
+                            ImportDeclarationSpecifier::ImportSpecifier(s) => names.push(Name {
+                                name: export_name(&s.imported),
+                                line: w.line(s.span.start),
+                                type_only: s.import_kind.is_type(),
+                            }),
+                            ImportDeclarationSpecifier::ImportDefaultSpecifier(s) => {
+                                names.push(Name { name: "default".into(), line: w.line(s.span.start), type_only: false })
+                            }
                             ImportDeclarationSpecifier::ImportNamespaceSpecifier(_) => {}
                         }
                     }
-                    let kind = if d.specifiers.is_none() { Kind::Side } else if type_only { Kind::Type } else { Kind::Static };
-                    w.module.imports.push(Import { spec: d.source.value.to_string(), kind, line, names, star: false, in_try: false });
+                    let kind = if d.specifiers.is_none() {
+                        Kind::Side
+                    } else if type_only {
+                        Kind::Type
+                    } else {
+                        Kind::Static
+                    };
+                    w.module.imports.push(Import { names, ..Import::new(d.source.value.to_string(), kind, line) });
                 }
                 Statement::ExportNamedDeclaration(d) => {
                     syntax = true;
@@ -409,9 +523,13 @@ pub fn read_module(path: &str, src: &str) -> Option<Module> {
                     if let Some(source) = &d.source {
                         reexports += 1;
                         let line = w.line(source.span.start);
-                        let names = d.specifiers.iter().map(|s| Name { name: export_name(&s.local), line: w.line(s.span.start), type_only: s.export_kind.is_type() }).collect();
+                        let names = d
+                            .specifiers
+                            .iter()
+                            .map(|s| Name { name: export_name(&s.local), line: w.line(s.span.start), type_only: s.export_kind.is_type() })
+                            .collect();
                         let kind = if d.export_kind.is_type() { Kind::Type } else { Kind::ReExport };
-                        w.module.imports.push(Import { spec: source.value.to_string(), kind, line, names, star: false, in_try: false });
+                        w.module.imports.push(Import { names, ..Import::new(source.value.to_string(), kind, line) });
                     } else if d.declaration.is_none() {
                         // `export { a, b }` of names this file imported counts as re-exporting; of its own, as code.
                         reexports += 1;
@@ -424,9 +542,12 @@ pub fn read_module(path: &str, src: &str) -> Option<Module> {
                     match &d.exported {
                         Some(name) => {
                             w.module.exports.insert(export_name(name));
-                            w.module.imports.push(Import { spec: d.source.value.to_string(), kind: Kind::ReExport, line, names: vec![], star: false, in_try: false });
+                            w.module.imports.push(Import::new(d.source.value.to_string(), Kind::ReExport, line));
                         }
-                        None => w.module.imports.push(Import { spec: d.source.value.to_string(), kind: if d.export_kind.is_type() { Kind::Type } else { Kind::ReExport }, line, names: vec![], star: true, in_try: false }),
+                        None => {
+                            let kind = if d.export_kind.is_type() { Kind::Type } else { Kind::ReExport };
+                            w.module.imports.push(Import { star: true, ..Import::new(d.source.value.to_string(), kind, line) })
+                        }
                     }
                 }
                 Statement::ExportDefaultDeclaration(_) => {
@@ -442,7 +563,7 @@ pub fn read_module(path: &str, src: &str) -> Option<Module> {
                     if let TSModuleReference::ExternalModuleReference(r) = &d.module_reference {
                         syntax = true;
                         let line = w.line(r.expression.span.start);
-                        w.module.imports.push(Import { spec: r.expression.value.to_string(), kind: Kind::Static, line, names: vec![], star: false, in_try: false });
+                        w.module.imports.push(Import::new(r.expression.value.to_string(), Kind::Static, line));
                     }
                 }
                 Statement::TSModuleDeclaration(d) => {
@@ -459,7 +580,8 @@ pub fn read_module(path: &str, src: &str) -> Option<Module> {
         if !syntax {
             w.module.open = true;
         }
-        w.module.barrel = reexports > 0 && others == 0 && w.module.imports.iter().all(|i| matches!(i.kind, Kind::ReExport | Kind::Type | Kind::Static));
+        w.module.barrel =
+            reexports > 0 && others == 0 && w.module.imports.iter().all(|i| matches!(i.kind, Kind::ReExport | Kind::Type | Kind::Static));
         // A JavaScript file's JSDoc `@typedef`s are types other files may import.
         if path.ends_with("js") && src.contains("@typedef") {
             static TYPEDEF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@(?:typedef|callback)\s+(?:\{[^\n]*\}\s+)?([\w$]+)").unwrap());
@@ -541,13 +663,18 @@ fn aliases(root: &str, files: &[String]) -> BTreeMap<String, Vec<Alias>> {
                 Some(serde_json::Value::Array(a)) => a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect(),
                 _ => vec![],
             };
-            current = extends.into_iter().rev().find(|e| e.starts_with('.')).and_then(|e| join(parent(&config), &if e.ends_with(".json") { e } else { format!("{e}.json") }));
+            current = extends
+                .into_iter()
+                .rev()
+                .find(|e| e.starts_with('.'))
+                .and_then(|e| join(parent(&config), &if e.ends_with(".json") { e } else { format!("{e}.json") }));
         }
         let Some((paths, paths_dir)) = paths else { continue };
         let base = base.unwrap_or(paths_dir);
         let list = out.entry(parent(file).to_string()).or_default();
         for (key, targets) in paths.as_object().into_iter().flatten() {
-            let targets: Vec<String> = targets.as_array().into_iter().flatten().filter_map(|t| t.as_str()).filter_map(|t| join(&base, t)).collect();
+            let targets: Vec<String> =
+                targets.as_array().into_iter().flatten().filter_map(|t| t.as_str()).filter_map(|t| join(&base, t)).collect();
             let (prefix, suffix, wildcard) = match key.split_once('*') {
                 Some((p, s)) => (p.to_string(), s.to_string(), true),
                 None => (key.clone(), String::new(), false),
@@ -561,7 +688,8 @@ fn aliases(root: &str, files: &[String]) -> BTreeMap<String, Vec<Alias>> {
 impl Graph {
     pub fn build(root: &str, files: &[String]) -> Graph {
         let code: Vec<&String> = files.iter().filter(|f| CODE.is_match(f) && !SKIP.is_match(f)).collect();
-        let modules: HashMap<String, Module> = code.par_iter().filter_map(|f| Some(((*f).clone(), read_module(f, &text::read(root, f)?)?))).collect();
+        let modules: HashMap<String, Module> =
+            code.par_iter().filter_map(|f| Some(((*f).clone(), read_module(f, &text::read(root, f)?)?))).collect();
         let mut graph = Graph {
             root: root.to_string(),
             packages: packages(root, files),
@@ -598,7 +726,15 @@ impl Graph {
 
     /// Whether a specifier is one of the project's own aliases (tsconfig `paths`, package `imports`, SvelteKit `$lib`).
     pub fn is_alias(&self, file: &str, spec: &str) -> bool {
-        (spec.starts_with('#') && self.packages_of(file).iter().any(|p| p.imports)) || (spec.starts_with("$lib") && self.svelte_dir(file).is_some()) || self.aliases_for(file).iter().any(|a| if a.wildcard { spec.starts_with(&a.prefix) && spec.ends_with(&a.suffix) } else { spec == a.prefix })
+        (spec.starts_with('#') && self.packages_of(file).iter().any(|p| p.imports))
+            || (spec.starts_with("$lib") && self.svelte_dir(file).is_some())
+            || self.aliases_for(file).iter().any(|a| {
+                if a.wildcard {
+                    spec.starts_with(&a.prefix) && spec.ends_with(&a.suffix)
+                } else {
+                    spec == a.prefix
+                }
+            })
     }
 
     /// On disk, not in git's list: that still names a tracked file the change deleted.
@@ -634,7 +770,8 @@ impl Graph {
     fn svelte_dir<'f>(&self, file: &'f str) -> Option<&'f str> {
         let mut dir = parent(file);
         loop {
-            if ["svelte.config.js", "svelte.config.ts", "svelte.config.mjs"].iter().any(|n| self.exists(&join(dir, n).unwrap_or_default())) {
+            if ["svelte.config.js", "svelte.config.ts", "svelte.config.mjs"].iter().any(|n| self.exists(&join(dir, n).unwrap_or_default()))
+            {
                 return Some(dir);
             }
             if dir.is_empty() {
@@ -649,7 +786,11 @@ impl Graph {
             return self.find_file(&join(self.svelte_dir(file)?, &format!("src/lib{rest}"))?);
         }
         for alias in self.aliases_for(file) {
-            let matched = if alias.wildcard { spec.strip_prefix(alias.prefix.as_str()).and_then(|r| r.strip_suffix(alias.suffix.as_str())) } else { (spec == alias.prefix).then_some("") };
+            let matched = if alias.wildcard {
+                spec.strip_prefix(alias.prefix.as_str()).and_then(|r| r.strip_suffix(alias.suffix.as_str()))
+            } else {
+                (spec == alias.prefix).then_some("")
+            };
             let Some(star) = matched else { continue };
             for target in &alias.targets {
                 if let Some(found) = normalize(&target.replace('*', star)).and_then(|t| self.find_file(&t)) {
@@ -693,7 +834,14 @@ impl Graph {
     fn oxc(&self, resolver: &Resolver, plain: &Resolver, file: &str, spec: &str) -> Target {
         let path = PathBuf::from(&self.root).join(file);
         let mut answer = resolver.resolve_file(&path, spec);
-        if matches!(answer, Err(ResolveError::TsconfigNotFound(_) | ResolveError::IOError(_) | ResolveError::TsconfigSelfReference(_) | ResolveError::TsconfigCircularExtend(_) | ResolveError::Json(_))) {
+        if matches!(
+            answer,
+            Err(ResolveError::TsconfigNotFound(_)
+                | ResolveError::IOError(_)
+                | ResolveError::TsconfigSelfReference(_)
+                | ResolveError::TsconfigCircularExtend(_)
+                | ResolveError::Json(_))
+        ) {
             answer = plain.resolve(path.parent().unwrap_or(Path::new(&self.root)), spec);
         }
         match answer {
@@ -714,7 +862,8 @@ impl Graph {
 
     /// The package folders from a file up to the repository top, nearest first.
     pub fn packages_of(&self, file: &str) -> Vec<&Package> {
-        let mut list: Vec<&Package> = self.packages.iter().filter(|p| p.dir.is_empty() || file.starts_with(&format!("{}/", p.dir))).collect();
+        let mut list: Vec<&Package> =
+            self.packages.iter().filter(|p| p.dir.is_empty() || file.starts_with(&format!("{}/", p.dir))).collect();
         list.sort_by_key(|p| std::cmp::Reverse(p.dir.len()));
         list
     }
@@ -724,7 +873,8 @@ impl Graph {
     pub fn declares(&self, file: &str, spec: &str) -> bool {
         let name = package_name(spec);
         let types = format!("@types/{}", name.trim_start_matches('@').replace('/', "__"));
-        self.packages_of(file).iter().any(|p| p.deps.contains(name) || p.deps.contains(&types) || p.name.as_deref() == Some(name)) || self.packages.iter().any(|p| p.name.as_deref() == Some(name))
+        self.packages_of(file).iter().any(|p| p.deps.contains(name) || p.deps.contains(&types) || p.name.as_deref() == Some(name))
+            || self.packages.iter().any(|p| p.name.as_deref() == Some(name))
     }
 
     /// Everything a file exports, through `export *` chains; None when that cannot be listed.
@@ -746,9 +896,11 @@ impl Graph {
                     continue;
                 }
                 // A re-export from the base version of a file is resolved against today's tree: close enough.
-                let target = self.targets.get(&f).and_then(|t| t.get(i)).cloned().or_else(|| match join(parent(&f), &import.spec).and_then(|p| self.find_file(&p)) {
-                    Some(found) => Some(Target::File(found)),
-                    None => Some(Target::Missing),
+                let target = self.targets.get(&f).and_then(|t| t.get(i)).cloned().or_else(|| {
+                    match join(parent(&f), &import.spec).and_then(|p| self.find_file(&p)) {
+                        Some(found) => Some(Target::File(found)),
+                        None => Some(Target::Missing),
+                    }
                 });
                 match target {
                     Some(Target::File(next)) if CODE.is_match(&next) && !next.ends_with(".json") => stack.push(next),
@@ -778,7 +930,21 @@ fn resolve_options(tsconfig: bool) -> ResolveOptions {
             (".mjs".into(), v(&[".mts", ".d.mts", ".mjs"])),
             (".cjs".into(), v(&[".cts", ".d.cts", ".cjs"])),
         ],
-        condition_names: v(&["types", "import", "require", "node", "browser", "react-native", "worker", "workerd", "edge-light", "bun", "deno", "development", "default"]),
+        condition_names: v(&[
+            "types",
+            "import",
+            "require",
+            "node",
+            "browser",
+            "react-native",
+            "worker",
+            "workerd",
+            "edge-light",
+            "bun",
+            "deno",
+            "development",
+            "default",
+        ]),
         main_fields: v(&["types", "typings", "module", "main", "browser", "react-native"]),
         builtin_modules: true,
         symlinks: true,
@@ -817,11 +983,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn path_helpers() {
+        assert_eq!((parent("a/b.ts"), parent("b.ts"), basename("a/b.ts")), ("a", "", "b.ts"));
+        assert_eq!((no_ext("a/b.test.ts"), no_ext("a/.env"), no_ext("a/b.")), ("a/b.test", "a/.env", "a/b."));
+        assert_eq!((no_exts("src/a.test.ts"), no_exts("a/.env")), ("src/a", "a/.env"));
+        assert_eq!(normalize("src/a/../b/./c").as_deref(), Some("src/b/c"));
+        assert_eq!((join("", "./x"), join("a", "../../x")), (Some("x".to_string()), None));
+    }
+
+    #[test]
     fn reads_imports_exports_and_where_a_module_runs() {
         let src = "'use client';\nimport a, { b, type C } from './a';\nimport type { D } from './d';\nimport './side.css';\nimport * as ns from 'pkg';\nexport { e } from './e';\nexport * from './f';\nexport * as g from './g';\nexport const { h, i: [j] } = obj;\nexport function k() {}\nexport type L = 1;\nexport interface M {}\nexport enum N {}\nexport default 1;\nconst url = process.env.DATABASE_URL;\nfunction later() { return process.env.LATER; }\nconst x = require('x');\ntry { require('optional'); } catch {}\nconst y = import('./lazy');\n";
         let m = read_module("a.tsx", src).unwrap();
         assert!(m.client && !m.server && !m.open && !m.barrel);
-        let imports: Vec<(&str, Kind, Vec<&str>, bool, bool)> = m.imports.iter().map(|i| (i.spec.as_str(), i.kind, i.names.iter().map(|n| n.name.as_str()).collect(), i.star, i.in_try)).collect();
+        let imports: Vec<(&str, Kind, Vec<&str>, bool, bool)> = m
+            .imports
+            .iter()
+            .map(|i| (i.spec.as_str(), i.kind, i.names.iter().map(|n| n.name.as_str()).collect(), i.star, i.in_try))
+            .collect();
         assert_eq!(
             imports,
             vec![
@@ -863,5 +1042,28 @@ mod tests {
         assert_eq!(jsonc("{\n // c\n \"a\": \"http://x\", /* b */ \"b\": [1,],\n}").unwrap()["a"], "http://x");
         let g = glob("src/features/*/**").unwrap();
         assert!(g.is_match("src/features/cart/a/b.ts") && !g.is_match("src/lib/a.ts"));
+    }
+
+    #[test]
+    fn bun_env_is_an_env_read() {
+        let m = read_module(
+            "a.ts",
+            "const k = Bun.env.STRIPE_SECRET;
+const { TOKEN } = Bun.env;
+",
+        )
+        .unwrap();
+        assert_eq!(m.env, vec![("STRIPE_SECRET".to_string(), 1), ("TOKEN".to_string(), 2)]);
+    }
+
+    #[test]
+    fn relative_imports_resolve_to_any_code_extension() {
+        let files: HashSet<&str> = ["src/routes/admin.tsx", "src/lib/db.ts", "src/ui/index.jsx", "src/a.mts"].into();
+        assert_eq!(resolve_relative(&files, "src/app.ts", "./routes/admin"), Some("src/routes/admin.tsx".into()));
+        assert_eq!(resolve_relative(&files, "src/routes/admin.tsx", "../lib/db.js"), Some("src/lib/db.ts".into()));
+        assert_eq!(resolve_relative(&files, "src/app.ts", "./ui"), Some("src/ui/index.jsx".into()));
+        assert_eq!(resolve_relative(&files, "src/app.ts", "./a.mjs"), Some("src/a.mts".into()));
+        assert_eq!(resolve_relative(&files, "src/app.ts", "react"), None);
+        assert_eq!(resolve_relative(&files, "src/app.ts", "../../outside"), None);
     }
 }

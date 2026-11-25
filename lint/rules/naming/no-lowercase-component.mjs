@@ -30,7 +30,7 @@ export const rule = defineRule({
   createOnce(context) {
     return {
       before: () => !isTestFile(context),
-      ":function"(fn) {
+      ":function"(/** @type {any} */ fn) {
         const name = functionName(fn);
         if (!name || !/^[a-z]/.test(name) || /^(?:render|use|get|create|build|make|to|with)[A-Z]/.test(name) || !atModuleScope(fn)) return;
         const exported = /Export/.test(fn.parent?.type ?? "") || /Export/.test(fn.parent?.parent?.parent?.type ?? "");

@@ -15,7 +15,8 @@ static GENERATED: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?:^|/)(?:\.next|\.svelte-kit|\.astro|\.nuxt|\.output|\.react-router|\.source|\.velite|\.contentlayer|\.wrangler|\.expo|\.vercel|\.turbo|_generated|__generated__|generated|\.generated|\+types|\$types|paraglide|dist|build|out|\.cache)(?:/|$)").unwrap()
 });
 /// Fixtures and sample data: code kept broken or incomplete on purpose, as input for a tool's tests.
-static FIXTURE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|/)(?:__)?(?:test[-_])?fixtures?(?:__)?/|(?:^|/)(?:testdata|__snapshots__)/").unwrap());
+static FIXTURE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:^|/)(?:__)?(?:test[-_])?fixtures?(?:__)?/|(?:^|/)(?:testdata|__snapshots__)/").unwrap());
 /// A name npm would accept: lowercase, an optional scope.
 static PACKAGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:@[a-z0-9][a-z0-9._~-]*/)?[a-z0-9][a-z0-9._-]*$").unwrap());
 /// Bundler and test-runner configs, whose `alias` maps can make any word an import.
@@ -24,7 +25,22 @@ static BUNDLER_CONFIG: LazyLock<Regex> = LazyLock::new(|| {
 });
 static QUOTED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"["'`]([^"'`\s]+)["'`]"#).unwrap());
 /// Modules a framework or runtime provides with no package behind them.
-const VIRTUAL: [&str; 14] = ["virtual:", "astro:", "$app/", "$env/", "$service-worker", "~", "bun:", "cloudflare:", "#", "@/", "uno.css", "__STATIC_CONTENT_MANIFEST", "sveltekit:", "vinxi/"];
+const VIRTUAL: [&str; 14] = [
+    "virtual:",
+    "astro:",
+    "$app/",
+    "$env/",
+    "$service-worker",
+    "~",
+    "bun:",
+    "cloudflare:",
+    "#",
+    "@/",
+    "uno.css",
+    "__STATIC_CONTENT_MANIFEST",
+    "sveltekit:",
+    "vinxi/",
+];
 /// Runtimes that provide modules of their own: k6 load tests, Bun.
 const RUNTIMES: [&str; 2] = ["k6", "bun"];
 /// Imports Next.js resolves itself, without a package of their own.
@@ -40,7 +56,11 @@ fn ambient_matches(pattern: &str, spec: &str) -> bool {
 /// The closest of `names` to `name`, when it is a likely typo or casing slip.
 fn closest<'a>(name: &str, names: impl Iterator<Item = &'a String>) -> Option<&'a String> {
     let lower = name.to_lowercase();
-    names.map(|n| (strsim(&lower, &n.to_lowercase()), n)).filter(|(d, n)| *d <= (name.len().max(n.len()) / 3).max(1)).min_by_key(|(d, _)| *d).map(|(_, n)| n)
+    names
+        .map(|n| (strsim(&lower, &n.to_lowercase()), n))
+        .filter(|(d, n)| *d <= (name.len().max(n.len()) / 3).max(1))
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, n)| n)
 }
 
 /// Levenshtein distance.
@@ -59,14 +79,6 @@ fn strsim(a: &str, b: &str) -> usize {
     row[b.len()]
 }
 
-fn no_ext(path: &str) -> &str {
-    let name = path.rfind('/').map_or(0, |i| i + 1);
-    match path[name..].find('.') {
-        Some(i) if i > 0 => &path[..name + i],
-        _ => path,
-    }
-}
-
 /// The path an unresolved specifier meant: the joined path of a relative one, the alias itself otherwise.
 fn candidate(file: &str, spec: &str) -> String {
     if spec.starts_with('.') {
@@ -78,7 +90,10 @@ fn candidate(file: &str, spec: &str) -> String {
 /// Words that bundler configs, Deno import maps and package.json `imports` make importable.
 fn alias_words(root: &str, files: &[String]) -> HashSet<String> {
     let mut words = HashSet::new();
-    for f in files.iter().filter(|f| BUNDLER_CONFIG.is_match(f) || f.ends_with("deno.json") || f.ends_with("deno.jsonc") || f.ends_with("import_map.json")) {
+    for f in files
+        .iter()
+        .filter(|f| BUNDLER_CONFIG.is_match(f) || f.ends_with("deno.json") || f.ends_with("deno.jsonc") || f.ends_with("import_map.json"))
+    {
         if let Some(text) = text::read(root, f) {
             words.extend(QUOTED.captures_iter(&text).map(|c| graph::package_name(&c[1]).to_string()));
         }
@@ -86,12 +101,23 @@ fn alias_words(root: &str, files: &[String]) -> HashSet<String> {
     words
 }
 
+/// What the Node side's graph gates send (gates/imports.mjs `graphGate`).
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Options {
+    /// Files the change added or modified.
+    changed: HashSet<String>,
+    /// Files the change deleted or renamed away.
+    gone: Vec<String>,
+    /// Each modified code file as it was on the base.
+    base: HashMap<String, String>,
+    #[serde(rename = "fresh")]
+    _fresh: serde::de::IgnoredAny,
+}
+
 pub fn run(request: &Request) -> Result<Answer, String> {
     let graph = Graph::build(&request.root, &request.files);
-    let o = &request.options;
-    let changed: HashSet<String> = serde_json::from_value(o["changed"].clone()).unwrap_or_default();
-    let gone: Vec<String> = serde_json::from_value(o["gone"].clone()).unwrap_or_default();
-    let base_texts: HashMap<String, String> = serde_json::from_value(o["base"].clone()).unwrap_or_default();
+    let Options { changed, gone, base: base_texts, .. } = request.options()?;
     let base: HashMap<String, Module> = base_texts.iter().map(|(f, t)| (f.clone(), graph::read_module(f, t).unwrap_or_default())).collect();
     let ambient: Vec<&String> = graph.modules.values().flat_map(|m| &m.ambient).collect();
     let words = alias_words(&request.root, &request.files);
@@ -121,7 +147,8 @@ pub fn run(request: &Request) -> Result<Answer, String> {
         let mut seen: HashSet<&str> = HashSet::from([file]);
         let mut frontier = vec![file];
         for _ in 0..4 {
-            let next: Vec<&str> = frontier.iter().flat_map(|f| importers.get(f).into_iter().flatten().copied()).filter(|f| seen.insert(f)).collect();
+            let next: Vec<&str> =
+                frontier.iter().flat_map(|f| importers.get(f).into_iter().flatten().copied()).filter(|f| seen.insert(f)).collect();
             if next.iter().any(|f| graph.declares(f, spec)) {
                 return true;
             }
@@ -129,13 +156,14 @@ pub fn run(request: &Request) -> Result<Answer, String> {
         }
         false
     };
-    let gone_stems: HashSet<&str> = gone.iter().map(|g| no_ext(g)).collect();
+    let gone_stems: HashSet<&str> = gone.iter().map(|g| graph::no_exts(g)).collect();
     let empty = HashMap::new();
 
     let mut findings = Vec::new();
     let mut ignorable: HashMap<String, String> = HashMap::new();
     let mut checked = 0;
-    let mut files: Vec<&String> = graph.modules.keys().filter(|f| f.starts_with(&request.prefix) && !f.ends_with(".d.ts") && !FIXTURE.is_match(f)).collect();
+    let mut files: Vec<&String> =
+        graph.modules.keys().filter(|f| f.starts_with(&request.prefix) && !f.ends_with(".d.ts") && !FIXTURE.is_match(f)).collect();
     files.sort();
     for file in files {
         let module = &graph.modules[file];
@@ -152,18 +180,30 @@ pub fn run(request: &Request) -> Result<Answer, String> {
                     if GENERATED.is_match(&meant) || spec.contains("+types") || spec.contains("$types") {
                         continue;
                     }
-                    let deleted = relative && (gone_stems.contains(no_ext(&meant)) || gone_stems.contains(format!("{meant}/index").as_str()));
+                    let deleted =
+                        relative && (gone_stems.contains(graph::no_exts(&meant)) || gone_stems.contains(format!("{meant}/index").as_str()));
                     if !(added || deleted) {
                         continue;
                     }
                     let target = format!("imports:{name}:{spec}");
-                    let why = if deleted && !added { "which this change deleted or moved: point the import at its new place" } else { "which does not exist: point it at the real file (`intersite search` finds existing code), or create the module; do not add an empty stub just so it resolves" };
+                    let why = if deleted && !added {
+                        "which this change deleted or moved: point the import at its new place"
+                    } else {
+                        "which does not exist: point it at the real file (`intersite search` finds existing code), or create the module; do not add an empty stub just so it resolves"
+                    };
                     if relative {
                         ignorable.insert(target.clone(), meant);
                     }
-                    findings.push(Finding { file: file.clone(), line: import.line, target, message: format!("{name}:{} imports \"{spec}\", {why}", import.line) });
+                    findings.push(Finding {
+                        file: file.clone(),
+                        line: import.line,
+                        target,
+                        message: format!("{name}:{} imports \"{spec}\", {why}", import.line),
+                    });
                 }
-                Target::File(found) if added && !graph.files.contains(found) && graph.lower.get(&found.to_lowercase()).is_some_and(|a| a != found) => {
+                Target::File(found)
+                    if added && !graph.files.contains(found) && graph.lower.get(&found.to_lowercase()).is_some_and(|a| a != found) =>
+                {
                     let actual = &graph.lower[&found.to_lowercase()];
                     findings.push(Finding {
                         file: file.clone(),
@@ -172,7 +212,12 @@ pub fn run(request: &Request) -> Result<Answer, String> {
                         message: format!("{name}:{} imports \"{spec}\", but the file is {}: the case differs, which macOS forgives and Linux, CI and production do not; match the file name's case", import.line, rel(&request.prefix, actual)),
                     });
                 }
-                Target::File(found) if !import.names.is_empty() && matches!(import.kind, Kind::Static | Kind::Type | Kind::ReExport) && !found.ends_with(".json") && graph::CODE.is_match(found) => {
+                Target::File(found)
+                    if !import.names.is_empty()
+                        && matches!(import.kind, Kind::Static | Kind::Type | Kind::ReExport)
+                        && !found.ends_with(".json")
+                        && graph::CODE.is_match(found) =>
+                {
                     let Some(exports) = graph.exports_of(found, &empty) else { continue };
                     let touched = changed.contains(found);
                     for n in import.names.iter().filter(|n| !exports.contains(&n.name)) {
@@ -190,16 +235,29 @@ pub fn run(request: &Request) -> Result<Answer, String> {
                             let what = if removed { "no longer exports (this change removed it)" } else { "does not export" };
                             format!("{name}:{} imports `{}` from \"{spec}\", which {module_name} {what}{hint}: import a name it exports, or export it there; do not add a stub export just to satisfy the import", n.line, n.name)
                         };
-                        findings.push(Finding { file: file.clone(), line: n.line, target: format!("imports:{name}:{spec}#{}", n.name), message });
+                        findings.push(Finding {
+                            file: file.clone(),
+                            line: n.line,
+                            target: format!("imports:{name}:{spec}#{}", n.name),
+                            message,
+                        });
                     }
                 }
                 Target::Missing if added && !import.in_try && !relative => {
                     let package = graph::package_name(spec);
-                    let provided = VIRTUAL.iter().any(|v| spec.starts_with(v)) || RUNTIMES.contains(&package) || (next && (NEXT_PROVIDES.contains(&package) || package == "next"));
+                    let provided = VIRTUAL.iter().any(|v| spec.starts_with(v))
+                        || RUNTIMES.contains(&package)
+                        || (next && (NEXT_PROVIDES.contains(&package) || package == "next"));
                     if !PACKAGE.is_match(package) || provided || package.starts_with("@types/") || spec.ends_with(".css") {
                         continue;
                     }
-                    if graph.declares(file, spec) || words.contains(package) || ambient.iter().any(|a| ambient_matches(a, spec)) || graph.packages_of(file).is_empty() || deno(file) || declared_by_importers(file, spec) {
+                    if graph.declares(file, spec)
+                        || words.contains(package)
+                        || ambient.iter().any(|a| ambient_matches(a, spec))
+                        || graph.packages_of(file).is_empty()
+                        || deno(file)
+                        || declared_by_importers(file, spec)
+                    {
                         continue;
                     }
                     findings.push(Finding {
@@ -227,7 +285,7 @@ mod tests {
         let names = ["formatPrice".to_string(), "parseDate".to_string()];
         assert_eq!(closest("formatprice", names.iter()), Some(&names[0]));
         assert_eq!(closest("totallyDifferent", names.iter()), None);
-        assert_eq!(no_ext("src/a.test.ts"), "src/a");
+        assert_eq!(graph::no_exts("src/a.test.ts"), "src/a");
         assert!(ambient_matches("*.svg", "./logo.svg") && ambient_matches("virtual:pwa", "virtual:pwa"));
         assert!(GENERATED.is_match("app/.react-router/types/x") && !GENERATED.is_match("src/lib/x"));
     }

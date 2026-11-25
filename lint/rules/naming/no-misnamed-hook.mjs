@@ -73,7 +73,7 @@ export const rule = defineRule({
         if (frame && !frame.hook) frame.hook = hook;
         if (frame) frame.anyHook ||= Boolean(hook) || memberHook(node);
       },
-      ":function:exit"(fn) {
+      ":function:exit"(/** @type {any} */ fn) {
         const frame = stack.pop();
         const name = functionName(fn);
         if (!frame || !name || !fn.body || (fn.body.type === "BlockStatement" && !fn.body.body.length)) return;

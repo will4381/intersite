@@ -6,10 +6,15 @@ use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
+use crate::graph::{basename, join, parent};
+use crate::text::{restyle, style_name, style_of, Style};
 use crate::{Answer, Finding, Request};
 
-static CODE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.(?:[cm]?[jt]sx?|swift|py|rb|go|rs|kts?|java|vue|svelte|astro|css|scss|less)$").unwrap());
-static SKIP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|/)(?:node_modules|dist|build|out|vendor|coverage|generated|__generated__|migrations|drizzle|Pods|DerivedData)/|\.min\.|\.d\.[cm]?ts$").unwrap());
+static CODE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\.(?:[cm]?[jt]sx?|swift|py|rb|go|rs|kts?|java|vue|svelte|astro|css|scss|less)$").unwrap());
+static SKIP: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:^|/)(?:node_modules|dist|build|out|vendor|coverage|generated|__generated__|migrations|drizzle|Pods|DerivedData)/|\.min\.|\.d\.[cm]?ts$").unwrap()
+});
 /// Names a framework or tool chooses: routes, entry points, special files. Never reported, never counted.
 static RESERVED: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(?:index|page|layout|route|loading|error|not-found|global-error|template|default|head|middleware|proxy|instrumentation|opengraph-image|twitter-image|icon|apple-icon|sitemap|robots|manifest|main|app|App|mod|lib|setup|conftest|__init__|__main__|vite-env|env|global|globals|styles?|types?|constants|utils|helpers|README|LICENSE|CHANGELOG|Package|ContentView)$").unwrap()
@@ -17,78 +22,8 @@ static RESERVED: LazyLock<Regex> = LazyLock::new(|| {
 const MIN_AGREE: usize = 5;
 const SHARE: f64 = 0.9;
 
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum Style {
-    Word,
-    Kebab,
-    Snake,
-    Camel,
-    Pascal,
-}
-
-fn style_name(s: Style) -> &'static str {
-    match s {
-        Style::Kebab => "kebab-case",
-        Style::Snake => "snake_case",
-        Style::Camel => "camelCase",
-        Style::Pascal | Style::Word => "PascalCase",
-    }
-}
-
-/// The casing of a bare name: one lowercase word fits kebab, snake and camel alike.
-fn style_of(stem: &str) -> Option<Style> {
-    static WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-z][a-z0-9]*$").unwrap());
-    static KEBAB: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$").unwrap());
-    static SNAKE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$").unwrap());
-    static CAMEL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-z][a-z0-9]*(?:[A-Z]+[a-z0-9]*)+$").unwrap());
-    static PASCAL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Z][A-Za-z0-9]*[a-z][A-Za-z0-9]*$").unwrap());
-    [(&*WORD, Style::Word), (&*KEBAB, Style::Kebab), (&*SNAKE, Style::Snake), (&*CAMEL, Style::Camel), (&*PASCAL, Style::Pascal)].into_iter().find(|(r, _)| r.is_match(stem)).map(|(_, s)| s)
-}
-
 fn fits(style: Option<Style>, wanted: Style) -> bool {
     style == Some(wanted) || (style == Some(Style::Word) && wanted != Style::Pascal)
-}
-
-/// A name's words, lowercased: split at - and _, before a capital after a lowercase letter or digit, and before the
-/// last capital of an acronym followed by a lowercase letter.
-fn split_words(stem: &str) -> Vec<String> {
-    let chars: Vec<char> = stem.chars().collect();
-    let mut out = Vec::new();
-    let mut word = String::new();
-    for (i, &c) in chars.iter().enumerate() {
-        if c == '-' || c == '_' {
-            if !word.is_empty() {
-                out.push(std::mem::take(&mut word));
-            }
-            continue;
-        }
-        let prev = if i > 0 { chars[i - 1] } else { ' ' };
-        let next = chars.get(i + 1).copied().unwrap_or(' ');
-        let boundary = c.is_ascii_uppercase() && ((prev.is_ascii_lowercase() || prev.is_ascii_digit()) || (prev.is_ascii_uppercase() && next.is_ascii_lowercase()));
-        if boundary && !word.is_empty() {
-            out.push(std::mem::take(&mut word));
-        }
-        word.push(c);
-    }
-    if !word.is_empty() {
-        out.push(word);
-    }
-    out.into_iter().map(|w| w.to_lowercase()).collect()
-}
-
-/// A name in another casing: `user_card` as Pascal is `UserCard`.
-fn restyle(stem: &str, style: Style) -> String {
-    let words = split_words(stem);
-    let cap = |w: &str| {
-        let mut c = w.chars();
-        c.next().map_or(String::new(), |f| f.to_uppercase().collect::<String>() + c.as_str())
-    };
-    match style {
-        Style::Kebab => words.join("-"),
-        Style::Snake => words.join("_"),
-        Style::Pascal => words.iter().map(|w| cap(w)).collect(),
-        Style::Camel | Style::Word => words.first().cloned().unwrap_or_default() + &words.iter().skip(1).map(|w| cap(w)).collect::<String>(),
-    }
 }
 
 /// A file name split into its stem, its middle parts (`service` in `user.service.ts`) and its extension.
@@ -150,14 +85,6 @@ fn checkable(stem: &str) -> bool {
     !stem.is_empty() && stem.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) && !RESERVED.is_match(stem)
 }
 
-fn dirname(path: &str) -> &str {
-    path.rfind('/').map_or(".", |i| &path[..i])
-}
-
-fn basename(path: &str) -> &str {
-    path.rfind('/').map_or(path, |i| &path[i + 1..])
-}
-
 /// Every folder's children, by kind: files of each kind and the sub-folders.
 fn sibling_index(files: &[String], fresh: &HashSet<String>) -> HashMap<String, Vec<String>> {
     let mut groups: HashMap<String, Vec<String>> = HashMap::new();
@@ -173,14 +100,14 @@ fn sibling_index(files: &[String], fresh: &HashSet<String>) -> HashMap<String, V
                 continue;
             }
             seen_dirs.insert(dir);
-            let parent = segments[..i - 1].join("/");
-            groups.entry(format!("{}\0dir", if parent.is_empty() { "." } else { &parent })).or_default().push(segments[i - 1].to_string());
+            let up = segments[..i - 1].join("/");
+            groups.entry(format!("{up}\0dir")).or_default().push(segments[i - 1].to_string());
         }
         if fresh.contains(file) || !CODE.is_match(file) {
             continue;
         }
         let name = segments[segments.len() - 1];
-        groups.entry(format!("{}\0{}", dirname(file), kind_of(name))).or_default().push(name.to_string());
+        groups.entry(format!("{}\0{}", parent(file), kind_of(name))).or_default().push(name.to_string());
     }
     groups
 }
@@ -203,7 +130,10 @@ fn shared_suffix(names: &[&String]) -> Option<(String, usize, usize)> {
     }
     for suffix in order {
         let agree = counts[&suffix];
-        if !suffix.chars().all(|c| c.is_ascii_lowercase()) || suffix.is_empty() || matches!(suffix.as_str(), "module" | "stories" | "story" | "d" | "test" | "spec") {
+        if !suffix.chars().all(|c| c.is_ascii_lowercase())
+            || suffix.is_empty()
+            || matches!(suffix.as_str(), "module" | "stories" | "story" | "d" | "test" | "spec")
+        {
             continue;
         }
         if agree >= MIN_AGREE && agree as f64 >= SHARE * names.len() as f64 {
@@ -214,8 +144,13 @@ fn shared_suffix(names: &[&String]) -> Option<(String, usize, usize)> {
 }
 
 /// Casing and suffix findings for one added file name, against its siblings of the same kind.
-fn check_file_name(path: &str, groups: &HashMap<String, Vec<String>>, exports: Option<&[String]>, subjects: &HashSet<String>) -> Vec<String> {
-    let dir = dirname(path);
+fn check_file_name(
+    path: &str,
+    groups: &HashMap<String, Vec<String>>,
+    exports: Option<&[String]>,
+    subjects: &HashSet<String>,
+) -> Vec<String> {
+    let dir = parent(path);
     let name = basename(path);
     let (stem, middle, ext) = parts(name);
     if !checkable(&stem) || middle.iter().any(|m| m == "config") {
@@ -229,8 +164,9 @@ fn check_file_name(path: &str, groups: &HashMap<String, Vec<String>>, exports: O
     let rule = convention(&stems);
     let style = style_of(&stem);
     // A file whose main export is a lowercase value is not a component, so a PascalCase folder does not bind it.
-    let value_file = rule.is_some_and(|r| r.0 == Style::Pascal) && exports.is_some_and(|e| !e.is_empty() && !e.iter().any(|n| starts_capital_then_lower(n)));
-    let subject = kind == "test" && [dir, dirname(dir)].iter().any(|d| subjects.contains(&format!("{d}/{stem}")));
+    let value_file = rule.is_some_and(|r| r.0 == Style::Pascal)
+        && exports.is_some_and(|e| !e.is_empty() && !e.iter().any(|n| starts_capital_then_lower(n)));
+    let subject = kind == "test" && [dir, parent(dir)].iter().any(|d| subjects.contains(&format!("{d}/{stem}")));
     let digit_led = stem.split(['-', '_']).any(|w| w.starts_with(|c: char| c.is_ascii_digit()));
     if let Some((rs, agree, total)) = rule {
         if !fits(style, rs) && !value_file && !subject && !digit_led {
@@ -239,7 +175,13 @@ fn check_file_name(path: &str, groups: &HashMap<String, Vec<String>>, exports: O
             if !ext.is_empty() {
                 fixed.push(ext.clone());
             }
-            let what = if kind == "test" { "tests" } else if kind == "hook" { "hooks" } else { "files" };
+            let what = if kind == "test" {
+                "tests"
+            } else if kind == "hook" {
+                "hooks"
+            } else {
+                "files"
+            };
             out.push(format!("{path}: this folder names {what} in {} ({agree} of {total}): rename to {}", style_name(rs), fixed.join(".")));
         }
     }
@@ -247,7 +189,9 @@ fn check_file_name(path: &str, groups: &HashMap<String, Vec<String>>, exports: O
         let same_ext: Vec<&String> = own.iter().filter(|n| parts(n).2 == ext).collect();
         if let Some((suffix, agree, total)) = shared_suffix(&same_ext) {
             if !middle.contains(&suffix) {
-                out.push(format!("{path}: files in this folder end in .{suffix}.{ext} ({agree} of {total}): rename to {stem}.{suffix}.{ext}"));
+                out.push(format!(
+                    "{path}: files in this folder end in .{suffix}.{ext} ({agree} of {total}): rename to {stem}.{suffix}.{ext}"
+                ));
             }
         }
     }
@@ -262,11 +206,18 @@ fn starts_capital_then_lower(n: &str) -> bool {
 /// The name a file is about: the default export's name, or its only exported function, class or const. Swift: its only
 /// top-level type.
 fn main_export(text: &str, ext: &str) -> Option<String> {
-    static SWIFT_TYPE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^(?:(?:public|internal|private|fileprivate|open|final)\s+)*(?:struct|class|enum|protocol|actor)\s+([A-Za-z_]\w*)").unwrap());
-    static SWIFT_EXT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^(?:(?:public|private|fileprivate|internal)\s+)?extension\s").unwrap());
-    static DEFAULT_NAMED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^export\s+default\s+(?:async\s+)?(?:function\*?|class)\s+([A-Za-z_$][\w$]*)|^export\s+default\s+([A-Za-z_$][\w$]*)\s*;?\s*$").unwrap());
+    static SWIFT_TYPE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?m)^(?:(?:public|internal|private|fileprivate|open|final)\s+)*(?:struct|class|enum|protocol|actor)\s+([A-Za-z_]\w*)")
+            .unwrap()
+    });
+    static SWIFT_EXT: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?m)^(?:(?:public|private|fileprivate|internal)\s+)?extension\s").unwrap());
+    static DEFAULT_NAMED: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?m)^export\s+default\s+(?:async\s+)?(?:function\*?|class)\s+([A-Za-z_$][\w$]*)|^export\s+default\s+([A-Za-z_$][\w$]*)\s*;?\s*$").unwrap()
+    });
     static DEFAULT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^export\s+default\b").unwrap());
-    static RUNTIME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^export\s+(?:async\s+)?(?:function\*?|class|const|let|var)\s+([A-Za-z_$][\w$]*)").unwrap());
+    static RUNTIME: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?m)^export\s+(?:async\s+)?(?:function\*?|class|const|let|var)\s+([A-Za-z_$][\w$]*)").unwrap());
     if ext == "swift" {
         let types: Vec<String> = SWIFT_TYPE.captures_iter(text).map(|c| c[1].to_string()).collect();
         return (types.len() == 1 && !SWIFT_EXT.is_match(text)).then(|| types[0].clone());
@@ -283,7 +234,9 @@ fn main_export(text: &str, ext: &str) -> Option<String> {
 
 /// Every exported name in a JS or TS file.
 fn export_names(text: &str) -> Vec<String> {
-    static EXPORT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^export\s+(?:default\s+)?(?:async\s+)?(?:function\*?|class|const|let|var)\s+([A-Za-z_$][\w$]*)").unwrap());
+    static EXPORT: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?m)^export\s+(?:default\s+)?(?:async\s+)?(?:function\*?|class|const|let|var)\s+([A-Za-z_$][\w$]*)").unwrap()
+    });
     EXPORT.captures_iter(text).map(|c| c[1].to_string()).collect()
 }
 
@@ -298,7 +251,10 @@ fn words_of(name: &str) -> Vec<String> {
             if n >= 5 && w.ends_with("ies") && lower(n - 5) && lower(n - 4) {
                 return format!("{}y", &w[..n - 3]);
             }
-            if w.ends_with("es") && n >= 3 && (w[..n - 2].ends_with("ss") || w[..n - 2].ends_with('x') || w[..n - 2].ends_with("sh") || w[..n - 2].ends_with("ch")) {
+            if w.ends_with("es")
+                && n >= 3
+                && (w[..n - 2].ends_with("ss") || w[..n - 2].ends_with('x') || w[..n - 2].ends_with("sh") || w[..n - 2].ends_with("ch"))
+            {
                 return w[..n - 2].to_string();
             }
             if n >= 4 && w.ends_with('s') && lower(n - 4) && lower(n - 3) && b[n - 2] != b's' {
@@ -310,7 +266,22 @@ fn words_of(name: &str) -> Vec<String> {
 }
 
 const VERB: &[&str] = &["register", "create", "make", "build", "get", "with", "to"];
-const KIND: &[&str] = &["route", "rule", "page", "sheet", "view", "screen", "component", "provider", "schema", "service", "handler", "controller", "store", "extension"];
+const KIND: &[&str] = &[
+    "route",
+    "rule",
+    "page",
+    "sheet",
+    "view",
+    "screen",
+    "component",
+    "provider",
+    "schema",
+    "service",
+    "handler",
+    "controller",
+    "store",
+    "extension",
+];
 
 /// Whether a file is named after its export: the same letters, or every word of one (leaving out kind words and the
 /// export's leading verb) is in the other, in any order.
@@ -321,7 +292,12 @@ fn named_after(stem: &str, name: &str) -> bool {
         return true;
     }
     let file_core: Vec<&String> = a.iter().filter(|w| !KIND.contains(&w.as_str())).collect();
-    let export_core: Vec<&String> = b.iter().enumerate().filter(|(i, w)| !KIND.contains(&w.as_str()) && !(*i == 0 && VERB.contains(&w.as_str()))).map(|(_, w)| w).collect();
+    let export_core: Vec<&String> = b
+        .iter()
+        .enumerate()
+        .filter(|(i, w)| !(KIND.contains(&w.as_str()) || (*i == 0 && VERB.contains(&w.as_str()))))
+        .map(|(_, w)| w)
+        .collect();
     file_core.iter().all(|w| b.contains(w)) || export_core.iter().all(|w| a.contains(w))
 }
 
@@ -335,14 +311,14 @@ fn check_export_name(path: &str, read: &mut impl FnMut(&str) -> String, groups: 
     if name == "default" || named_after(&stem, &name) {
         return None;
     }
-    let dir = dirname(path);
+    let dir = parent(path);
     let (mut agree, mut total) = (0, 0);
     for sibling in groups.get(&format!("{dir}\0{}", kind_of(base))).into_iter().flatten() {
         let (s_stem, _, s_ext) = parts(sibling);
         if !checkable(&s_stem) {
             continue;
         }
-        let Some(theirs) = main_export(&read(&format!("{dir}/{sibling}")), &s_ext) else { continue };
+        let Some(theirs) = main_export(&read(&join(dir, sibling).unwrap_or_default()), &s_ext) else { continue };
         total += 1;
         if named_after(&s_stem, &theirs) {
             agree += 1;
@@ -364,7 +340,8 @@ fn check_test_name(path: &str, groups: &HashMap<String, Vec<String>>) -> Option<
     static LEAD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^test_(.*?)(\.\w+)$").unwrap());
     static TRAIL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(.*?)_test(\.\w+)$").unwrap());
     let mine = test_pattern(basename(path))?;
-    let tests: Vec<Option<&'static str>> = groups.get(&format!("{}\0test", dirname(path))).into_iter().flatten().map(|n| test_pattern(n)).collect();
+    let tests: Vec<Option<&'static str>> =
+        groups.get(&format!("{}\0test", parent(path))).into_iter().flatten().map(|n| test_pattern(n)).collect();
     let mut seen = Vec::new();
     for pattern in &tests {
         if seen.contains(pattern) {
@@ -391,9 +368,17 @@ fn ancestors(path: &str) -> Vec<String> {
     (1..segments.len()).map(|i| segments[..i].join("/")).collect()
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Options {
+    /// Files the change added (or renamed to a new name).
+    added: Vec<String>,
+    /// Those of them that are tests.
+    tests: HashSet<String>,
+}
+
 pub fn run(request: &Request) -> Result<Answer, String> {
-    let added: Vec<String> = request.options.get("added").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
-    let tests: HashSet<String> = request.options.get("tests").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+    let Options { added, tests } = request.options()?;
     let files = &request.files;
     let fresh: HashSet<String> = added.iter().cloned().collect();
     let before: HashSet<String> = files.iter().filter(|f| !fresh.contains(*f)).flat_map(|f| ancestors(f)).collect();
@@ -407,14 +392,15 @@ pub fn run(request: &Request) -> Result<Answer, String> {
     voters_out.extend(new_dirs.iter().cloned());
     let groups = sibling_index(files, &voters_out);
     // What a test can be named after: any other file's stem, or a folder (`Table.test.tsx` for `Table/`).
-    let mut subjects: HashSet<String> = files.iter().filter(|f| test_pattern(basename(f)).is_none()).map(|f| format!("{}/{}", dirname(f), parts(basename(f)).0)).collect();
+    let mut subjects: HashSet<String> =
+        files.iter().filter(|f| test_pattern(basename(f)).is_none()).map(|f| format!("{}/{}", parent(f), parts(basename(f)).0)).collect();
     subjects.extend(before.iter().cloned());
     let mut cache: HashMap<String, String> = HashMap::new();
     let mut read = |file: &str| -> String {
         cache
             .entry(file.to_string())
             .or_insert_with(|| {
-                let text = std::fs::read_to_string(std::path::Path::new(&request.root).join(file)).unwrap_or_default();
+                let text = crate::text::read(&request.root, file).unwrap_or_default();
                 text.chars().take(200_000).collect()
             })
             .clone()
@@ -425,16 +411,26 @@ pub fn run(request: &Request) -> Result<Answer, String> {
         if !checkable(name) || name.contains('.') {
             continue;
         }
-        let siblings: Vec<String> = groups.get(&format!("{}\0dir", dirname(dir))).into_iter().flatten().filter(|n| checkable(n)).cloned().collect();
+        let siblings: Vec<String> =
+            groups.get(&format!("{}\0dir", parent(dir))).into_iter().flatten().filter(|n| checkable(n)).cloned().collect();
         if let Some((rs, agree, total)) = convention(&siblings) {
             if !fits(style_of(name), rs) {
-                findings.push(Finding { file: dir.clone(), line: 0, target: dir.clone(), message: format!("{dir}/: folders beside it are named in {} ({agree} of {total}): rename to {}", style_name(rs), restyle(name, rs)) });
+                findings.push(Finding {
+                    file: dir.clone(),
+                    line: 0,
+                    target: dir.clone(),
+                    message: format!(
+                        "{dir}/: folders beside it are named in {} ({agree} of {total}): rename to {}",
+                        style_name(rs),
+                        restyle(name, rs)
+                    ),
+                });
             }
         }
     }
     // An added file inside an added folder has no siblings that voted, so only its folder is judged.
     let added_dirs: HashSet<&String> = new_dirs.iter().collect();
-    for path in added.iter().filter(|f| CODE.is_match(f) && !added_dirs.contains(&dirname(f).to_string())) {
+    for path in added.iter().filter(|f| CODE.is_match(f) && !added_dirs.contains(&parent(f).to_string())) {
         let is_test = tests.contains(path) || test_pattern(basename(path)).is_some();
         static JS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.[cm]?[jt]sx?$").unwrap());
         let js = JS.is_match(path);
@@ -446,7 +442,7 @@ pub fn run(request: &Request) -> Result<Answer, String> {
             findings.push(Finding { file: path.clone(), line: 0, target: path.clone(), message });
         }
     }
-    Ok(Answer { findings, summary: format!("{} added files and {} added folders checked", added.len(), new_dirs.len()), data: None })
+    Ok(Answer::new(findings, format!("{} added files and {} added folders checked", added.len(), new_dirs.len())))
 }
 
 #[cfg(test)]

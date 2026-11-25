@@ -31,9 +31,9 @@ let appUrl = "";
 let app;
 /** The path of every request the app got. @type {string[]} */
 const appPaths = [];
-/** Requests the app turned away in "cookie" mode for lacking the session cookie. */
+/** Requests the app turned away in "cookie" mode for lacking the session cookie. @type {string[]} */
 const rejected = [];
-/** The `x-sign-in` header of each request the app got in "cookie" mode. */
+/** The `x-sign-in` header of each request the app got in "cookie" mode. @type {(string | string[] | undefined)[]} */
 const appSignIn = [];
 /** A third-party server on another host and port; every request it gets, with its headers. @type {import("node:http").Server} */
 let third;
@@ -119,6 +119,7 @@ const session = [
 
 /**
  * @param {import("../../shared/case.mjs").Case[]} [cases]
+ * @param {import("../../replay/run.mjs").Adapter["signIn"]} [signIn]
  * @param {{ browser?: string, browserUrl?: string }} [engine] the engine under test unless a test picks its own
  */
 async function replayUi(cases = session, signIn = adapter.signIn, engine = { browser: engineUnderTest }) {

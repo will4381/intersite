@@ -6,7 +6,7 @@
 import { statSync } from "node:fs";
 import { join } from "node:path";
 
-import { located, runCore } from "./core.mjs";
+import { fromEngine, runCore } from "./core.mjs";
 import { listFiles, matches, parseNameStatus, patchPath, resolveBase, workingDiff } from "./lib.mjs";
 
 // The work (package entries, reference scan, export use counts, lost imports) is in core/unused.rs.
@@ -45,5 +45,5 @@ export async function unused({ cwd, base, testPaths, entryPaths }) {
   const conventionalByGlob = [...new Set([...all, ...added.keys()])].filter((f) => matches(f, testPaths) || matches(f, entryPaths));
   const fresh = changed.filter((c) => c.status === "A").map((c) => c.path);
   const answer = runCore({ command: "unused", root: cwd, files: all, options: { fresh, addedLines: [...added], removedLines: [...removed], conventionalByGlob } });
-  return { findings: answer.findings.map((f) => ({ ...located(f), target: f.target, message: f.message })), summary: answer.summary };
+  return { findings: fromEngine(answer.findings), summary: answer.summary };
 }

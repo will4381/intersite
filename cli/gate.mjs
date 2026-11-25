@@ -1,45 +1,48 @@
 // @ts-check
 // intersite gate <name> [--base <ref>] [--json] [--cmd "<test command>"] [--paths <glob>]... [--setup "<command>"]
 //   [--max <n>] [--timeout <seconds>] [--all [--write]]
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { parseArgs } from "node:util";
 
-import { loadConfig } from "../shared/config.mjs";
+import { BASELINE, loadConfig, readBaselines, writeBaseline } from "../shared/config.mjs";
 import { artifacts } from "../gates/artifacts.mjs";
-import { boundaries } from "../gates/boundaries.mjs";
 import { complexity } from "../gates/complexity.mjs";
 import { coverage } from "../gates/coverage.mjs";
 import { columns } from "../gates/columns.mjs";
 import { duplicates } from "../gates/duplicates.mjs";
-import { imports } from "../gates/imports.mjs";
+import { productCodeGate } from "../gates/core.mjs";
+import { graphGate, imports } from "../gates/imports.mjs";
 import { failsOnBase } from "../gates/fails-on-base.mjs";
-import { EMPTY_TREE, GateError, annotation, inGitHubActions, projectPrefix, resolveBase } from "../gates/lib.mjs";
-import { spawnSync } from "node:child_process";
-import { decisions } from "../gates/decisions.mjs";
+import { EMPTY_TREE, GateError, ackTrailers, annotation, inGitHubActions, projectPrefix, resolveBase } from "../gates/lib.mjs";
 import { mutation } from "../gates/mutation.mjs";
 import { naming } from "../gates/naming.mjs";
 import { newDeps } from "../gates/new-deps.mjs";
 import { protectedPaths } from "../gates/protected.mjs";
-import { regex } from "../gates/regex.mjs";
 import { similar } from "../gates/similar.mjs";
 import { specialCase } from "../gates/special-case.mjs";
 import { renames } from "../gates/renames.mjs";
-import { routes } from "../gates/routes.mjs";
-import { env } from "../gates/env.mjs";
 import { schemaDrift } from "../gates/schema-drift.mjs";
 import { secrets } from "../gates/secrets.mjs";
-import { auth } from "../gates/auth.mjs";
 import { sql } from "../gates/sql.mjs";
 import { tamper } from "../gates/tamper.mjs";
-import { structure } from "../gates/structure.mjs";
 import { styleDrift } from "../gates/style-drift.mjs";
 import { testIntegrity } from "../gates/test-integrity.mjs";
 import { unused } from "../gates/unused.mjs";
 import { valueDrift } from "../gates/value-drift.mjs";
 
-/** @type {Record<string, (options: import("../gates/lib.mjs").GateOptions) => Promise<import("../gates/lib.mjs").GateResult>>} */
-export const gates = { "test-integrity": testIntegrity, duplicates, "new-deps": newDeps, artifacts, unused, similar, naming, "style-drift": styleDrift, "value-drift": valueDrift, sql, regex, decisions, renames, "schema-drift": schemaDrift, "fails-on-base": failsOnBase, mutation, protected: protectedPaths, imports, boundaries, tamper, "special-case": specialCase, complexity, coverage, columns, routes, env, secrets, auth, structure };
+/** @type {Record<string, (options: import("../gates/lib.mjs").GateOptions) => import("../gates/lib.mjs").GateResult | Promise<import("../gates/lib.mjs").GateResult>>} */
+export const gates = {
+  "test-integrity": testIntegrity, duplicates, "new-deps": newDeps, artifacts, unused, similar, naming, "style-drift": styleDrift, "value-drift": valueDrift, sql,
+  regex: (options) => productCodeGate("regex", options),
+  decisions: (options) => productCodeGate("decisions", options),
+  renames, "schema-drift": schemaDrift, "fails-on-base": failsOnBase, mutation, protected: protectedPaths, imports,
+  boundaries: (options) => graphGate("boundaries", options, { entryPaths: options.entryPaths, layers: options.layers, features: options.features }),
+  tamper, "special-case": specialCase, complexity, coverage, columns,
+  routes: (options) => productCodeGate("routes", options, true),
+  env: (options) => productCodeGate("env", options, true),
+  secrets,
+  auth: (options) => productCodeGate("auth", options),
+  structure: (options) => graphGate("structure", options),
+};
 
 /** Gates that can judge the whole repository (`--all`): the rest only mean something for a change. */
 export const WHOLE = new Set(["duplicates", "similar", "unused", "naming", "style-drift", "value-drift", "sql", "regex", "decisions", "schema-drift", "artifacts", "imports", "boundaries", "complexity", "columns", "routes", "env", "secrets", "auth", "structure"]);
@@ -49,7 +52,7 @@ const usage = `usage: intersite gate <${Object.keys(gates).join("|")}> [--base <
 /**
  * Runs one gate with the project's config, flags overriding it, and drops acknowledged findings.
  * Throws GateError on a setup problem. `intersite check` can call this directly.
- * With `all` the gate judges every file, not a change, and findings recorded in `gates.baseline` are left out.
+ * With `all` the gate judges every file, not a change, and findings recorded in the baseline are left out.
  * @param {string} name
  * @param {{ cwd: string, config: import("../shared/config.mjs").Config, flags?: Partial<import("../gates/lib.mjs").GateOptions>, all?: boolean, fresh?: boolean }} options
  *   `fresh`: count recorded findings too, to record them again
@@ -62,7 +65,7 @@ export async function runGate(name, { cwd, config, flags = {}, all = false, fres
   const loaded = [...entryPaths, config.replay.adapter.replace(/^\.\//, "")];
   const options = { cwd, base, testPaths, testCmd, setup, duplicateLines, mutants, entryPaths: loaded, artifacts: config.gates.artifacts, protected: config.gates.protected, layers: config.gates.layers, features: config.gates.features, timeout: 120 };
   const result = await gates[name]({ ...options, ...flags, ...(all && { base: EMPTY_TREE }) });
-  const recorded = new Set(all && !fresh ? readBaseline(cwd, config)[name] : []);
+  const recorded = new Set(all && !fresh ? readBaseline(cwd)[name] : []);
   const fresher = result.findings.filter((f) => !recorded.has(f.target));
   const isAcknowledged = (/** @type {import("../gates/lib.mjs").Finding} */ f) => acknowledged.some((a) => a.gate === name && a.target === f.target);
   const findings = fresher.filter((f) => !isAcknowledged(f));
@@ -79,23 +82,18 @@ export async function runGate(name, { cwd, config, flags = {}, all = false, fres
 function acknowledgedInCommits(cwd, base, name) {
   const from = resolveBase(cwd, base);
   if (from === EMPTY_TREE) return "";
-  const log = spawnSync("git", ["log", "--format=%(trailers:key=Intersite-Ack,valueonly,separator=%x0A)", `${from}..HEAD`], { cwd, encoding: "utf8" });
-  const line = log.stdout.split("\n").map((l) => l.trim()).find((l) => l.startsWith(`${name}:`) && l.slice(name.length + 1).trim());
-  return line ? line.slice(name.length + 1).trim() : "";
+  return ackTrailers(cwd, `${from}..HEAD`).find((t) => t.gate === name && t.why)?.why ?? "";
 }
 
 /**
  * The whole-repository findings recorded per gate, so `--all` fails only on new ones.
- * @param {string} cwd @param {import("../shared/config.mjs").Config} config
- * @returns {Record<string, string[]>}
+ * @param {string} cwd @returns {Record<string, string[]>}
  */
-function readBaseline(cwd, config) {
-  const path = join(cwd, config.gates.baseline);
-  if (!existsSync(path)) return {};
+function readBaseline(cwd) {
   try {
-    return JSON.parse(readFileSync(path, "utf8"));
-  } catch {
-    throw new GateError(`${config.gates.baseline} is not valid JSON: restore it from git, or record it again with \`intersite gate <name> --all --write\``);
+    return readBaselines(cwd).gates ?? {};
+  } catch (error) {
+    throw new GateError(`${/** @type {Error} */ (error).message}: restore it from git, or record it again with \`intersite gate <name> --all --write\``);
   }
 }
 
@@ -132,30 +130,11 @@ export default async function gate(argv, { cwd, quiet = false, silent = false, c
     console.error(name ? `intersite gate: unknown gate "${name}"; ${usage}` : usage);
     return 2;
   }
-  const max = values.max === undefined ? undefined : Number(values.max);
-  const timeout = values.timeout === undefined ? undefined : Number(values.timeout);
-  if ((max !== undefined && !(Number.isInteger(max) && max > 0)) || (timeout !== undefined && !(timeout > 0))) {
-    console.error(`intersite gate: --max must be a positive integer and --timeout a positive number of seconds; ${usage}`);
+  const flags = gateFlags(name, values);
+  if (typeof flags === "string") {
+    console.error(`intersite gate: ${flags}`);
     return 2;
   }
-
-  if (values.write && !values.all) {
-    console.error(`intersite gate: --write records whole-repository findings, so it needs --all; ${usage}`);
-    return 2;
-  }
-  if (values.all && !WHOLE.has(name)) {
-    console.error(`intersite gate: ${name} only judges a change, so --all does not apply; it works for ${[...WHOLE].join(", ")}`);
-    return 2;
-  }
-
-  /** @type {Partial<import("../gates/lib.mjs").GateOptions>} */
-  const flags = {};
-  if (values.base) flags.base = values.base;
-  if (values.cmd) flags.testCmd = values.cmd;
-  if (values.paths) flags.testPaths = values.paths;
-  if (values.setup !== undefined) flags.setup = values.setup;
-  if (max !== undefined) flags.mutants = max;
-  if (timeout !== undefined) flags.timeout = timeout;
 
   let config;
   try {
@@ -166,15 +145,7 @@ export default async function gate(argv, { cwd, quiet = false, silent = false, c
   }
   let result;
   try {
-    if (values.write) {
-      const baseline = readBaseline(cwd, config);
-      const { findings } = await runGate(name, { cwd, config, flags, all: true, fresh: true });
-      baseline[name] = [...new Set(findings.map((f) => f.target))].sort();
-      const sorted = Object.fromEntries(Object.entries(baseline).sort(([a], [b]) => a.localeCompare(b)));
-      writeFileSync(join(cwd, config.gates.baseline), `${JSON.stringify(sorted, null, 2)}\n`);
-      console.log(`ok gate ${name}: ${baseline[name].length} findings recorded in ${config.gates.baseline}; only new ones fail from here`);
-      return 0;
-    }
+    if (values.write) return await recordGate(name, cwd, config, flags);
     result = await runGate(name, { cwd, config, flags, all: values.all });
   } catch (error) {
     if (!(error instanceof GateError)) throw error;
@@ -185,6 +156,45 @@ export default async function gate(argv, { cwd, quiet = false, silent = false, c
   collect?.(result);
   if (!silent) show(name, result, { json: values.json, all: values.all, quiet, cwd });
   return result.findings.length ? 1 : 0;
+}
+
+/**
+ * The gate options the command line overrides, or what is wrong with the flags.
+ * @param {string} name
+ * @param {{ base?: string, cmd?: string, paths?: string[], setup?: string, max?: string, timeout?: string, all?: boolean, write?: boolean }} values
+ * @returns {Partial<import("../gates/lib.mjs").GateOptions> | string}
+ */
+function gateFlags(name, values) {
+  const max = values.max === undefined ? undefined : Number(values.max);
+  const timeout = values.timeout === undefined ? undefined : Number(values.timeout);
+  if ((max !== undefined && !(Number.isInteger(max) && max > 0)) || (timeout !== undefined && !(timeout > 0))) {
+    return `--max must be a positive integer and --timeout a positive number of seconds; ${usage}`;
+  }
+  if (values.write && !values.all) return `--write records whole-repository findings, so it needs --all; ${usage}`;
+  if (values.all && !WHOLE.has(name)) return `${name} only judges a change, so --all does not apply; it works for ${[...WHOLE].join(", ")}`;
+  return {
+    ...(values.base && { base: values.base }),
+    ...(values.cmd && { testCmd: values.cmd }),
+    ...(values.paths && { testPaths: values.paths }),
+    ...(values.setup !== undefined && { setup: values.setup }),
+    ...(max !== undefined && { mutants: max }),
+    ...(timeout !== undefined && { timeout }),
+  };
+}
+
+/**
+ * `--all --write`: records the gate's whole-repository findings in the baseline, so only new ones fail.
+ * @param {string} name @param {string} cwd @param {import("../shared/config.mjs").Config} config
+ * @param {Partial<import("../gates/lib.mjs").GateOptions>} flags
+ */
+async function recordGate(name, cwd, config, flags) {
+  const baseline = readBaseline(cwd);
+  const { findings } = await runGate(name, { cwd, config, flags, all: true, fresh: true });
+  baseline[name] = [...new Set(findings.map((f) => f.target))].sort();
+  const sorted = Object.fromEntries(Object.entries(baseline).sort(([a], [b]) => a.localeCompare(b)));
+  writeBaseline(cwd, "gates", sorted);
+  console.log(`ok gate ${name}: ${baseline[name].length} findings recorded in ${BASELINE}; only new ones fail from here`);
+  return 0;
 }
 
 /**

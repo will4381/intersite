@@ -4,7 +4,7 @@
 // file. Tests and fixtures hold realistic fakes on purpose and are left out. The work is in core/secrets.rs.
 import { posix } from "node:path";
 
-import { located, runCore } from "./core.mjs";
+import { fromEngine, runCore } from "./core.mjs";
 import { changeOf, listFiles, matches, patchPath, projectSpec } from "./lib.mjs";
 
 /** @param {import("./lib.mjs").GateOptions} options @returns {Promise<import("./lib.mjs").GateResult>} */
@@ -17,5 +17,5 @@ export async function secrets({ cwd, base, testPaths }) {
   const name = (/** @type {string} */ file) => posix.relative(prefix || ".", file);
   const fakes = all.filter((f) => matches(name(f), testPaths));
   const answer = runCore({ command: "secrets", root: top, files: all, added: whole ? undefined : Object.fromEntries(added), prefix, options: { fresh: whole ? all : binary, fakes } });
-  return { findings: answer.findings.map((f) => ({ ...located(f, name), target: f.target.replace(f.file, name(f.file)), message: f.message.replaceAll(f.file, name(f.file)) })), summary: answer.summary };
+  return { findings: fromEngine(answer.findings, prefix), summary: answer.summary };
 }

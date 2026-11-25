@@ -43,7 +43,7 @@ function setup(/** @type {object} */ extra = {}) {
   const storage = { getItem: (/** @type {string} */ key) => stored.get(key) ?? null, setItem: (/** @type {string} */ key, /** @type {string} */ value) => void stored.set(key, value) };
   /** @type {{ input: unknown, init: RequestInit | undefined }[]} */
   const calls = [];
-  /** @type {typeof fetch} */
+  /** @type {typeof globalThis.fetch} */
   const fetch = async (input, init) => {
     calls.push({ input, init });
     return new Response("ok");
@@ -52,7 +52,7 @@ function setup(/** @type {object} */ extra = {}) {
   const ui = [];
   const clock = { now: 1_000_000 };
   const location = { origin: "https://app.test", href: "https://app.test/programs/prog_8fK2abQ9/alice@example.com", pathname: "/programs/prog_8fK2abQ9/alice@example.com" };
-  const tracker = createTracker({ document, window, storage, fetch, location, now: () => clock.now, onUi: (event) => void ui.push(event), ...extra });
+  const tracker = createTracker({ document: /** @type {import("../../track/index.mjs").Target} */ (document), window: /** @type {import("../../track/index.mjs").Target} */ (window), storage, fetch, location, now: () => clock.now, onUi: (event) => void ui.push(event), ...extra });
   /** @param {number} index */
   const headers = (index) => new Headers(calls[index].init?.headers);
   return { document, window, stored, calls, ui, clock, tracker, headers };

@@ -30,9 +30,7 @@ export const rule = defineRule({
   },
   createOnce(context) {
     return {
-      before() {
-        return !isScriptFile(context);
-      },
+      before: () => !isScriptFile(context),
       CallExpression(node) {
         const callee = /** @type {any} */ (node.callee);
         if (callee.type !== "MemberExpression" || callee.computed) return;

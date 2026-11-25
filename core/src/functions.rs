@@ -2,11 +2,9 @@
 //! complexity (SonarSource's definition), plus the operators a mutant may flip. Shared by `mutants`, `complexity` and
 //! `coverage`.
 
-use oxc_allocator::Allocator;
 use oxc_ast::ast::*;
 use oxc_ast_visit::{walk, Visit};
-use oxc_parser::Parser;
-use oxc_span::{GetSpan, SourceType};
+use oxc_span::GetSpan;
 use oxc_syntax::operator::{BinaryOperator, LogicalOperator, UnaryOperator};
 use oxc_syntax::scope::ScopeFlags;
 use regex::Regex;
@@ -66,8 +64,11 @@ pub struct Shape {
 
 /// What a guard's condition is about, by the words in it.
 fn guard_label(test: &str) -> &'static str {
-    static ACCESS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)user|session|auth|role|admin|permission|owner|\bcan[A-Z_]|allowed|authori[sz]ed|member|tenant|\borg|access|signed|forbidden").unwrap());
-    static ONCE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)existing|already|processed|duplicate|idempot|seen|handled|exists|replay").unwrap());
+    static ACCESS: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)user|session|auth|role|admin|permission|owner|\bcan[A-Z_]|allowed|authori[sz]ed|member|tenant|\borg|access|signed|forbidden").unwrap()
+    });
+    static ONCE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)existing|already|processed|duplicate|idempot|seen|handled|exists|replay").unwrap());
     static STATE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)status|state\b|stage|phase").unwrap());
     if ACCESS.is_match(test) {
         "access"
@@ -85,13 +86,23 @@ fn call_label(callee: &str) -> Option<&'static str> {
     static INVALIDATE: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"(?i)^(?:revalidate(?:Path|Tag)|invalidate\w*|refetchQueries|resetQueries|removeQueries|updateTag|expireTag|purge\w*|bust\w*)$|(?:cache|redis|kv|memo)\w*\.(?:del|delete|invalidate|clear|expire|unlink)$").unwrap()
     });
-    static CHECK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:require|assert|ensure|check|verify|authori[sz]e|authenticate|protect|guard)(?:[A-Z]\w*)?$").unwrap());
-    static ACCESS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)auth|user|role|admin|permission|owner|access|member|tenant|org|signature|session|login|can[A-Z]").unwrap());
+    static CHECK: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^(?:require|assert|ensure|check|verify|authori[sz]e|authenticate|protect|guard)(?:[A-Z]\w*)?$").unwrap()
+    });
+    static ACCESS: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)auth|user|role|admin|permission|owner|access|member|tenant|org|signature|session|login|can[A-Z]").unwrap()
+    });
     let last = callee.rsplit('.').next().unwrap_or(callee);
     if INVALIDATE.is_match(callee) || INVALIDATE.is_match(last) {
         return Some("invalidation");
     }
-    CHECK.is_match(last).then(|| if ACCESS.is_match(last) || matches!(last, "authorize" | "authorise" | "authenticate" | "protect") { "access" } else { "check" })
+    CHECK.is_match(last).then(|| {
+        if ACCESS.is_match(last) || matches!(last, "authorize" | "authorise" | "authenticate" | "protect") {
+            "access"
+        } else {
+            "check"
+        }
+    })
 }
 
 /// A key or column that scopes a query to its owner: `orgId`, `tenant_id`, `userId`, `workspace`.
@@ -103,7 +114,9 @@ static TENANT: LazyLock<Regex> = LazyLock::new(|| {
 fn exits(s: &Statement<'_>) -> bool {
     match s {
         Statement::ThrowStatement(_) | Statement::ReturnStatement(_) => true,
-        Statement::BlockStatement(b) => b.body.last().is_some_and(|last| matches!(last, Statement::ThrowStatement(_) | Statement::ReturnStatement(_))),
+        Statement::BlockStatement(b) => {
+            b.body.last().is_some_and(|last| matches!(last, Statement::ThrowStatement(_) | Statement::ReturnStatement(_)))
+        }
         _ => false,
     }
 }
@@ -200,7 +213,17 @@ impl<'s> Walker<'s> {
             (Some((name, callback)), Some(body)) => {
                 let top = self.frames.is_empty();
                 let (line, end_line) = (self.line(span.start), self.line(span.end));
-                self.funcs.push(Func { name, callback, top, line, end_line, body: (body.span.start, body.span.end), expression_body: expression, empty: body.statements.is_empty(), complexity: 0 });
+                self.funcs.push(Func {
+                    name,
+                    callback,
+                    top,
+                    line,
+                    end_line,
+                    body: (body.span.start, body.span.end),
+                    expression_body: expression,
+                    empty: body.statements.is_empty(),
+                    complexity: 0,
+                });
                 Some(self.funcs.len() - 1)
             }
             _ => None,
@@ -233,11 +256,23 @@ impl<'s> Walker<'s> {
         let scopes = |e: &Expression<'_>| -> bool {
             let Expression::CallExpression(c) = e else { return false };
             matches!(&c.callee, Expression::Identifier(id) if id.name == "eq")
-                && c.arguments.first().and_then(|a| a.as_expression()).is_some_and(|a| matches!(a, Expression::StaticMemberExpression(m) if TENANT.is_match(&m.property.name)))
+                && c.arguments
+                    .first()
+                    .and_then(|a| a.as_expression())
+                    .is_some_and(|a| matches!(a, Expression::StaticMemberExpression(m) if TENANT.is_match(&m.property.name)))
         };
         if let Expression::StaticMemberExpression(m) = &it.callee {
-            let column = |i: usize| it.arguments.get(i).and_then(|a| a.as_expression()).and_then(|a| if let Expression::StringLiteral(s) = a { Some(s.value.as_str()) } else { None });
-            let chain_filter = matches!(m.property.name.as_str(), "eq" | "match" | "is" | "where" | "andWhere") && column(0).is_some_and(|c| TENANT.is_match(c));
+            let column = |i: usize| {
+                it.arguments.get(i).and_then(|a| a.as_expression()).and_then(|a| {
+                    if let Expression::StringLiteral(s) = a {
+                        Some(s.value.as_str())
+                    } else {
+                        None
+                    }
+                })
+            };
+            let chain_filter = matches!(m.property.name.as_str(), "eq" | "match" | "is" | "where" | "andWhere")
+                && column(0).is_some_and(|c| TENANT.is_match(c));
             let lone_where = m.property.name == "where" && it.arguments.len() == 1 && it.arguments[0].as_expression().is_some_and(scopes);
             if chain_filter || lone_where {
                 self.cut(m.object.span().end, it.span.end, String::new(), "tenant");
@@ -431,7 +466,10 @@ impl<'a> Visit<'a> for Walker<'_> {
 
     fn visit_catch_clause(&mut self, it: &CatchClause<'a>) {
         // A catch that answers with a fallback: rethrowing instead shows whether any test reaches that fallback.
-        let falls_back = it.body.body.iter().any(|s| matches!(s, Statement::ReturnStatement(_)) || matches!(s, Statement::ExpressionStatement(e) if matches!(e.expression, Expression::AssignmentExpression(_))));
+        let falls_back = it.body.body.iter().any(|s| {
+            matches!(s, Statement::ReturnStatement(_))
+                || matches!(s, Statement::ExpressionStatement(e) if matches!(e.expression, Expression::AssignmentExpression(_)))
+        });
         if let (true, Some(BindingPattern::BindingIdentifier(id))) = (falls_back, it.param.as_ref().map(|p| &p.pattern)) {
             self.cut(it.body.span.start, it.body.span.end, format!("{{ throw {}; }}", id.name), "error");
         }
@@ -516,14 +554,23 @@ impl<'a> Visit<'a> for Walker<'_> {
 
 /// The functions and mutable operators of a file, or None when it does not parse.
 pub fn read(path: &str, src: &str) -> Option<Shape> {
-    let allocator = Allocator::default();
-    let parsed = Parser::new(&allocator, src, SourceType::from_path(path).unwrap_or_default()).parse();
-    if parsed.panicked {
-        return None;
-    }
-    let mut w = Walker { src, lines: Lines::new(src), names: HashMap::new(), funcs: vec![], sites: vec![], cuts: vec![], frames: vec![], depth: 0, arid: 0, types: 0, chain: false };
-    w.visit_program(&parsed.program);
-    Some(Shape { funcs: w.funcs, sites: w.sites, cuts: w.cuts })
+    crate::js::parse(path, src, |program| {
+        let mut w = Walker {
+            src,
+            lines: Lines::new(src),
+            names: HashMap::new(),
+            funcs: vec![],
+            sites: vec![],
+            cuts: vec![],
+            frames: vec![],
+            depth: 0,
+            arid: 0,
+            types: 0,
+            chain: false,
+        };
+        w.visit_program(program);
+        Shape { funcs: w.funcs, sites: w.sites, cuts: w.cuts }
+    })
 }
 
 /// A UTF-16 offset, as JavaScript counts, for a byte offset.
@@ -594,7 +641,10 @@ mod tests {
         let names = |src: &str| read("a.ts", src).unwrap().funcs.into_iter().map(|f| f.name).collect::<Vec<_>>();
         assert_eq!(names("export default function stats() {}\n"), vec!["stats"]);
         assert_eq!(names("export default function () {}\n"), vec!["default"]);
-        assert_eq!(names("class C { total() {} handle = () => 1; }\nconst o = { go() {}, run: function () {} };\n"), vec!["total", "handle", "go", "run"]);
+        assert_eq!(
+            names("class C { total() {} handle = () => 1; }\nconst o = { go() {}, run: function () {} };\n"),
+            vec!["total", "handle", "go", "run"]
+        );
     }
 
     #[test]

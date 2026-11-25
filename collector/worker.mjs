@@ -50,6 +50,93 @@ async function body(request) {
 /** @param {unknown} value */
 const isName = (value) => typeof value === "string" && value.length > 0 && value.length <= 128;
 
+/** @typedef {(request: Request, env: Env, url: URL, now: number) => Promise<Response>} Handler */
+
+/** @type {Handler} */
+async function postCases(request, env, _url, now) {
+  const input = await body(request);
+  if (!Array.isArray(input?.cases)) return fail("body must be { cases: Case[] }", 400);
+  if (input.cases.length > MAX_CASES) return fail(`at most ${MAX_CASES} cases per request`, 413);
+  const cap = { ok: Number(env.DAILY_CAP_OK) || 5000, other: Number(env.DAILY_CAP_OTHER) || 5000 };
+  return json(await store.ingest(env.DB, input.cases, cap, now));
+}
+
+/** @type {Handler} */
+async function getSessions(_request, env, url) {
+  const query = url.searchParams;
+  const project = query.get("project");
+  if (!isName(project)) return fail("project is required", 400);
+  const outcomes = query.getAll("outcome");
+  const unknown = outcomes.find((outcome) => !OUTCOMES.includes(/** @type {any} */ (outcome)));
+  if (unknown !== undefined) return fail(`outcome must be one of ${OUTCOMES.join(", ")}`, 400);
+  const since = sinceOf(query);
+  if (Number.isNaN(since)) return fail("since must be an ISO timestamp", 400);
+  const seed = Number(query.get("seed") ?? Math.floor(Math.random() * 2 ** 32));
+  if (!Number.isSafeInteger(seed)) return fail("seed must be an integer", 400);
+  const sample = Math.min(MAX_SAMPLE, Math.max(1, Number.parseInt(query.get("sample") ?? "", 10) || 20));
+  const found = await store.sessions(env.DB, {
+    project: /** @type {string} */ (project),
+    outcomes: [...new Set(outcomes)],
+    route: query.get("route") ?? undefined,
+    action: query.get("action") ?? undefined,
+    since,
+    knownGood: query.get("known_good") === "1",
+    sample,
+    seed,
+  });
+  return json({ sessions: found });
+}
+
+/** @type {Handler} */
+async function getActions(_request, env, url) {
+  const project = url.searchParams.get("project");
+  if (!isName(project)) return fail("project is required", 400);
+  const since = sinceOf(url.searchParams);
+  if (Number.isNaN(since)) return fail("since must be an ISO timestamp", 400);
+  return json({ actions: await store.actions(env.DB, /** @type {string} */ (project), since ?? 0) });
+}
+
+/** @type {Handler} */
+async function postResults(request, env, _url, now) {
+  const input = await body(request);
+  const results = input?.results;
+  if (!isName(input?.project) || typeof input.release !== "string" || !Array.isArray(results)) {
+    return fail("body must be { project, release, results: { session, pass }[] }", 400);
+  }
+  if (results.length > MAX_SAMPLE) return fail(`at most ${MAX_SAMPLE} results per request`, 413);
+  if (!results.every((result) => isName(result?.session) && typeof result.pass === "boolean")) {
+    return fail("each result needs session (string) and pass (boolean)", 400);
+  }
+  return json({ recorded: await store.recordResults(env.DB, input.project, input.release, results, now) });
+}
+
+/** GET /v1/cases/:id and POST /v1/cases/:id/pin; anything else is a 404. @type {Handler} */
+async function caseRoutes(request, env, url) {
+  const caseRoute = /^\/v1\/cases\/([^/]+)(\/pin)?$/.exec(url.pathname);
+  if (!caseRoute) return fail("not found", 404);
+  const id = decodeURIComponent(caseRoute[1]);
+  if (request.method === "GET" && !caseRoute[2]) {
+    const project = url.searchParams.get("project");
+    if (!isName(project)) return fail("project is required", 400);
+    const found = await store.caseWithHistory(env.DB, /** @type {string} */ (project), id);
+    return found ? json(found) : fail("case not found", 404);
+  }
+  if (request.method === "POST" && caseRoute[2]) {
+    const input = await body(request);
+    if (!isName(input?.project) || typeof input.pinned !== "boolean") return fail("body must be { project, pinned: boolean }", 400);
+    const exists = await store.pin(env.DB, input.project, id, input.pinned);
+    return exists ? json({ pinned: input.pinned }) : fail("case not found", 404);
+  }
+  return fail("not found", 404);
+}
+
+/** Routes that need the read token, by `METHOD /path`. @type {Record<string, Handler>} */
+const READ_ROUTES = {
+  "GET /v1/sessions": getSessions,
+  "GET /v1/actions": getActions,
+  "POST /v1/results": postResults,
+};
+
 /** @param {Request} request @param {Env} env @returns {Promise<Response>} */
 async function handle(request, env) {
   const url = new URL(request.url);
@@ -62,82 +149,9 @@ async function handle(request, env) {
 
   const now = Date.now();
   const route = `${request.method} ${url.pathname}`;
-
-  if (route === "POST /v1/cases") {
-    if (!ingestToken) return fail("this route needs the ingest token", 403);
-    const input = await body(request);
-    if (!Array.isArray(input?.cases)) return fail("body must be { cases: Case[] }", 400);
-    if (input.cases.length > MAX_CASES) return fail(`at most ${MAX_CASES} cases per request`, 413);
-    const cap = { ok: Number(env.DAILY_CAP_OK) || 5000, other: Number(env.DAILY_CAP_OTHER) || 5000 };
-    return json(await store.ingest(env.DB, input.cases, cap, now));
-  }
-
+  if (route === "POST /v1/cases") return ingestToken ? postCases(request, env, url, now) : fail("this route needs the ingest token", 403);
   if (!readToken) return fail("this route needs the read token", 403);
-
-  if (route === "GET /v1/sessions") {
-    const query = url.searchParams;
-    const project = query.get("project");
-    if (!isName(project)) return fail("project is required", 400);
-    const outcomes = query.getAll("outcome");
-    const unknown = outcomes.find((outcome) => !OUTCOMES.includes(/** @type {any} */ (outcome)));
-    if (unknown !== undefined) return fail(`outcome must be one of ${OUTCOMES.join(", ")}`, 400);
-    const since = sinceOf(query);
-    if (Number.isNaN(since)) return fail("since must be an ISO timestamp", 400);
-    const seed = Number(query.get("seed") ?? Math.floor(Math.random() * 2 ** 32));
-    if (!Number.isSafeInteger(seed)) return fail("seed must be an integer", 400);
-    const sample = Math.min(MAX_SAMPLE, Math.max(1, Number.parseInt(query.get("sample") ?? "", 10) || 20));
-    const found = await store.sessions(env.DB, {
-      project: /** @type {string} */ (project),
-      outcomes: [...new Set(outcomes)],
-      route: query.get("route") ?? undefined,
-      action: query.get("action") ?? undefined,
-      since,
-      knownGood: query.get("known_good") === "1",
-      sample,
-      seed,
-    });
-    return json({ sessions: found });
-  }
-
-  if (route === "GET /v1/actions") {
-    const project = url.searchParams.get("project");
-    if (!isName(project)) return fail("project is required", 400);
-    const since = sinceOf(url.searchParams);
-    if (Number.isNaN(since)) return fail("since must be an ISO timestamp", 400);
-    return json({ actions: await store.actions(env.DB, /** @type {string} */ (project), since ?? 0) });
-  }
-
-  if (route === "POST /v1/results") {
-    const input = await body(request);
-    const results = input?.results;
-    if (!isName(input?.project) || typeof input.release !== "string" || !Array.isArray(results)) {
-      return fail("body must be { project, release, results: { session, pass }[] }", 400);
-    }
-    if (results.length > MAX_SAMPLE) return fail(`at most ${MAX_SAMPLE} results per request`, 413);
-    if (!results.every((result) => isName(result?.session) && typeof result.pass === "boolean")) {
-      return fail("each result needs session (string) and pass (boolean)", 400);
-    }
-    return json({ recorded: await store.recordResults(env.DB, input.project, input.release, results, now) });
-  }
-
-  const caseRoute = /^\/v1\/cases\/([^/]+)(\/pin)?$/.exec(url.pathname);
-  if (caseRoute) {
-    const id = decodeURIComponent(caseRoute[1]);
-    if (request.method === "GET" && !caseRoute[2]) {
-      const project = url.searchParams.get("project");
-      if (!isName(project)) return fail("project is required", 400);
-      const found = await store.caseWithHistory(env.DB, /** @type {string} */ (project), id);
-      return found ? json(found) : fail("case not found", 404);
-    }
-    if (request.method === "POST" && caseRoute[2]) {
-      const input = await body(request);
-      if (!isName(input?.project) || typeof input.pinned !== "boolean") return fail("body must be { project, pinned: boolean }", 400);
-      const exists = await store.pin(env.DB, input.project, id, input.pinned);
-      return exists ? json({ pinned: input.pinned }) : fail("case not found", 404);
-    }
-  }
-
-  return fail("not found", 404);
+  return (READ_ROUTES[route] ?? caseRoutes)(request, env, url, now);
 }
 
 export default {

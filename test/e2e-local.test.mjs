@@ -64,7 +64,7 @@ test("named actions flow from the browser to stored cases, and the CLI reads the
   const capture = createCapture({ project: "demo", url: collector.url, token: "local-ingest", release: "prod1", sample: 1 });
   // Recent, not fixed: a stored case expires ttlDays after it happened, and the CLI reads only live ones.
   let tick = Date.now() - 60_000;
-  /** @type {typeof fetch} */
+  /** @type {typeof globalThis.fetch} */
   const server = async (input, init) => {
     const request = new Request(input, init);
     request.headers.set("x-tenant", "a");
@@ -78,7 +78,7 @@ test("named actions flow from the browser to stored cases, and the CLI reads the
   // The browser: two named actions, each followed by the request it causes.
   const dom = page();
   const location = { origin: production.url, href: `${production.url}/notes`, pathname: "/notes" };
-  const tracker = createTracker({ fetch: server, document: dom.events, window: dom.events, storage: dom.storage, location });
+  const tracker = createTracker({ fetch: server, document: /** @type {import("../track/index.mjs").Target} */ (dom.events), window: /** @type {import("../track/index.mjs").Target} */ (dom.events), storage: dom.storage, location });
   for (let i = 0; i < 2; i++) await fetch(`${production.url}/notes`, { method: "POST", headers: { "x-tenant": "a" }, body: JSON.stringify({ text: "old" }) });
   dom.click("note.create");
   const created = await (await tracker.fetch(`${production.url}/notes`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "hi" }) })).json();

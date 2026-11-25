@@ -76,123 +76,145 @@ const forms = (word) => [word, word.replace(/s$/, ""), word.replace(/es$/, ""), 
 /** @param {string} text */
 const isIsoDate = (text) => ISO_DATE.test(text) && !Number.isNaN(Date.parse(text));
 
+const SENSITIVE_WORD_SET = new Set(SENSITIVE_WORDS);
+const STRUCTURAL_SET = new Set(STRUCTURAL_WORDS);
+const DATE_SET = new Set(DATE_WORDS);
+
+/**
+ * What one scrubber was built with: its ID pattern, the sensitive substrings with `redactKeys` added, the `keepKeys`
+ * as space-joined words, and the salted HMAC.
+ * @typedef {{ idRegex: RegExp, substrings: string[], kept: string[], hash: (text: string) => Promise<string> }} Rules
+ */
+
+/** HMAC-SHA256(key, text) as hex. @param {Promise<CryptoKey>} hmacKey @param {string} text */
+async function hmacHex(hmacKey, text) {
+  const signature = await crypto.subtle.sign("HMAC", await hmacKey, enc.encode(text));
+  return [...new Uint8Array(signature)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** @param {Rules} rules @param {string} key */
+function isSensitive(rules, key) {
+  const parts = wordsOf(key);
+  const joined = parts.join("");
+  return parts.some((part) => SENSITIVE_WORD_SET.has(part)) || rules.substrings.some((needle) => joined.includes(needle));
+}
+
+/** @param {Rules} rules @param {string} text */
+const isId = (rules, text) => rules.idRegex.test(text) && !SECRET_PREFIX.test(text);
+/** "cardId", "address_ids": an ID under these is an opaque reference, not the sensitive value. @param {string} key */
+const isIdKey = (key) => ["id", "ids", "uuid"].includes(wordsOf(key).at(-1) ?? "");
+/**
+ * Lowercase hex, digit-heavy or letter-digit-letter-digit strings are secrets, access codes, phone numbers or birth
+ * years, not enum codes (`fb25c0` is an access code; `h264` and `mp4` are enums). @param {string} text
+ */
+const looksRandom = (text) => text.replace(/\D/g, "").length >= 4 || (text.length >= 16 && /^[0-9a-f]+$/.test(text)) || /[a-z]\d+[a-z]+\d/.test(text);
+
+/** `keepKeys` match the key's last words: "sortBy" keeps "sort_by" and "listSortBy". @param {Rules} rules @param {string[]} parts */
+const isKept = (rules, parts) => rules.kept.some((needle) => ` ${parts.join(" ")}`.endsWith(` ${needle}`));
+
+/** @param {Rules} rules @param {string} text @param {string} key */
+function isStructural(rules, text, key) {
+  if (isId(rules, text) || SHORT_NUMBER.test(text)) return true;
+  const parts = wordsOf(key);
+  const last = forms(parts.at(-1) ?? "");
+  if (isIsoDate(text)) return last.some((word) => DATE_SET.has(word)) || isKept(rules, parts);
+  // A comma-separated list of codes (`group=creator,platform`) is kept when every code would be.
+  const codes = text.split(",");
+  const coded = codes.every((code) => (CODE.test(code) && !looksRandom(code)) || MIME.test(code));
+  return coded && codes.length <= 16 && (last.some((word) => STRUCTURAL_SET.has(word)) || isKept(rules, parts));
+}
+
+/** A stable stand-in with the same form. @param {Rules} rules @param {string} text */
+async function fakeString(rules, text) {
+  const digest = await rules.hash(text);
+  const short = digest.slice(0, 8);
+  if (EMAIL.test(text)) return `u${short}@example.test`;
+  if (URL_LIKE.test(text)) return `https://example.test/${short}`;
+  if (isIsoDate(text)) {
+    const date = new Date(Date.UTC(1970, 0, 1) + (Number.parseInt(short, 16) % 20_000) * 86_400_000).toISOString();
+    return text.length === 10 ? date.slice(0, 10) : date;
+  }
+  const digitStream = digest.replace(/[a-f]/g, (letter) => String(letter.charCodeAt(0) % 10));
+  if (DIGITS.test(text)) return digitStream.repeat(Math.ceil(text.length / 64)).slice(0, text.length);
+  const digitCount = text.replace(/\D/g, "").length;
+  if (PHONE.test(text) && digitCount >= 7 && digitCount <= 15) return `+1555${digitStream.slice(0, 7)}`;
+  return `text-${short}`; // never `text_…`: the default idPattern would take that for an ID and replay would try to remap it
+}
+
+/** Same number of integer digits and sign; a fraction stays a fraction. @param {Rules} rules @param {number} number */
+async function fakeNumber(rules, number) {
+  if (!Number.isFinite(number)) return 0;
+  const seed = Number.parseInt((await rules.hash(String(number))).slice(0, 12), 16);
+  const digits = Math.min(String(Math.trunc(Math.abs(number))).length, 12);
+  let out = seed % 10 ** digits;
+  if (!Number.isInteger(number)) out += (seed % 99 + 1) / 100;
+  return number < 0 ? -out : out;
+}
+
+/** @param {Rules} rules @param {string} key */
+async function scrubKey(rules, key) {
+  return IDENT_KEY.test(key) || isId(rules, key) ? key : fakeString(rules, key);
+}
+
+/**
+ * Scrub any JSON value. `key` is the property name it sits under; sensitivity is inherited by everything inside.
+ * @param {Rules} rules @param {unknown} value @param {string} [key] @param {boolean} [inherited]
+ * @returns {Promise<unknown>}
+ */
+async function scrub(rules, value, key = "", inherited = false) {
+  const hot = inherited || isSensitive(rules, key);
+  if (value === null || value === undefined || typeof value === "boolean") return value ?? null;
+  if (typeof value === "number") return hot ? fakeNumber(rules, value) : value;
+  if (typeof value === "string") {
+    if (hot) return isIdKey(key) && isId(rules, value) ? value : fakeString(rules, value);
+    return isStructural(rules, value, key) ? value : fakeString(rules, value);
+  }
+  if (Array.isArray(value)) return Promise.all(value.map((item) => scrub(rules, item, key, hot)));
+  if (typeof value === "object") {
+    /** @type {Record<string, unknown>} */
+    const out = {};
+    for (const [childKey, child] of Object.entries(value)) out[await scrubKey(rules, childKey)] = await scrub(rules, child, childKey, hot);
+    return out;
+  }
+  return null;
+}
+
+/** Rewrite only the object keys of a JSON value, so its shape and ID pointers cannot carry personal keys. @param {Rules} rules @param {unknown} value @returns {Promise<unknown>} */
+async function scrubKeys(rules, value) {
+  if (Array.isArray(value)) return Promise.all(value.map((item) => scrubKeys(rules, item)));
+  if (value === null || typeof value !== "object") return value;
+  /** @type {Record<string, unknown>} */
+  const out = {};
+  for (const [key, child] of Object.entries(value)) out[await scrubKey(rules, key)] = await scrubKeys(rules, child);
+  return out;
+}
+
 /**
  * @param {{ salt: string, idPattern: string, redactKeys?: string[], keepKeys?: string[] }} options
  */
 export function createScrubber({ salt, idPattern, redactKeys = [], keepKeys = [] }) {
-  const idRegex = new RegExp(idPattern);
-  const substrings = [...SENSITIVE_SUBSTRINGS, ...redactKeys.map((key) => wordsOf(key).join("")).filter(Boolean)];
-  const words = new Set(SENSITIVE_WORDS);
-  const structural = new Set(STRUCTURAL_WORDS);
-  const dateWords = new Set(DATE_WORDS);
-  const kept = keepKeys.map((key) => wordsOf(key).join(" ")).filter(Boolean);
   const hmacKey = crypto.subtle.importKey("raw", enc.encode(salt), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   // An unhandled rejection here would surface outside record(); callers see the failure when they await hash().
   // oxlint-disable-next-line intersite/no-empty-catch -- only marks the rejection handled; hash() rethrows it to its caller
   hmacKey.catch(() => {});
-
   /** HMAC-SHA256(salt, text) as hex. @param {string} text */
-  async function hash(text) {
-    const signature = await crypto.subtle.sign("HMAC", await hmacKey, enc.encode(text));
-    return [...new Uint8Array(signature)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-  }
-
-  /** @param {string} key */
-  function isSensitive(key) {
-    const parts = wordsOf(key);
-    const joined = parts.join("");
-    return parts.some((part) => words.has(part)) || substrings.some((needle) => joined.includes(needle));
-  }
-
-  /** @param {string} text */
-  const isId = (text) => idRegex.test(text) && !SECRET_PREFIX.test(text);
-  /** "cardId", "address_ids": an ID under these is an opaque reference, not the sensitive value. @param {string} key */
-  const isIdKey = (key) => ["id", "ids", "uuid"].includes(wordsOf(key).at(-1) ?? "");
-  /**
-   * Lowercase hex, digit-heavy or letter-digit-letter-digit strings are secrets, access codes, phone numbers or birth
-   * years, not enum codes (`fb25c0` is an access code; `h264` and `mp4` are enums). @param {string} text
-   */
-  const looksRandom = (text) => text.replace(/\D/g, "").length >= 4 || (text.length >= 16 && /^[0-9a-f]+$/.test(text)) || /[a-z]\d+[a-z]+\d/.test(text);
-
-  /** `keepKeys` match the key's last words: "sortBy" keeps "sort_by" and "listSortBy". @param {string[]} parts */
-  const isKept = (parts) => kept.some((needle) => ` ${parts.join(" ")}`.endsWith(` ${needle}`));
-
-  /** @param {string} text @param {string} key */
-  function isStructural(text, key) {
-    if (isId(text) || SHORT_NUMBER.test(text)) return true;
-    const parts = wordsOf(key);
-    const last = forms(parts.at(-1) ?? "");
-    if (isIsoDate(text)) return last.some((word) => dateWords.has(word)) || isKept(parts);
-    // A comma-separated list of codes (`group=creator,platform`) is kept when every code would be.
-    const codes = text.split(",");
-    const coded = codes.every((code) => (CODE.test(code) && !looksRandom(code)) || MIME.test(code));
-    return coded && codes.length <= 16 && (last.some((word) => structural.has(word)) || isKept(parts));
-  }
-
-  /** A stable stand-in with the same form. @param {string} text */
-  async function fakeString(text) {
-    const digest = await hash(text);
-    const short = digest.slice(0, 8);
-    if (EMAIL.test(text)) return `u${short}@example.test`;
-    if (URL_LIKE.test(text)) return `https://example.test/${short}`;
-    if (isIsoDate(text)) {
-      const date = new Date(Date.UTC(1970, 0, 1) + (Number.parseInt(short, 16) % 20_000) * 86_400_000).toISOString();
-      return text.length === 10 ? date.slice(0, 10) : date;
-    }
-    const digitStream = digest.replace(/[a-f]/g, (letter) => String(letter.charCodeAt(0) % 10));
-    if (DIGITS.test(text)) return digitStream.repeat(Math.ceil(text.length / 64)).slice(0, text.length);
-    const digitCount = text.replace(/\D/g, "").length;
-    if (PHONE.test(text) && digitCount >= 7 && digitCount <= 15) return `+1555${digitStream.slice(0, 7)}`;
-    return `text-${short}`; // never `text_…`: the default idPattern would take that for an ID and replay would try to remap it
-  }
-
-  /** Same number of integer digits and sign; a fraction stays a fraction. @param {number} number */
-  async function fakeNumber(number) {
-    if (!Number.isFinite(number)) return 0;
-    const seed = Number.parseInt((await hash(String(number))).slice(0, 12), 16);
-    const digits = Math.min(String(Math.trunc(Math.abs(number))).length, 12);
-    let out = seed % 10 ** digits;
-    if (!Number.isInteger(number)) out += (seed % 99 + 1) / 100;
-    return number < 0 ? -out : out;
-  }
-
-  /** @param {string} key */
-  async function scrubKey(key) {
-    return IDENT_KEY.test(key) || isId(key) ? key : fakeString(key);
-  }
-
-  /**
-   * Scrub any JSON value. `key` is the property name it sits under; sensitivity is inherited by everything inside.
-   * @param {unknown} value @param {string} [key] @param {boolean} [inherited]
-   * @returns {Promise<unknown>}
-   */
-  async function scrub(value, key = "", inherited = false) {
-    const hot = inherited || isSensitive(key);
-    if (value === null || value === undefined || typeof value === "boolean") return value ?? null;
-    if (typeof value === "number") return hot ? fakeNumber(value) : value;
-    if (typeof value === "string") {
-      if (hot) return isIdKey(key) && isId(value) ? value : fakeString(value);
-      return isStructural(value, key) ? value : fakeString(value);
-    }
-    if (Array.isArray(value)) return Promise.all(value.map((item) => scrub(item, key, hot)));
-    if (typeof value === "object") {
-      /** @type {Record<string, unknown>} */
-      const out = {};
-      for (const [childKey, child] of Object.entries(value)) out[await scrubKey(childKey)] = await scrub(child, childKey, hot);
-      return out;
-    }
-    return null;
-  }
-
-  /** Rewrite only the object keys of a JSON value, so its shape and ID pointers cannot carry personal keys. @param {unknown} value @returns {Promise<unknown>} */
-  async function scrubKeys(value) {
-    if (Array.isArray(value)) return Promise.all(value.map(scrubKeys));
-    if (value === null || typeof value !== "object") return value;
-    /** @type {Record<string, unknown>} */
-    const out = {};
-    for (const [key, child] of Object.entries(value)) out[await scrubKey(key)] = await scrubKeys(child);
-    return out;
-  }
-
-  return { hash, scrub, scrubKey, scrubKeys, isId };
+  const hash = (text) => hmacHex(hmacKey, text);
+  /** @type {Rules} */
+  const rules = {
+    idRegex: new RegExp(idPattern),
+    substrings: [...SENSITIVE_SUBSTRINGS, ...redactKeys.map((key) => wordsOf(key).join("")).filter(Boolean)],
+    kept: keepKeys.map((key) => wordsOf(key).join(" ")).filter(Boolean),
+    hash,
+  };
+  return {
+    hash,
+    /** @param {unknown} value @param {string} [key] @param {boolean} [inherited] */
+    scrub: (value, key, inherited) => scrub(rules, value, key, inherited),
+    /** @param {string} key */
+    scrubKey: (key) => scrubKey(rules, key),
+    /** @param {unknown} value */
+    scrubKeys: (value) => scrubKeys(rules, value),
+    /** @param {string} text */
+    isId: (text) => isId(rules, text),
+  };
 }

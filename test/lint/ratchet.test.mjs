@@ -14,7 +14,7 @@ test("baseline ratchet: new findings fail, recorded ones pass, fixed ones demand
     ".oxlintrc.json": { rules: { "no-debugger": "error" } },
     "src/a.ts": emptyCatch + "debugger;\n",
   });
-  const baseline = () => JSON.parse(readFileSync(join(cwd, "intersite-baseline.json"), "utf8"));
+  const baseline = () => JSON.parse(readFileSync(join(cwd, ".intersite/baseline.json"), "utf8")).lint;
 
   let r = await runLint(cwd);
   assert.equal(r.code, 1);

@@ -23,18 +23,22 @@ What every part of this package agrees on. Change it here first, then in code.
   postgres for planning). A machine that runs the gates needs Rust (`rustup`): `gates/core.mjs` builds the engine with
   cargo the first time and whenever `core/src` is newer than the binary, then sends it one JSON request on stdin and
   reads one JSON answer: `{ findings: [{ file, line, target, message }], summary, data? }`, paths relative to `root`.
-- Node code is plain ESM `.mjs` with `// @ts-check` and JSDoc types. No TypeScript files: the package is installed
+- Node code is plain ESM `.mjs` with `// @ts-check` and JSDoc types, checked strictly by `npm run typecheck`
+  (`tsc` over `tsconfig.json`). No TypeScript files: the package is installed
   straight from GitHub (`"intersite": "github:<owner>/intersite#<tag>"`), and Node refuses to strip types under
   `node_modules`. Node stays where it must: the CLI entry, git and process orchestration, the oxlint rule plugins,
   `capture/` and `track/`, the collector, and replay (adapters are the project's JavaScript).
 - One runtime dependency, `yaml`, used only where config and rule files are read (never in `capture/` or `track/`).
   `oxlint` and `@oxlint/plugins` are optional peers that `lint` needs (a package that only imports
-  `intersite/capture` or `intersite/track` installs neither); `playwright-core` is an optional peer used only
-  by `trace --page` (the `ui` replay mode and flows drive the browser from intersite-core); `wrangler` is a dev dependency, and `oxc-parser` one only for search's recall test.
+  `intersite/capture` or `intersite/track` installs neither), and `oxlint-tsgolint` an optional peer that
+  `lint.typeAware` needs; `playwright-core` is an optional peer used only by `trace --page` (the `ui` replay mode and flows drive the browser
+  from intersite-core);
+  `wrangler`, `typescript` and `@types/node` are dev dependencies, and `oxc-parser` one only for search's recall test.
 - `capture/`, `track/`, `shared/case.mjs` and `shared/shape.mjs` use only web-standard APIs.
 - Tests are `node --test` files under `test/<part>/`. Test behavior through the part's public entry, not its internals.
 - A deliberate shortcut gets a `// ponytail: <ceiling>, <upgrade path>` comment.
-- The package passes its own `npm run lint` with an empty baseline.
+- The package passes its own `npm run check` with an empty baseline, and the Rust engine `cargo fmt --check` and
+  `cargo clippy --all-targets -- -D warnings`.
 
 ## CLI output (every command)
 
@@ -380,7 +384,8 @@ UI cases are skipped by every mode except `ui`.
   one of casing, types, envelope, errors, status, values, exposure, size, requests, routes.
 - `ui`: needs `replay.uiTarget`. It runs in the flows' engine in intersite-core (see "Flows"), one browser context
   per session, with Node sending each session's actions already signed in, its IDs resolved and its dates shifted. It
-  drives Chrome Headless Shell when Playwright has installed one, else the installed Chrome; with `replay.browser: lightpanda` it starts `lightpanda serve` from PATH on a local port
+  drives Chrome Headless Shell when Playwright has installed one, else the installed Chrome; with
+  `replay.browser: lightpanda` it starts `lightpanda serve` from PATH on a local port
   (exit 2 with an install line when it is missing) and runs one session at a time; with `replay.browserUrl` it connects
   over CDP to that running browser and leaves it running. Images are answered with a 1x1 GIF and fonts and media with
   an empty body, never fetched; stylesheets load, because the visibility checks need layout. For each distinct

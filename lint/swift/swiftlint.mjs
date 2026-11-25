@@ -34,6 +34,7 @@ const wanted = (path) => path.endsWith(".swift") && !path.split("/").some((part)
  * not depend on how git or the file system spelled an accented name.
  * @param {string} cwd
  * @param {string[]} paths
+ * @returns {string[]}
  */
 export function swiftFiles(cwd, paths) {
   const roots = (paths.length ? paths : ["."]).map((p) => normalize(p).replace(/\/$/, ""));

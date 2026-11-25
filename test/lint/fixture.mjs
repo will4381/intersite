@@ -32,6 +32,7 @@ export function write(cwd, name, content) {
  * @param {string[]} [argv]
  */
 export async function runLint(cwd, argv = []) {
+  /** @type {string[]} */
   const lines = [];
   const { log, error } = console;
   console.log = console.error = (/** @type {string} */ line) => lines.push(line);

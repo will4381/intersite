@@ -3,9 +3,8 @@
 // column nothing writes (it stays NULL) or a table nothing uses, names a table or column the schema does not have
 // (raw SQL, Supabase, Prisma and Drizzle keys), or removes the last write of a column. With --all, every nullable
 // column nothing writes and every table nothing uses. The work is in core/columns.rs.
-import { posix } from "node:path";
 
-import { located, runCore } from "./core.mjs";
+import { fromEngine, runCore } from "./core.mjs";
 import { JS_FILE, SKIP, changeOf, changes, listFiles, matches, showMany } from "./lib.mjs";
 
 /** Sources in other languages: a table they name may be written there, so it is never reported as unwritten. */
@@ -22,7 +21,6 @@ export async function columns({ cwd, base, testPaths }) {
   const edited = whole ? [] : changes(cwd, sha).filter((c) => c.status !== "A" && JS_FILE.test(c.from) && !matches(c.from, testPaths)).map((c) => prefix + c.from);
   const before = Object.fromEntries([...showMany(top, sha, edited)].filter(([, text]) => text));
   const answer = runCore({ command: "columns", root: top, files, added: whole ? undefined : Object.fromEntries(added), prefix, options: { before } });
-  const name = (/** @type {string} */ file) => posix.relative(prefix || ".", file);
-  const findings = answer.findings.map((f) => ({ ...located(f, name), target: f.target.replace(f.file, name(f.file)), message: f.message.replace(f.file, name(f.file)) }));
+  const findings = fromEngine(answer.findings, prefix);
   return { findings, summary: answer.summary };
 }

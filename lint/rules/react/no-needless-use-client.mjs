@@ -55,7 +55,7 @@ export const rule = defineRule({
             if (packageImport.test(s.source.value)) for (const spec of s.specifiers) fromPackages.add(spec.local.name);
           } else client ||= s.type === "ExportAllDeclaration" || (s.type === "ExportNamedDeclaration" && Boolean(s.source)) || exportsFunctionData(s);
           const declaration = s.type === "ExportNamedDeclaration" ? s.declaration : s;
-          if (declaration?.type === "FunctionDeclaration") functions.add(declaration.id.name);
+          if (declaration?.type === "FunctionDeclaration" && declaration.id) functions.add(declaration.id.name);
           if (declaration?.type === "VariableDeclaration") for (const d of declaration.declarations) if (d.id.type === "Identifier" && d.init?.type.endsWith("FunctionExpression")) functions.add(d.id.name);
         }
         walk(program, (n, parent) => {

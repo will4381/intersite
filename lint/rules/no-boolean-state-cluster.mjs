@@ -66,7 +66,7 @@ export const rule = defineRule({
           flag(enclosingFunction(node), node, node.id.elements[0].name, true);
         } else if (isBooleanState(node.init) && node.id.type === "Identifier") {
           flag(enclosingFunction(node), node, node.id.name, true);
-        } else if (isBoolean(node.init) && node.id.type === "Identifier" && node.parent.kind !== "const") {
+        } else if (isBoolean(node.init) && node.id.type === "Identifier" && node.parent.type === "VariableDeclaration" && node.parent.kind !== "const") {
           flag(enclosingFunction(node), node, node.id.name, false);
         }
       },

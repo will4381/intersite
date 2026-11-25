@@ -110,7 +110,7 @@ const bill = `export type Bill = {
   issuedAt: Date
 }
 `;
-const button = (name, classes) => `import { forwardRef } from "react";
+const button = (/** @type {string} */ name, /** @type {string} */ classes) => `import { forwardRef } from "react";
 
 export const ${name} = forwardRef(function ${name}({ children, disabled, onClick }, ref) {
   return (
@@ -120,7 +120,7 @@ export const ${name} = forwardRef(function ${name}({ children, disabled, onClick
   );
 });
 `;
-const page = (title) => `import { Shell } from "../../components/shell";
+const page = (/** @type {string} */ title) => `import { Shell } from "../../components/shell";
 import { loadAccount } from "../../lib/account";
 
 export default async function Page({ params }) {
@@ -135,7 +135,7 @@ export default async function Page({ params }) {
 }
 `;
 
-const accept = (target) => ` | to accept: add { "gate": "similar", "target": "${target}", "why": "…" } to gates.acknowledged in intersite.yml, or for this change only a commit trailer \`Intersite-Ack: similar: <why>\``;
+const accept = (/** @type {string} */ target) => ` | to accept: add { "gate": "similar", "target": "${target}", "why": "…" } to gates.acknowledged in intersite.yml, or for this change only a commit trailer \`Intersite-Ack: similar: <why>\``;
 
 test("a component copied with every name changed and props reordered is reported with both locations", async () => {
   const r = repo({ "src/components/ProfileCard.jsx": profileCard, "src/components/SignupForm.jsx": signupForm });

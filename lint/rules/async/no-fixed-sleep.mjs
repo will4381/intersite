@@ -7,7 +7,7 @@ import { isTestNamed } from "../shared.mjs";
 const sleepName = /^(sleep|delay|setTimeout)$/;
 const loops = new Set(["ForStatement", "ForInStatement", "ForOfStatement", "WhileStatement", "DoWhileStatement"]);
 
-/** A fixed number of milliseconds: `500`, `2 * 1000`. @param {any} node */
+/** A fixed number of milliseconds: `500`, `2 * 1000`. @param {any} node @returns {number} */
 const ms = (node) =>
   node?.type === "Literal" && typeof node.value === "number" ? node.value : node?.type === "BinaryExpression" && node.operator === "*" ? ms(node.left) * ms(node.right) : NaN;
 /** @param {any} node */
@@ -90,6 +90,7 @@ export const rule = defineRule({
     return {
       AwaitExpression(node) {
         const statement = node.parent;
+        /** @type {any} */
         const block = statement.parent;
         if (isTestWait(node.argument)) return checkTestWait(node, statement, block);
         if (!isFixedSleep(node.argument)) return;

@@ -5,7 +5,7 @@
   "type": "module",
   "description": "One testing library for every project: slop lint, traffic capture, replay, and gates.",
   "engines": {
-    "node": ">=22.13"
+    "node": ">=22.15"
   },
   "bin": {
     "intersite": "./bin/intersite.mjs"
@@ -18,9 +18,12 @@
     "./intersite.schema.json": "./intersite.schema.json"
   },
   "scripts": {
-    "test": "GITHUB_ACTIONS= INTERSITE_OFFLINE=1 node --test \"test/**/*.test.mjs\"",
+    "test": "npm run test:rust && npm run test:js",
+    "test:js": "GITHUB_ACTIONS= INTERSITE_OFFLINE=1 node --test \"test/**/*.test.mjs\"",
+    "test:rust": "cargo test --release --quiet --manifest-path core/Cargo.toml",
     "lint": "node bin/intersite.mjs lint",
     "check": "node bin/intersite.mjs check",
+    "typecheck": "tsc -p tsconfig.json",
     "build:core": "cargo build --release --manifest-path core/Cargo.toml"
   },
   "peerDependencies": {
@@ -45,10 +48,12 @@
   },
   "devDependencies": {
     "@oxlint/plugins": "1.93.0",
+    "@types/node": "^22.20.5",
     "oxc-parser": "0.157.0",
     "oxlint": "1.93.0",
     "oxlint-tsgolint": "^7.0.2006",
     "playwright-core": "^1.65.0",
+    "typescript": "^7.0.2",
     "wrangler": "^4.0.0"
   },
   "dependencies": {

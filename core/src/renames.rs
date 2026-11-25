@@ -5,7 +5,6 @@
 use rayon::prelude::*;
 use std::collections::BTreeMap;
 
-use crate::hygiene::strip_code;
 use crate::text::{self, Lines};
 use crate::{Answer, Finding, Request};
 
@@ -18,7 +17,12 @@ fn is_code(file: &str) -> bool {
 /// Files that record history on purpose: the old name belongs there.
 fn is_history(file: &str) -> bool {
     let name = file.rsplit('/').next().unwrap_or(file).to_ascii_uppercase();
-    name.starts_with("CHANGELOG") || name.starts_with("HISTORY") || name.starts_with("RELEASE") || name.ends_with(".LOCK") || name.contains("LOCK.") || file.contains("migrations/")
+    name.starts_with("CHANGELOG")
+        || name.starts_with("HISTORY")
+        || name.starts_with("RELEASE")
+        || name.ends_with(".LOCK")
+        || name.contains("LOCK.")
+        || file.contains("migrations/")
 }
 
 fn is_ident(c: char) -> bool {
@@ -116,11 +120,18 @@ fn renames(patch: &str, prefix: &str) -> BTreeMap<String, (String, String, u32)>
 /// One old name found in a file: its index, whether it is still in the code, and the lines it is written on.
 type Hit = (usize, bool, Vec<u32>);
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Options {
+    /// The change as `git diff -U0 -M`.
+    patch: String,
+}
+
 pub fn run(request: &Request) -> Result<Answer, String> {
-    let patch = request.options.get("patch").and_then(|v| v.as_str()).unwrap_or("");
-    let found = renames(patch, &request.prefix);
+    let Options { patch } = request.options()?;
+    let found = renames(&patch, &request.prefix);
     if found.is_empty() {
-        return Ok(Answer { findings: vec![], summary: "no renames in the change".into(), data: None });
+        return Ok(Answer::new(vec![], "no renames in the change".into()));
     }
     let olds: Vec<&String> = found.keys().collect();
     // Per file: for each old name, whether it is still in the code, and where it is in words.
@@ -133,16 +144,20 @@ pub fn run(request: &Request) -> Result<Answer, String> {
             if !olds.iter().any(|o| src.contains(o.as_str())) {
                 return None;
             }
-            let code = is_code(file).then(|| strip_code(&src));
+            let code = is_code(file).then(|| text::strip_code(&src));
             let lines = Lines::new(&src);
-            let hits = olds.iter().enumerate().filter_map(|(i, old)| {
-                let at = find_word(&src, old);
-                if at.is_empty() {
-                    return None;
-                }
-                let in_code = code.as_ref().is_some_and(|c| !find_word(c, old).is_empty());
-                Some((i, in_code, at.iter().map(|&o| lines.line(o)).collect()))
-            }).collect();
+            let hits = olds
+                .iter()
+                .enumerate()
+                .filter_map(|(i, old)| {
+                    let at = find_word(&src, old);
+                    if at.is_empty() {
+                        return None;
+                    }
+                    let in_code = code.as_ref().is_some_and(|c| !find_word(c, old).is_empty());
+                    Some((i, in_code, at.iter().map(|&o| lines.line(o)).collect()))
+                })
+                .collect();
             Some((file.clone(), hits))
         })
         .collect();
@@ -152,7 +167,10 @@ pub fn run(request: &Request) -> Result<Answer, String> {
         if per_file.iter().any(|(_, hits)| hits.iter().any(|(j, in_code, _)| *j == i && *in_code)) {
             continue;
         }
-        let left: Vec<String> = per_file.iter().filter_map(|(f, hits)| hits.iter().find(|(j, _, _)| *j == i).map(|(_, _, lines)| format!("{f}:{}", lines[0]))).collect();
+        let left: Vec<String> = per_file
+            .iter()
+            .filter_map(|(f, hits)| hits.iter().find(|(j, _, _)| *j == i).map(|(_, _, lines)| format!("{f}:{}", lines[0])))
+            .collect();
         if left.is_empty() {
             continue;
         }
@@ -165,7 +183,7 @@ pub fn run(request: &Request) -> Result<Answer, String> {
             message: format!("{file}:{line} renames {old} to {new} in code, but {old} is still written in {shown}{}: strings, comments and docs that nothing checks; rename those too", if more > 0 { format!(" and {more} more") } else { String::new() }),
         });
     }
-    Ok(Answer { findings, summary: format!("{} renames checked", found.len()), data: None })
+    Ok(Answer::new(findings, format!("{} renames checked", found.len())))
 }
 
 #[cfg(test)]

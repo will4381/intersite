@@ -8,56 +8,12 @@ use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
+use crate::graph::no_ext;
+use crate::text::strip_code;
 use crate::{Answer, Finding, Request};
 
-/// The same text with the inside of comments and string literals replaced by spaces, newlines and columns kept.
-pub fn strip_code(text: &str) -> String {
-    // ponytail: regex literals and template ${} expressions are not understood, a tokenizer if that bites
-    let chars: Vec<char> = text.chars().collect();
-    // Each UTF-16 unit becomes a space, as JavaScript blanks them, so columns agree with the JavaScript's offsets.
-    let blank = |s: &[char]| s.iter().map(|&c| if c == '\n' { "\n".to_string() } else { " ".repeat(c.len_utf16()) }).collect::<String>();
-    let mut out = String::with_capacity(text.len());
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        let next = chars.get(i + 1).copied();
-        let (mut end, mut keep) = (None, 0);
-        if c == '/' && next == Some('/') {
-            end = Some(chars[i..].iter().position(|&x| x == '\n').map_or(chars.len(), |p| i + p));
-        } else if c == '/' && next == Some('*') {
-            let close = (i + 2..chars.len().saturating_sub(1)).find(|&j| chars[j] == '*' && chars[j + 1] == '/');
-            end = Some(close.map_or(chars.len(), |j| j + 2));
-        } else if c == '"' || c == '\'' || c == '`' {
-            let mut j = i + 1;
-            while j < chars.len() && chars[j] != c && (c == '`' || chars[j] != '\n') {
-                j += if chars[j] == '\\' { 2 } else { 1 };
-            }
-            end = Some((j + 1).min(chars.len()));
-            keep = 1;
-        }
-        match end {
-            None => {
-                out.push(c);
-                i += 1;
-            }
-            Some(e) => {
-                let closes = keep == 1 && e > 0 && chars[e - 1] == c && e - 1 > i;
-                let inner_end = if keep == 1 && chars[e - 1] == c { e - 1 } else { e };
-                if keep == 1 {
-                    out.push(c);
-                }
-                out.push_str(&blank(&chars[(i + keep).min(inner_end)..inner_end]));
-                if closes {
-                    out.push(c);
-                }
-                i = e;
-            }
-        }
-    }
-    out
-}
-
-static TESTS: LazyLock<Fancy> = LazyLock::new(|| Fancy::new(r"(?<![.\w$])(?:t\.)?(?:it|test)(?:\.(?:each|only|concurrent|skip|todo))?\s*\(").unwrap());
+static TESTS: LazyLock<Fancy> =
+    LazyLock::new(|| Fancy::new(r"(?<![.\w$])(?:t\.)?(?:it|test)(?:\.(?:each|only|concurrent|skip|todo))?\s*\(").unwrap());
 static ASSERTS: LazyLock<Fancy> = LazyLock::new(|| {
     Fancy::new(r"(?<![.\w$])(?:expect|assert)\s*\(|(?<![.\w$])fc\.assert\s*\(|(?<![.\w$])assert\.\w+\s*\(|(?<![.\w$])t\.(?:is|not|true|false|truthy|falsy|deepEqual|notDeepEqual|like|regex|throws|throwsAsync|notThrows|notThrowsAsync|snapshot|pass|fail|assert|equal|ok)\b").unwrap()
 });
@@ -78,7 +34,7 @@ pub fn test_counts(text: &str) -> (usize, usize, usize) {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TestChange {
     path: String,
     status: String,
@@ -86,14 +42,26 @@ struct TestChange {
     now: Option<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TestsOptions {
+    changes: Vec<TestChange>,
+    /// What the change is compared with, for messages: the base's name.
+    since: String,
+}
+
 /// Test files that lost tests or assertions, or gained skips, or were deleted.
 pub fn tests(request: &Request) -> Result<Answer, String> {
-    let changes: Vec<TestChange> = serde_json::from_value(request.options["changes"].clone()).map_err(|e| e.to_string())?;
-    let since = request.options["since"].as_str().unwrap_or("base");
+    let TestsOptions { changes, since } = request.options()?;
     let mut findings = Vec::new();
     for c in &changes {
         if c.status == "D" {
-            findings.push(Finding { file: c.path.clone(), line: 0, target: c.path.clone(), message: format!("{}: test file deleted", c.path) });
+            findings.push(Finding {
+                file: c.path.clone(),
+                line: 0,
+                target: c.path.clone(),
+                message: format!("{}: test file deleted", c.path),
+            });
             continue;
         }
         let was = test_counts(c.before.as_deref().unwrap_or(""));
@@ -109,10 +77,15 @@ pub fn tests(request: &Request) -> Result<Answer, String> {
             lost.push(format!("skipped, focused or inverted tests {} → {}", was.2, now.2));
         }
         if !lost.is_empty() {
-            findings.push(Finding { file: c.path.clone(), line: 0, target: c.path.clone(), message: format!("{}: {} since {since}", c.path, lost.join(", ")) });
+            findings.push(Finding {
+                file: c.path.clone(),
+                line: 0,
+                target: c.path.clone(),
+                message: format!("{}: {} since {since}", c.path, lost.join(", ")),
+            });
         }
     }
-    Ok(Answer { findings, summary: format!("{} changed test files checked", changes.len()), data: None })
+    Ok(Answer::new(findings, format!("{} changed test files checked", changes.len())))
 }
 
 /// Every dependency name in any `*dependencies` section of a package.json.
@@ -144,14 +117,20 @@ fn dependencies(text: &str, place: &str) -> Result<Vec<(String, String)>, String
 fn npm_name(name: &str, spec: &str, private: &[String]) -> Option<String> {
     let real = match spec.strip_prefix("npm:") {
         Some(alias) => alias.rsplit_once('@').filter(|(n, _)| !n.is_empty()).map_or(alias, |(n, _)| n).to_string(),
-        None if ["workspace:", "file:", "link:", "portal:", "patch:", "git", "github:", "gitlab:", "bitbucket:", "http:", "https:"].iter().any(|p| spec.starts_with(p)) || spec.contains('/') => return None,
+        None if ["workspace:", "file:", "link:", "portal:", "patch:", "git", "github:", "gitlab:", "bitbucket:", "http:", "https:"]
+            .iter()
+            .any(|p| spec.starts_with(p))
+            || spec.contains('/') =>
+        {
+            return None
+        }
         None => name.to_string(),
     };
     (!private.iter().any(|scope| real.starts_with(&format!("{scope}/")))).then_some(real)
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PackageChange {
     path: String,
     before_place: String,
@@ -159,12 +138,21 @@ struct PackageChange {
     now: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NewDepsOptions {
+    changes: Vec<PackageChange>,
+    /// The npm registry to look names up in, "" offline.
+    registry: String,
+    /// Scopes another registry serves, never looked up.
+    private_scopes: Vec<String>,
+}
+
 /// Dependencies a package.json gained, each checked against the npm registry when one is given: a name the registry
 /// has never heard of is invented, and a package days old or with a version or two deserves a second look.
 pub fn new_deps(request: &Request) -> Result<Answer, String> {
-    let changes: Vec<PackageChange> = serde_json::from_value(request.options["changes"].clone()).map_err(|e| e.to_string())?;
-    let registry = request.options["registry"].as_str().unwrap_or("");
-    let private: Vec<String> = serde_json::from_value(request.options["privateScopes"].clone()).unwrap_or_default();
+    let NewDepsOptions { changes, registry, private_scopes: private } = request.options()?;
+    let registry = registry.as_str();
     let mut added = Vec::new();
     for c in &changes {
         let was: HashSet<String> = dependency_names(&c.before, &c.before_place)?.into_iter().collect();
@@ -193,8 +181,12 @@ pub fn new_deps(request: &Request) -> Result<Answer, String> {
         };
         findings.push(Finding { file: path, line: 0, target: name, message });
     }
-    let summary = if registry.is_empty() || asked.is_empty() { String::new() } else { format!("{} of {} new npm packages checked against the registry", known.len(), asked.len()) };
-    Ok(Answer { findings, summary, data: None })
+    let summary = if registry.is_empty() || asked.is_empty() {
+        String::new()
+    } else {
+        format!("{} of {} new npm packages checked against the registry", known.len(), asked.len())
+    };
+    Ok(Answer::new(findings, summary))
 }
 
 /// A semantic mutant as the gate applies it: the cut's text replaced, offsets in UTF-16 units.
@@ -218,6 +210,14 @@ fn interleave<T: Clone>(lists: &[Vec<T>]) -> Vec<T> {
     out
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MutantsOptions {
+    /// Each changed source file with the lines the change added.
+    files: Vec<(String, Vec<u32>)>,
+    max: usize,
+}
+
 /// The mutants to try, after Google's mutation testing in code review: for each changed function, its body removed (a
 /// function no test notices losing is covered but not checked), then one mutant per added line: a semantic cut (an
 /// access check, a tenant filter, an idempotency or state guard, a cache invalidation) before an operator flip, and a
@@ -226,8 +226,7 @@ fn interleave<T: Clone>(lists: &[Vec<T>]) -> Vec<T> {
 /// mutant names the functions around it, so once one's body survives nothing inside it is tried. Offsets and lengths
 /// are in UTF-16 units, as the JavaScript that applies them counts.
 pub fn mutants(request: &Request) -> Result<Answer, String> {
-    let files: Vec<(String, Vec<u32>)> = serde_json::from_value(request.options["files"].clone()).map_err(|e| e.to_string())?;
-    let max = request.options["max"].as_u64().unwrap_or(10) as usize;
+    let MutantsOptions { files, max } = request.options()?;
     let mut per_file: Vec<Vec<serde_json::Value>> = Vec::new();
     for (path, lines) in &files {
         let text = std::fs::read_to_string(std::path::Path::new(&request.root).join(path)).unwrap_or_default();
@@ -235,7 +234,13 @@ pub fn mutants(request: &Request) -> Result<Answer, String> {
         let wanted: HashSet<u32> = lines.iter().copied().collect();
         let key = |i: usize| format!("{path}:{i}");
         let within = |at: u32, skip: Option<usize>| -> Vec<String> {
-            shape.funcs.iter().enumerate().filter(|(j, f)| Some(*j) != skip && f.body.0 <= at && at < f.body.1).map(|(j, _)| key(j)).collect()
+            shape
+                .funcs
+                .iter()
+                .enumerate()
+                .filter(|(j, f)| Some(*j) != skip && f.body.0 <= at && at < f.body.1)
+                .map(|(j, _)| key(j))
+                .collect()
         };
         let mut list = Vec::new();
         for (i, f) in shape.funcs.iter().enumerate() {
@@ -248,7 +253,8 @@ pub fn mutants(request: &Request) -> Result<Answer, String> {
             list.push(serde_json::json!({ "kind": "body", "path": path, "line": f.line, "name": f.name, "at": at, "length": length, "from": "", "to": to, "key": key(i), "within": within(f.body.0, Some(i)) }));
         }
         // One mutant per line: a semantic cut first, then the best operator flip, then a plain guard or error fallback.
-        let snippet = |start: usize, end: usize| -> String { text[start..end].lines().next().unwrap_or("").trim().chars().take(80).collect() };
+        let snippet =
+            |start: usize, end: usize| -> String { text[start..end].lines().next().unwrap_or("").trim().chars().take(80).collect() };
         let mut taken: HashSet<u32> = HashSet::new();
         let mut later = Vec::new();
         let cuts: Vec<&crate::functions::Cut> = shape.cuts.iter().filter(|c| wanted.contains(&c.line)).collect();
@@ -289,22 +295,19 @@ pub fn mutants(request: &Request) -> Result<Answer, String> {
 
 static BACKUP_EXT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.(?:bak|orig|rej|tmp|swp)$|~$").unwrap());
 /// A copy's name: the plain name plus a suffix, reported only when a file with the plain name shares most of its lines.
-static COPY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(.+?)(?:[._ -](?:old|backup|bak|copy|orig|new|final|fixed|v\d+)| copy(?: \d+)?| \(\d+\))$").unwrap());
+static COPY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^(.+?)(?:[._ -](?:old|backup|bak|copy|orig|new|final|fixed|v\d+)| copy(?: \d+)?| \(\d+\))$").unwrap()
+});
 // ponytail: scratch names and output dumps count only at the project's top; treat every package root as one if needed
-static SCRATCH: LazyLock<Fancy> = LazyLock::new(|| Fancy::new(r"(?i)^(?:scratch|(?:tmp|temp|debug|try)(?![a-z]))|^test-.*\.(?:[cm]?[jt]s|py|sh)$").unwrap());
+static SCRATCH: LazyLock<Fancy> =
+    LazyLock::new(|| Fancy::new(r"(?i)^(?:scratch|(?:tmp|temp|debug|try)(?![a-z]))|^test-.*\.(?:[cm]?[jt]s|py|sh)$").unwrap());
 static SCRATCH_DIR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|/)(?:tmp|temp|scratch)/").unwrap());
 static LOG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.(?:log|dump)$").unwrap());
 static ROOT_OUTPUT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(?:output.*\.txt|out\.json|response.*\.json)$").unwrap());
-static NOTE: LazyLock<Fancy> = LazyLock::new(|| Fancy::new(r"(?i)^(?:plan|summary|notes|todo|analysis|findings|report|changes|migration[_-]guide|(?:implementation|refactor)[\w-]*|fix(?:es)?(?![a-z])[\w-]*|[\w-]+[_-](?:summary|plan|report))\.(?:md|markdown)$").unwrap());
+static NOTE: LazyLock<Fancy> = LazyLock::new(|| {
+    Fancy::new(r"(?i)^(?:plan|summary|notes|todo|analysis|findings|report|changes|migration[_-]guide|(?:implementation|refactor)[\w-]*|fix(?:es)?(?![a-z])[\w-]*|[\w-]+[_-](?:summary|plan|report))\.(?:md|markdown)$").unwrap()
+});
 static DOC_DIR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(?:docs?|documentation|wiki|adrs?|rfcs?|notes|specs?)$").unwrap());
-
-fn no_ext(path: &str) -> &str {
-    let start = path.rfind('/').map_or(0, |i| i + 1);
-    match path[start..].rfind('.') {
-        Some(i) if i > 0 && start + i + 1 < path.len() => &path[..start + i],
-        _ => path,
-    }
-}
 
 fn lines(text: &str) -> Vec<&str> {
     text.split('\n').map(str::trim).filter(|l| !l.is_empty()).collect()
@@ -325,25 +328,47 @@ fn copies(text: &str, originals: &[String]) -> bool {
 }
 
 fn git_show(cwd: &str, sha: &str, path: &str) -> String {
-    std::process::Command::new("git").args(["show", &format!("{sha}:./{path}")]).current_dir(cwd).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default()
+    std::process::Command::new("git")
+        .args(["show", &format!("{sha}:./{path}")])
+        .current_dir(cwd)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
 }
 
 fn fancy(re: &Fancy, s: &str) -> bool {
     re.is_match(s).unwrap_or(false)
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ArtifactsOptions {
+    /// Files the change added.
+    added: Vec<String>,
+    /// Files on the base.
+    was: Vec<String>,
+    /// Files in the working tree.
+    now: Vec<String>,
+    /// The base commit.
+    sha: String,
+    /// Added files under the test paths.
+    in_tests: HashSet<String>,
+    /// Added files the config's `gates.artifacts` globs name.
+    matches_extra: HashSet<String>,
+}
+
 /// Leftover files the change added.
 pub fn artifacts(request: &Request) -> Result<Answer, String> {
-    let get = |k: &str| -> Vec<String> { serde_json::from_value(request.options[k].clone()).unwrap_or_default() };
-    let (added, was, now) = (get("added"), get("was"), get("now"));
-    let in_tests: HashSet<String> = get("inTests").into_iter().collect();
-    let extra: HashSet<String> = get("matchesExtra").into_iter().collect();
-    let sha = request.options["sha"].as_str().unwrap_or("");
+    let ArtifactsOptions { added, was, now, sha, in_tests, matches_extra: extra } = request.options()?;
+    let sha = sha.as_str();
     let root = &request.root;
     let current: HashSet<&str> = now.iter().map(String::as_str).collect();
     let existed: HashSet<&str> = was.iter().map(String::as_str).collect();
     let plain_names: HashMap<&str, &str> = was.iter().chain(now.iter()).map(|f| (no_ext(f), f.as_str())).collect();
-    let docs = was.iter().map(|f| f.split('/').collect::<Vec<_>>()).find(|p| p.len() > 1 && DOC_DIR.is_match(p[0])).map(|p| p[0].to_string());
+    let docs =
+        was.iter().map(|f| f.split('/').collect::<Vec<_>>()).find(|p| p.len() > 1 && DOC_DIR.is_match(p[0])).map(|p| p[0].to_string());
     let read = |p: &str| std::fs::read_to_string(std::path::Path::new(root).join(p)).unwrap_or_default();
     let mut findings = Vec::new();
     for path in &added {
@@ -356,7 +381,11 @@ pub fn artifacts(request: &Request) -> Result<Answer, String> {
         let plain = COPY.captures(no_ext(name)).map(|c| c[1].to_string());
         let sibling: Option<String> = plain.as_ref().and_then(|p| {
             let same = join(dir, &format!("{p}{ext}"));
-            if current.contains(same.as_str()) || existed.contains(same.as_str()) { Some(same) } else { plain_names.get(join(dir, p).as_str()).map(|s| s.to_string()) }
+            if current.contains(same.as_str()) || existed.contains(same.as_str()) {
+                Some(same)
+            } else {
+                plain_names.get(join(dir, p).as_str()).map(|s| s.to_string())
+            }
         });
         let copy = || {
             let Some(sib) = &sibling else { return false };
@@ -377,7 +406,10 @@ pub fn artifacts(request: &Request) -> Result<Answer, String> {
         } else if dir == "." && fancy(&SCRATCH, name) {
             Some(format!("{path} is a scratch or debug file: delete it, or turn it into a real script or test"))
         } else if fancy(&NOTE, name) && !in_docs {
-            Some(format!("{path} looks like a working note: delete it, or move what should last into {}", docs.as_ref().map_or("the README".to_string(), |d| format!("{d}/"))))
+            Some(format!(
+                "{path} looks like a working note: delete it, or move what should last into {}",
+                docs.as_ref().map_or("the README".to_string(), |d| format!("{d}/"))
+            ))
         } else if extra.contains(path) {
             Some(format!("{path} matches gates.artifacts: delete it"))
         } else {
@@ -387,7 +419,7 @@ pub fn artifacts(request: &Request) -> Result<Answer, String> {
             findings.push(Finding { file: path.clone(), line: 0, target: path.clone(), message });
         }
     }
-    Ok(Answer { findings, summary: format!("{} added files checked", added.len()), data: None })
+    Ok(Answer::new(findings, format!("{} added files checked", added.len())))
 }
 
 #[cfg(test)]

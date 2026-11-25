@@ -1,14 +1,14 @@
 // @ts-check
 // intersite lint [paths...] [--write | --write=init | --json | --rules]
 import { execFile, spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { loadConfig } from "../shared/config.mjs";
+import { BASELINE, intersiteDir, loadConfig, readBaselines, writeBaseline } from "../shared/config.mjs";
 import { builtinRules, declaredRule, packageRules } from "../lint/catalog.mjs";
 import { runSwiftlint, swiftFiles, swiftRules } from "../lint/swift/swiftlint.mjs";
 import { compilerOptions } from "../lint/tsconfig.mjs";
@@ -30,8 +30,6 @@ const bareSuppression = new RegExp(
 
 const exec = promisify(execFile);
 const STALLED = 10 * 60_000;
-const GENERATED = ".intersite-oxlintrc.json";
-const GENERATED_FILES = ".intersite-oxlintrc-files.json";
 
 /** Two lint runs at once write the same text, so a reader never sees half a file. @param {string} file @param {string} text */
 function writeIfChanged(file, text) {
@@ -39,21 +37,6 @@ function writeIfChanged(file, text) {
   const partial = `${file}.${process.pid}`;
   writeFileSync(partial, text);
   renameSync(partial, file);
-}
-
-/**
- * The generated configs are not the project's to commit, and an untracked file would fail a clean-tree check or the
- * artifacts gate, so they go in this clone's own exclude list (never in the project's .gitignore). Outside git, nothing.
- * @param {string} dir
- */
-function keepOutOfGit(dir) {
-  const asked = spawnSync("git", ["rev-parse", "--git-path", "info/exclude"], { cwd: dir, encoding: "utf8" });
-  if (asked.status !== 0) return;
-  const exclude = resolve(dir, asked.stdout.trim());
-  const line = ".intersite-oxlintrc*.json*";
-  if (existsSync(exclude) && readFileSync(exclude, "utf8").split("\n").includes(line)) return;
-  mkdirSync(dirname(exclude), { recursive: true });
-  appendFileSync(exclude, `${existsSync(exclude) && !readFileSync(exclude, "utf8").endsWith("\n") ? "\n" : ""}${line}\n`);
 }
 
 /**
@@ -108,20 +91,73 @@ export default async function lint(argv, { cwd, quiet = false, silent = false, c
     return 2;
   }
 
-  const { rules, bareOn, swift, note } = ruleSet(config, cwd);
+  const set = ruleSet(config, cwd);
   if (flag === "--rules") {
-    console.log(`slop no-bare-suppression ${bareOn ? "on" : "off"}`);
-    printRules(config.custom, rules);
-    for (const r of swiftRules) console.log(`swift swift/${r.id} ${swift.includes(r) ? "on" : "off"}`);
+    printRules(config.custom, set);
     return 0;
   }
+  const linted = await runLinters(cwd, config, set, paths, flag);
+  if (!linted) return 2;
+  const { files, all } = linted;
 
+  /** @type {Map<string, Finding[]>} "file\0rule" -> findings */
+  const found = new Map();
+  for (const f of all) {
+    const key = `${f.file}\0${f.rule}`;
+    found.set(key, [...(found.get(key) ?? []), f]);
+  }
+
+  // --write=init replaces the lint part, so it is the way out of a corrupt baseline and need not read it.
+  if (flag === "--write=init") {
+    /** @type {Baseline} */
+    const next = {};
+    for (const [key, list] of found) {
+      const [file, rule] = key.split("\0");
+      (next[file] ??= {})[rule] = list.length;
+    }
+    writeBaseline(cwd, "lint", sorted(next));
+    if (!quiet) console.log(`ok lint: ${files} files, ${all.length} findings recorded in ${BASELINE}`);
+    return 0;
+  }
+  const baseline = readBaseline(cwd);
+  if (baseline === undefined) return 2;
+
+  const { next, over, under, baselined } = compareBaseline(found, baseline, paths);
+  if (flag === "--write") writeBaseline(cwd, "lint", sorted(next));
+  const failed = flag === "--write" ? over : [...over, ...under];
+  collect?.(failed);
+  if (!silent) show({ flag, over, under: flag === "--write" ? [] : under, baselined, quiet, files, cwd });
+  return failed.length ? 1 : 0;
+}
+
+/**
+ * The baseline's lint counts: none when nothing is recorded yet, undefined (the error printed) when it is not JSON.
+ * @param {string} cwd
+ * @returns {Baseline | undefined}
+ */
+function readBaseline(cwd) {
+  try {
+    return readBaselines(cwd).lint ?? {};
+  } catch (error) {
+    console.error(`intersite lint: ${/** @type {Error} */ (error).message}: restore it from git, or run \`intersite lint --write=init\` to record today's findings again`);
+    return undefined;
+  }
+}
+
+/**
+ * Runs oxlint and SwiftLint side by side and returns every finding the rule set asks for, with the number of files
+ * read. Prints the setup error and returns undefined when either cannot run.
+ * @param {string} cwd @param {ReturnType<typeof loadConfig>["lint"]} config @param {ReturnType<typeof ruleSet>} set
+ * @param {string[]} paths @param {string | undefined} flag
+ * @returns {Promise<{ files: number, all: Finding[] } | undefined>}
+ */
+async function runLinters(cwd, config, { rules, bareOn, swift, note }, paths, flag) {
   // A Swift-only project has no oxlint and needs none: its Swift is linted and the JavaScript side is empty.
   const oxlint = findOxlint(cwd) ?? join(cwd, "node_modules/.bin/oxlint");
   const tsgolint = config.typeAware ? findOxlint(cwd, "tsgolint") : undefined;
   if (config.typeAware && existsSync(oxlint) && !tsgolint) {
     console.error("intersite lint: lint.typeAware needs oxlint-tsgolint; install it as a dev dependency");
-    return 2;
+    return undefined;
   }
   // Prose would break --json, which is one object.
   if (note && tsgolint && flag !== "--json") console.error(note);
@@ -132,13 +168,12 @@ export default async function lint(argv, { cwd, quiet = false, silent = false, c
     })
     : { report: { number_of_files: 0, diagnostics: [] }, listed: [] };
   const [result, swiftResult] = await Promise.all([javascript, lintSwift(cwd, swift, paths)]);
-  if (!result || !swiftResult) return 2;
+  if (!result || !swiftResult) return undefined;
   if (!existsSync(oxlint) && swiftResult.files === 0) {
     console.error(`intersite lint: ${oxlint} not found; install oxlint as a dev dependency`);
-    return 2;
+    return undefined;
   }
   const { report, listed } = result;
-  report.number_of_files += swiftResult.files;
   /** @type {Finding[]} */
   const all = report.diagnostics.map((d) => ({
     file: d.filename,
@@ -150,43 +185,7 @@ export default async function lint(argv, { cwd, quiet = false, silent = false, c
   })).filter((f) => config.ownRules || (rules[f.rule] ?? "off") !== "off");
   if (bareOn) all.push(...(await bareSuppressions(cwd, listed)));
   all.push(...swiftResult.findings);
-
-  /** @type {Map<string, Finding[]>} "file\0rule" -> findings */
-  const found = new Map();
-  for (const f of all) {
-    const key = `${f.file}\0${f.rule}`;
-    found.set(key, [...(found.get(key) ?? []), f]);
-  }
-
-  const baselineFile = join(cwd, config.baseline);
-  /** @type {Baseline} */
-  let baseline = {};
-  try {
-    // --write=init replaces the file, so it is the way out of a corrupt one and need not read it.
-    if (flag !== "--write=init" && existsSync(baselineFile)) baseline = JSON.parse(readFileSync(baselineFile, "utf8"));
-  } catch {
-    console.error(`intersite lint: ${config.baseline} is not valid JSON: restore it from git, or run \`intersite lint --write=init\` to record today's findings again`);
-    return 2;
-  }
-
-  if (flag === "--write=init") {
-    /** @type {Baseline} */
-    const next = {};
-    for (const [key, list] of found) {
-      const [file, rule] = key.split("\0");
-      (next[file] ??= {})[rule] = list.length;
-    }
-    writeFileSync(baselineFile, `${JSON.stringify(sorted(next), null, 2)}\n`);
-    if (!quiet) console.log(`ok lint: ${report.number_of_files} files, ${all.length} findings recorded in ${config.baseline}`);
-    return 0;
-  }
-
-  const { next, over, under, baselined } = compareBaseline(found, baseline, paths);
-  if (flag === "--write") writeFileSync(baselineFile, `${JSON.stringify(sorted(next), null, 2)}\n`);
-  const failed = flag === "--write" ? over : [...over, ...under];
-  collect?.(failed);
-  if (!silent) show({ flag, over, under: flag === "--write" ? [] : under, baselined, quiet, files: report.number_of_files, cwd });
-  return failed.length ? 1 : 0;
+  return { files: report.number_of_files + swiftResult.files, all };
 }
 
 /**
@@ -239,6 +238,24 @@ function tsconfigs(cwd) {
 }
 
 /**
+ * Switches the TYPE_AWARE rules on in `rules`. Without "strict" and "noUncheckedIndexedAccess", `rows[0]` and
+ * `const [row] = rows` are typed as always present, so no-unnecessary-condition calls the check that guards a missing
+ * row unnecessary, and deleting that check is a bug. It runs only when every tsconfig.json in the project (each file
+ * is checked against its nearest) has them; otherwise it is left out, and the note saying so is returned.
+ * @param {Record<string, string | unknown[]>} rules @param {string} cwd
+ */
+function addTypeAware(rules, cwd) {
+  Object.assign(rules, TYPE_AWARE);
+  const loose = tsconfigs(cwd).find((file) => {
+    const options = compilerOptions(join(cwd, file)) ?? {};
+    return !options.noUncheckedIndexedAccess || !(options.strict || options.strictNullChecks);
+  });
+  if (loose === undefined) return undefined;
+  delete rules["typescript/no-unnecessary-condition"];
+  return `note: lint.typeAware leaves out typescript/no-unnecessary-condition: ${loose || "no tsconfig.json"} ${loose ? "lacks" : "has"} "strict" and "noUncheckedIndexedAccess", so index reads and destructured rows count as always present and needed checks would be called unnecessary`;
+}
+
+/**
  * The oxlint rule levels the configured packs, custom rules and overrides switch on, and whether the bare-suppression check runs.
  * @param {ReturnType<typeof loadConfig>["lint"]} config @param {string} cwd the project, whose tsconfig.json decides
  *   whether the type-aware no-unnecessary-condition can be trusted
@@ -249,22 +266,7 @@ function ruleSet(config, cwd) {
   for (const r of packageRules) if (r.pack && config.packs.includes(r.pack)) rules[`intersite/${r.id}`] = "error";
   for (const r of config.custom) rules[`intersite/${r.id}`] = "error";
   for (const b of builtinRules) if (config.packs.includes(b.pack)) rules[b.rule] = b.options ? ["error", ...b.options] : "error";
-  /** @type {string | undefined} */
-  let note;
-  if (config.typeAware) {
-    Object.assign(rules, TYPE_AWARE);
-    // Without these, `rows[0]` and `const [row] = rows` are typed as always present, so the rule calls the check that
-    // guards a missing row unnecessary, and deleting that check is a bug. It runs only when every tsconfig.json in the
-    // project (each file is checked against its nearest) has them.
-    const loose = tsconfigs(cwd).find((file) => {
-      const options = compilerOptions(join(cwd, file)) ?? {};
-      return !options.noUncheckedIndexedAccess || !(options.strict || options.strictNullChecks);
-    });
-    if (loose !== undefined) {
-      delete rules["typescript/no-unnecessary-condition"];
-      note = `note: lint.typeAware leaves out typescript/no-unnecessary-condition: ${loose || "no tsconfig.json"} ${loose ? "lacks" : "has"} "strict" and "noUncheckedIndexedAccess", so index reads and destructured rows count as always present and needed checks would be called unnecessary`;
-    }
-  }
+  const note = config.typeAware ? addTypeAware(rules, cwd) : undefined;
   // An override names an intersite rule by its bare id, or a built-in rule by oxlint's full name.
   for (const [id, level] of Object.entries(config.rules)) rules[id.includes("/") ? id : `intersite/${id}`] = level;
   // Not an oxlint rule (see bareSuppressions), but switched on and off like one in the slop pack.
@@ -295,16 +297,18 @@ async function lintSwift(cwd, rules, paths) {
 }
 
 /**
- * Prints every package, custom and built-in rule as `<pack> <rule> on|off` for `--rules`.
+ * Prints every rule, the package's, custom, built-in and Swift ones, as `<pack> <rule> on|off` for `--rules`.
  * @param {{ id: string }[]} custom the project's `lint.custom` rules
- * @param {Record<string, string>} rules
+ * @param {ReturnType<typeof ruleSet>} set
  */
-function printRules(custom, rules) {
+function printRules(custom, { rules, bareOn, swift }) {
+  console.log(`slop no-bare-suppression ${bareOn ? "on" : "off"}`);
   for (const r of [...packageRules, ...custom.map((c) => ({ ...c, pack: "custom" }))]) {
     console.log(`${r.pack} ${r.id} ${(rules[`intersite/${r.id}`] ?? "off") === "off" ? "off" : "on"}`);
   }
   for (const b of builtinRules) console.log(`${b.pack} ${b.rule} ${(rules[b.rule] ?? "off") === "off" ? "off" : "on"}`);
   for (const rule of Object.keys(TYPE_AWARE)) console.log(`typeAware ${rule} ${(rules[rule] ?? "off") === "off" ? "off" : "on"}`);
+  for (const r of swiftRules) console.log(`swift swift/${r.id} ${swift.includes(r) ? "on" : "off"}`);
 }
 
 /**
@@ -322,49 +326,44 @@ export function findOxlint(cwd, name = "oxlint") {
 
 /**
  * The project's own oxlint config. Plain JSON is read directly; oxlint also accepts comments and trailing commas, so
- * anything else is read back through oxlint itself, which reports a broken file in its own words.
+ * anything else is read back through oxlint itself, which reports a broken file in its own words. A config that
+ * extends others gets its overrides from oxlint too, which gathers the extended ones.
  * @param {string} oxlint @param {string} file
- * @returns {Promise<{ plugins?: string[], ignorePatterns?: string[] }>}
+ * @returns {Promise<{ plugins?: string[], ignorePatterns?: string[], overrides?: { files?: string[], excludeFiles?: string[] }[] }>}
  */
 async function ownSettings(oxlint, file) {
-  const text = readFileSync(file, "utf8");
+  const printed = async () => {
+    const run = await exec(oxlint, ["--print-config", "-c", file], { maxBuffer: Infinity }).catch((/** @type {any} */ error) => error);
+    if (run instanceof Error) {
+      const output = `${/** @type {any} */ (run).stdout ?? ""}${/** @type {any} */ (run).stderr ?? ""}`;
+      const reason = output.split("\n").map((line) => line.replace(/^\s*\|\s*/, "").trim()).filter(Boolean).at(-1);
+      throw new Error(`${basename(file)} is not a valid oxlint config: ${reason ?? run.message.split("\n")[0]}`);
+    }
+    return JSON.parse(run.stdout);
+  };
   let settings;
   try {
-    settings = JSON.parse(text);
+    settings = JSON.parse(readFileSync(file, "utf8"));
   } catch {
-    const printed = await exec(oxlint, ["--print-config", "-c", file], { maxBuffer: Infinity }).catch((/** @type {any} */ error) => error);
-    if (printed instanceof Error) {
-      const output = `${/** @type {any} */ (printed).stdout ?? ""}${/** @type {any} */ (printed).stderr ?? ""}`;
-      const reason = output.split("\n").map((line) => line.replace(/^\s*\|\s*/, "").trim()).filter(Boolean).at(-1);
-      throw new Error(`${basename(file)} is not a valid oxlint config: ${reason ?? printed.message.split("\n")[0]}`);
-    }
-    settings = JSON.parse(printed.stdout);
+    return printed();
   }
-  return settings;
+  return settings.extends?.length ? { ...settings, overrides: (await printed()).overrides } : settings;
 }
 
 /**
- * Writes the generated oxlint config (beside the project's own config when it has one, else into
- * node_modules/.cache/intersite) and returns its path, with a second one for
- * listing files: the same minus intersite's plugin, which only lints and would be loaded for nothing, and the project's
+ * Writes the generated oxlint config into `.intersite` and returns its path, with a second one for listing files: the same minus intersite's plugin, which only lints and would be loaded for nothing, and the project's
  * own ignore patterns.
  * @param {string} cwd
  * @param {string} ownConfig the project's own oxlint config
  * @param {string} oxlint
- * @param {Record<string, string>} rules
+ * @param {Record<string, string | unknown[]>} rules
  */
 async function writeOxlintConfig(cwd, ownConfig, oxlint, rules) {
-  const cacheDir = join(cwd, "node_modules/.cache/intersite");
-  // oxlint matches an extended config's `overrides` globs from the folder of the config it was started with, so with a
-  // project config the generated ones sit beside it; from the cache folder, `files: ["web/**"]` would match nothing.
-  // The real path: oxlint resolves its working folder, and a config named through a symlink would not line up with it.
-  const beside = existsSync(ownConfig) ? realpathSync(dirname(ownConfig)) : undefined;
-  const configFile = beside ? join(beside, GENERATED) : join(cacheDir, "oxlintrc.json");
-  const filesConfig = beside ? join(beside, GENERATED_FILES) : join(cacheDir, "oxlintrc-files.json");
-  mkdirSync(cacheDir, { recursive: true });
-  if (beside) keepOutOfGit(beside);
+  const cacheDir = intersiteDir(cwd);
+  const configFile = join(cacheDir, "oxlintrc.json");
+  const filesConfig = join(cacheDir, "oxlintrc-files.json");
   // Naming plugins replaces oxlint's default set, so start from the project's own list, or the defaults.
-  /** @type {{ plugins?: string[], ignorePatterns?: string[] }} */
+  /** @type {Awaited<ReturnType<typeof ownSettings>>} */
   const own = existsSync(ownConfig) ? await ownSettings(oxlint, ownConfig) : {};
   /** @type {string[]} */
   const ownPlugins = own.plugins ?? ["unicorn", "typescript", "oxc"];
@@ -378,12 +377,23 @@ async function writeOxlintConfig(cwd, ownConfig, oxlint, rules) {
     }
   }
   // A built-in rule only runs when its plugin is on; `eslint` rules need none.
-  const settings = { ...(existsSync(ownConfig) && { extends: [ownConfig] }), plugins: [...ownPlugins, ...added] };
+  const settings = { ...(existsSync(ownConfig) && { extends: [ownConfig], overrides: anchored(own.overrides ?? [], realpathSync(dirname(ownConfig))) }), plugins: [...ownPlugins, ...added] };
   writeIfChanged(configFile, JSON.stringify({ ...settings, jsPlugins: [fileURLToPath(new URL("../lint/plugin.mjs", import.meta.url))], rules }));
   writeIfChanged(filesConfig, JSON.stringify({ ...settings, rules: Object.fromEntries(Object.entries(rules).filter(([id]) => !id.startsWith("intersite/"))) }));
   // oxlint drops `ignorePatterns` from an extended config, so the project's own ignores are passed on the command line.
   // ponytail: read relative to the working directory, which is where the own config sits unless lint.extends moves it.
   return { configFile, filesConfig, ignores: own.ignorePatterns ?? [] };
+}
+
+/**
+ * The project config's `overrides` with each glob made absolute. oxlint matches an extended config's override globs
+ * from the folder of the config it was started with, `.intersite`, where `web/**` would match nothing; repeating the
+ * overrides with globs anchored at the project config's own (real) folder makes them match as the project meant.
+ * @param {{ files?: string[], excludeFiles?: string[] }[]} overrides @param {string} dir
+ */
+function anchored(overrides, dir) {
+  const anchor = (/** @type {string} */ glob) => (glob.startsWith("!") ? `!${posix.join(dir, glob.slice(1))}` : posix.join(dir, glob));
+  return overrides.map((o) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== null).map(([k, v]) => [k, k === "files" || k === "excludeFiles" ? v.map(anchor) : v])));
 }
 
 /**
@@ -400,8 +410,10 @@ async function runOxlint(cwd, oxlint, { configFile, filesConfig, ignores }, path
   // A Swift-only project has nothing for oxlint, which is not an error.
   // oxlint lints node_modules unless a .gitignore says not to, and a fresh project may have no .gitignore.
   const args = ["--no-error-on-unmatched-pattern", "--ignore-pattern=**/node_modules/**", ...ignores.map((p) => `--ignore-pattern=${p}`), ...(paths.length ? paths : ["."])];
-  /** @param {string[]} extra */
-  const oxlintRun = (extra) => exec(oxlint, [...extra, ...args], { cwd, maxBuffer: Infinity, timeout: STALLED, env: { ...process.env, PATH: `${dirname(tsgolint ?? oxlint)}:${process.env.PATH}` } }).catch((/** @type {any} */ e) => e);
+  // oxlint runs Intersite's rules in its own Node process, where Node 22 would print an ExperimentalWarning for each
+  // path.matchesGlob the rules call; the one-line output keeps it off.
+  const env = { ...process.env, PATH: `${dirname(tsgolint ?? oxlint)}:${process.env.PATH}`, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --disable-warning=ExperimentalWarning`.trim() };
+  const oxlintRun = (/** @type {string[]} */ extra) => exec(oxlint, [...extra, ...args], { cwd, maxBuffer: Infinity, timeout: STALLED, env }).catch((/** @type {any} */ e) => e);
   const [run, listed] = await Promise.all([oxlintRun(["-c", configFile, "-f", "json", ...(tsgolint ? ["--type-aware"] : [])]), oxlintRun(["-c", filesConfig, "--debug=files"])]);
   // A lint that stalls is stopped and named instead of hanging `intersite check` with it.
   if (run.killed || listed.killed) {

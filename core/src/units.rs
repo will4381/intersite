@@ -10,8 +10,12 @@ use std::sync::LazyLock;
 use crate::globals::JS_GLOBALS;
 
 static ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z_$\x{a0}-\x{ffff}][\w$\x{a0}-\x{ffff}]*").unwrap());
-static NUM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:0[xXbBoO][\da-fA-F_]+|(?:\d[\d_]*\.?[\d_]*|\.\d[\d_]*)(?:[eE][-+]?\d+)?)n?").unwrap());
-static PUNCT: LazyLock<Fancy> = LazyLock::new(|| Fancy::new(r"^(?:=>|\.\.\.|\?\?=?|\?\.(?!\d)|[=!]==?|\*\*=?|&&=?|\|\|=?|<<=?|>>>?=?|\+\+|--|[-+*/%&|^<>]=?|[{}()\[\];,.:?~@#!=])").unwrap());
+static NUM: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?:0[xXbBoO][\da-fA-F_]+|(?:\d[\d_]*\.?[\d_]*|\.\d[\d_]*)(?:[eE][-+]?\d+)?)n?").unwrap());
+static PUNCT: LazyLock<Fancy> = LazyLock::new(|| {
+    Fancy::new(r"^(?:=>|\.\.\.|\?\?=?|\?\.(?!\d)|[=!]==?|\*\*=?|&&=?|\|\|=?|<<=?|>>>?=?|\+\+|--|[-+*/%&|^<>]=?|[{}()\[\];,.:?~@#!=])")
+        .unwrap()
+});
 // JavaScript's \s includes the byte-order mark; Rust's does not, so it is added.
 static SPACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:[\s\x{feff}]+|//[^\n]*|/\*(?s:.)*?(?:\*/|\z))+").unwrap());
 static TAG_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[\w$.:-]*").unwrap());
@@ -20,16 +24,106 @@ static FLAGS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-z]*").unwrap()
 static JSX_FILE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.(?:jsx|tsx|js|mjs|cjs)$").unwrap());
 
 const KEYWORDS: &[&str] = &[
-    "break", "case", "catch", "class", "const", "continue", "debugger", "default", "delete", "do", "else", "enum", "export", "extends", "false", "finally", "for", "function", "if",
-    "import", "in", "instanceof", "new", "null", "return", "super", "switch", "this", "throw", "true", "try", "typeof", "var", "void", "while", "with", "yield", "let", "static", "async",
-    "await", "of", "as", "interface", "implements", "private", "protected", "public", "readonly", "abstract", "declare", "keyof", "infer", "is", "namespace", "satisfies",
-    "undefined", "string", "number", "boolean", "any", "unknown", "never", "object", "symbol", "bigint", "type",
+    "break",
+    "case",
+    "catch",
+    "class",
+    "const",
+    "continue",
+    "debugger",
+    "default",
+    "delete",
+    "do",
+    "else",
+    "enum",
+    "export",
+    "extends",
+    "false",
+    "finally",
+    "for",
+    "function",
+    "if",
+    "import",
+    "in",
+    "instanceof",
+    "new",
+    "null",
+    "return",
+    "super",
+    "switch",
+    "this",
+    "throw",
+    "true",
+    "try",
+    "typeof",
+    "var",
+    "void",
+    "while",
+    "with",
+    "yield",
+    "let",
+    "static",
+    "async",
+    "await",
+    "of",
+    "as",
+    "interface",
+    "implements",
+    "private",
+    "protected",
+    "public",
+    "readonly",
+    "abstract",
+    "declare",
+    "keyof",
+    "infer",
+    "is",
+    "namespace",
+    "satisfies",
+    "undefined",
+    "string",
+    "number",
+    "boolean",
+    "any",
+    "unknown",
+    "never",
+    "object",
+    "symbol",
+    "bigint",
+    "type",
 ];
-const REGEX_AFTER_KW: &[&str] = &["return", "typeof", "case", "do", "else", "in", "of", "new", "delete", "void", "throw", "instanceof", "yield", "await"];
+const REGEX_AFTER_KW: &[&str] =
+    &["return", "typeof", "case", "do", "else", "in", "of", "new", "delete", "void", "throw", "instanceof", "yield", "await"];
 const JSX_AFTER: &[&str] = &["(", ",", "=", ":", "?", "[", "{", "&&", "||", "??", "!", "=>", ";", "return", "default", "yield", "case"];
 /// Browser globals Node lacks; everything on globalThis (Math, JSON, fetch, Promise…) is kept by name too.
 const BROWSER: &[&str] = &["window", "document", "localStorage", "sessionStorage", "navigator", "location", "history"];
-const CONTINUES: &[&str] = &[".", "?.", ")", "]", "}", "=>", "?", ":", "|", "&", "||", "&&", "??", "+", "-", "*", "/", "=", ",", "as", "satisfies", "extends", "implements", ">", "/>"];
+const CONTINUES: &[&str] = &[
+    ".",
+    "?.",
+    ")",
+    "]",
+    "}",
+    "=>",
+    "?",
+    ":",
+    "|",
+    "&",
+    "||",
+    "&&",
+    "??",
+    "+",
+    "-",
+    "*",
+    "/",
+    "=",
+    ",",
+    "as",
+    "satisfies",
+    "extends",
+    "implements",
+    ">",
+    "/>",
+];
 const ENDS_EXPR: &[&str] = &[")", "]", "}", ">", "/>"];
 const MODIFIERS: &[&str] = &["export", "default", "declare", "async", "abstract"];
 const TYPE_BRACE_AFTER: &[&str] = &[":", "|", "&", "<", ",", "=>"];
@@ -129,13 +223,17 @@ impl<'s> Lexer<'s> {
         self.stack.push((Mode::Tag, 0));
     }
 
-    fn quote_end(&self, at: usize) -> usize {
+    /// A quoted string from `at`, up to its closing quote or the end of the line.
+    fn string(&mut self, at: usize) {
         let b = self.src.as_bytes();
         let mut j = at + 1;
         while j < b.len() && b[j] != b[at] && b[j] != b'\n' {
             j += if b[j] == b'\\' { 2 } else { 1 };
         }
-        (j + 1).min(b.len())
+        let end = (j + 1).min(b.len());
+        let text = self.src[at..floor(self.src, end)].to_string();
+        self.push("str", &text);
+        self.advance(end);
     }
 
     fn regex_end(&self, at: usize) -> Option<usize> {
@@ -163,10 +261,7 @@ impl<'s> Lexer<'s> {
             return self.advance(end);
         }
         if c == b'"' || c == b'\'' {
-            let end = self.quote_end(at);
-            let text = self.src[at..floor(self.src, end)].to_string();
-            self.push("str", &text);
-            return self.advance(end);
+            return self.string(at);
         }
         if c == b'`' {
             self.advance(at + 1);
@@ -184,7 +279,13 @@ impl<'s> Lexer<'s> {
         let end = self.sticky(&ID, at).or_else(|| self.sticky(&NUM, at)).filter(|&e| e > at);
         if let Some(end) = end {
             let word = self.src[at..end].to_string();
-            let kind = if c.is_ascii_digit() || c == b'.' { "num" } else if KEYWORDS.contains(&word.as_str()) { "kw" } else { "id" };
+            let kind = if c.is_ascii_digit() || c == b'.' {
+                "num"
+            } else if KEYWORDS.contains(&word.as_str()) {
+                "kw"
+            } else {
+                "id"
+            };
             self.push(kind, &word);
             return self.advance(end);
         }
@@ -235,10 +336,7 @@ impl<'s> Lexer<'s> {
             return self.advance(at + 1);
         }
         if c == b'"' || c == b'\'' {
-            let end = self.quote_end(at);
-            let text = self.src[at..floor(self.src, end)].to_string();
-            self.push("str", &text);
-            return self.advance(end);
+            return self.string(at);
         }
         let end = self.sticky(&ATTR, at).filter(|&e| e > at);
         if let Some(e) = end {
@@ -352,11 +450,19 @@ pub struct Unit {
 }
 
 fn t(tk: &Tokens, i: i64) -> &str {
-    if i < 0 { "" } else { tk.text.get(i as usize).map_or("", String::as_str) }
+    if i < 0 {
+        ""
+    } else {
+        tk.text.get(i as usize).map_or("", String::as_str)
+    }
 }
 
 fn k(tk: &Tokens, i: i64) -> &str {
-    if i < 0 { "" } else { tk.kind.get(i as usize).copied().unwrap_or("") }
+    if i < 0 {
+        ""
+    } else {
+        tk.kind.get(i as usize).copied().unwrap_or("")
+    }
 }
 
 fn statement_end(tk: &Tokens, j: usize, close: &[i32]) -> usize {
@@ -371,10 +477,7 @@ fn statement_end(tk: &Tokens, j: usize, close: &[i32]) -> usize {
         if tk.text[kk] == ";" && tk.kind[kk] == "punct" {
             return kk;
         }
-        if close[kk] > kk as i32 {
-            kk = close[kk] as usize;
-        }
-        kk += 1;
+        kk = if close[kk] > kk as i32 { close[kk] as usize + 1 } else { kk + 1 };
     }
     tk.text.len() - 1
 }
@@ -389,10 +492,7 @@ fn body_brace(tk: &Tokens, mut kk: usize, close: &[i32]) -> Option<usize> {
         if tt == "{" && !TYPE_BRACE_AFTER.contains(&t(tk, kk as i64 - 1)) {
             return Some(kk);
         }
-        if close[kk] > kk as i32 {
-            kk = close[kk] as usize;
-        }
-        kk += 1;
+        kk = if close[kk] > kk as i32 { close[kk] as usize + 1 } else { kk + 1 };
     }
     None
 }
@@ -439,7 +539,13 @@ fn unit_at(tk: &Tokens, i: usize, close: &[i32], fallback: &str) -> Option<(Stri
         if t(tk, j as i64 + 1) == "*" {
             j += 1;
         }
-        let name = if k(tk, j as i64 + 1) == "id" { t(tk, j as i64 + 1).to_string() } else if t(tk, j as i64 - 1) == "default" { fallback.to_string() } else { String::new() };
+        let name = if k(tk, j as i64 + 1) == "id" {
+            t(tk, j as i64 + 1).to_string()
+        } else if t(tk, j as i64 - 1) == "default" {
+            fallback.to_string()
+        } else {
+            String::new()
+        };
         let paren = tk.text.iter().skip(j).position(|x| x == "(").map(|p| p + j);
         let body = match paren {
             Some(p) if !name.is_empty() && p > 0 => body_brace(tk, close[p] as usize + 1, close),
@@ -472,13 +578,19 @@ fn members_of(tk: &Tokens, start: usize, end: usize, depth: &[i32]) -> Vec<Strin
     let mut members = Vec::new();
     let mut current = String::new();
     let mut braces = false;
+    #[allow(clippy::needless_range_loop)] // kk indexes the parallel token arrays tk.text, tk.kind and depth
     for kk in start..=end {
         let tt = tk.text[kk].as_str();
         if depth[kk] == 0 {
             braces = tt == "{" || (braces && tt != "(" && tt != "[");
         }
         let top = depth[kk] == 1 && braces;
-        let fresh = top && kk > 0 && tk.line[kk] > tk.line[kk - 1] && matches!(tk.kind[kk], "id" | "kw" | "str") && matches!(t(tk, kk as i64 + 1), ":" | "?" | "(" | "?:") && !TYPE_BRACE_AFTER.contains(&t(tk, kk as i64 - 1));
+        let fresh = top
+            && kk > 0
+            && tk.line[kk] > tk.line[kk - 1]
+            && matches!(tk.kind[kk], "id" | "kw" | "str")
+            && matches!(t(tk, kk as i64 + 1), ":" | "?" | "(" | "?:")
+            && !TYPE_BRACE_AFTER.contains(&t(tk, kk as i64 - 1));
         if (fresh || (top && (tt == ";" || tt == ",")) || depth[kk] == 0 || (top && tt == "}")) && !current.is_empty() {
             members.push(std::mem::take(&mut current));
         }
@@ -537,7 +649,14 @@ pub fn units(src: &str, path: &str) -> Vec<Unit> {
         i += 1;
     }
     // Names declared at the top of the file: the module's own helpers and state.
-    let own: HashSet<&str> = (0..tk.text.len().saturating_sub(1)).filter(|&i| depth[i] == 0 && matches!(tk.text[i].as_str(), "const" | "let" | "var" | "function" | "class" | "enum") && tk.kind[i + 1] == "id").map(|i| tk.text[i + 1].as_str()).collect();
+    let own: HashSet<&str> = (0..tk.text.len().saturating_sub(1))
+        .filter(|&i| {
+            depth[i] == 0
+                && matches!(tk.text[i].as_str(), "const" | "let" | "var" | "function" | "class" | "enum")
+                && tk.kind[i + 1] == "id"
+        })
+        .map(|i| tk.text[i + 1].as_str())
+        .collect();
     let fallback = path.rsplit('/').next().unwrap_or("").split('.').next().unwrap_or("");
     let mut found = Vec::new();
     let mut i = 0;
@@ -552,19 +671,29 @@ pub fn units(src: &str, path: &str) -> Vec<Unit> {
             continue;
         };
         // A function compares from its parameters on, without its own `=>`; braces and semicolons are style.
-        let from = if ukind == "function" { tk.text.iter().skip(start).position(|x| x == "(").map_or(start, |p| (p + start).max(start)) } else { start };
+        let from = if ukind == "function" {
+            tk.text.iter().skip(start).position(|x| x == "(").map_or(start, |p| (p + start).max(start))
+        } else {
+            start
+        };
         let at: Vec<usize> = (from..=end)
             .filter(|&kk| {
                 let tt = tk.text[kk].as_str();
                 let style = tk.kind[kk] == "punct" && (tt == "{" || tt == "}" || tt == ";");
-                ukind == "type" || (!style && !(depth[kk] == 0 && tt == "=>"))
+                ukind == "type" || !(style || (depth[kk] == 0 && tt == "=>"))
             })
             .collect();
         let norm: Vec<String> = at.iter().map(|&kk| normal(&tk, kk, &kept, &parent)).collect();
         let jsx = at.iter().any(|&kk| tk.kind[kk] == "tag");
         let starts_upper = name.chars().next().is_some_and(|c| c.is_ascii_uppercase());
         let hook = name.starts_with("use") && name[3..].chars().next().is_some_and(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
-        let kind = if ukind == "function" && hook { "hook" } else if ukind == "function" && jsx && starts_upper { "component" } else { ukind };
+        let kind = if ukind == "function" && hook {
+            "hook"
+        } else if ukind == "function" && jsx && starts_upper {
+            "component"
+        } else {
+            ukind
+        };
         let raw_kind = at
             .iter()
             .enumerate()
@@ -603,7 +732,10 @@ mod tests {
     fn finds_units_and_normalises_locals() {
         let src = "import { db } from './db';\nexport function totalOf(items) {\n  return items.reduce((sum, item) => sum + item.price, 0);\n}\nexport const Card = ({ title }) => <div className=\"card\">{title}</div>;\ntype User = {\n  id: string;\n  name: string;\n};\n";
         let u = units(src, "a.tsx");
-        assert_eq!(u.iter().map(|u| (u.name.as_str(), u.kind.as_str(), u.line, u.end_line)).collect::<Vec<_>>(), vec![("totalOf", "function", 2, 4), ("Card", "component", 5, 5), ("User", "type", 6, 9)]);
+        assert_eq!(
+            u.iter().map(|u| (u.name.as_str(), u.kind.as_str(), u.line, u.end_line)).collect::<Vec<_>>(),
+            vec![("totalOf", "function", 2, 4), ("Card", "component", 5, 5), ("User", "type", 6, 9)]
+        );
         assert_eq!(u[0].norm.join(" "), "( I ) return I . reduce ( ( I , I ) => I + I . price , N )");
         assert_eq!(u[2].members, vec!["id : string", "name : string"]);
     }

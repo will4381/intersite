@@ -1,5 +1,5 @@
 // @ts-check
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
 import { parse } from "yaml";
@@ -13,6 +13,61 @@ const CONFIG_FILES = [CONFIG_FILE, "intersite.yaml", "intersite.json"];
 /** The config file this project has, or undefined. @param {string} cwd */
 export function configPath(cwd) {
   return CONFIG_FILES.map((name) => join(cwd, name)).find((path) => existsSync(path));
+}
+
+/**
+ * Everything Intersite writes into a project lives in this folder beside intersite.yml. Its own .gitignore keeps what
+ * is generated (the case database, the run ledger, oxlint's configs, caches) out of git and commits the rest: the
+ * baseline and the replay adapter.
+ */
+export const INTERSITE_DIR = ".intersite";
+export const DIR_GITIGNORE = "# Written by Intersite: everything here is generated except what is listed below.\n*\n!.gitignore\n!baseline.json\n!adapter.mjs\n";
+
+/** The project's `.intersite` folder, made with its .gitignore when missing. @param {string} cwd */
+export function intersiteDir(cwd) {
+  const dir = join(cwd, INTERSITE_DIR);
+  mkdirSync(dir, { recursive: true });
+  if (!existsSync(join(dir, ".gitignore"))) writeFileSync(join(dir, ".gitignore"), DIR_GITIGNORE);
+  return dir;
+}
+
+/** Findings recorded so only new ones fail, committed with the code: `lint` (file -> rule -> count) and `gates` (gate -> targets). */
+export const BASELINE = `${INTERSITE_DIR}/baseline.json`;
+/** Where versions before 1.0.0-rc.24 kept each part, beside intersite.yml; read until the next write moves them. */
+export const OLD_BASELINES = /** @type {const} */ ({ lint: "intersite-baseline.json", gates: "intersite-gates-baseline.json" });
+
+/**
+ * The project's baseline: `.intersite/baseline.json`, or the older per-part files. Throws an Error naming the
+ * file when one is not valid JSON.
+ * @param {string} cwd @returns {{ lint?: Record<string, Record<string, number>>, gates?: Record<string, string[]> }}
+ */
+export function readBaselines(cwd) {
+  const read = (/** @type {string} */ file) => {
+    try {
+      return JSON.parse(readFileSync(join(cwd, file), "utf8"));
+    } catch {
+      throw new Error(`${file} is not valid JSON`);
+    }
+  };
+  if (existsSync(join(cwd, BASELINE))) return read(BASELINE);
+  return Object.fromEntries(Object.entries(OLD_BASELINES).filter(([, file]) => existsSync(join(cwd, file))).map(([part, file]) => [part, read(file)]));
+}
+
+/**
+ * Records one part of the baseline, moving the older per-part files into `.intersite/baseline.json`. A baseline that
+ * cannot be read is replaced, which is the way out of a corrupt one.
+ * @param {string} cwd @param {"lint" | "gates"} part @param {unknown} data
+ */
+export function writeBaseline(cwd, part, data) {
+  let all = {};
+  try {
+    all = readBaselines(cwd);
+  } catch {
+    all = {};
+  }
+  intersiteDir(cwd);
+  writeFileSync(join(cwd, BASELINE), `${JSON.stringify({ ...all, [part]: data }, null, 2)}\n`);
+  for (const file of Object.values(OLD_BASELINES)) rmSync(join(cwd, file), { force: true });
 }
 
 /** The branch a change is compared with when `gates.base` is not set; the gates fall back to the local main line. */
@@ -41,9 +96,19 @@ export const defaults = {
     readTokenEnv: "INTERSITE_READ_TOKEN",
     ingestTokenEnv: "INTERSITE_INGEST_TOKEN",
     name: "intersite-collector",
+    domain: "",
     dailyCap: { ok: 5000, other: 5000 },
   },
-  lint: { packs: ["tests","slop","security","state","async","perf","react","next","design","types","validation","naming","globals","ui","orm","query","workers","supabase","server","start","effect","payments","auth","swift"], rules: {}, custom: [], baseline: "intersite-baseline.json", extends: ".oxlintrc.json", ownRules: true, typeAware: false },
+  lint: {
+    packs: ["tests","slop","security","state","async","perf","react","next","design","types","validation","naming","globals","ui","orm","query","workers","supabase","server","start","effect","payments","auth","swift"],
+    /** @type {Record<string, string | unknown[]>} */
+    rules: {},
+    /** @type {import("../lint/catalog.mjs").JsonRule[]} */
+    custom: [],
+    extends: ".oxlintrc.json",
+    ownRules: true,
+    typeAware: false,
+  },
   gates: {
     base: DEFAULT_BASE,
     run: ["test-integrity","duplicates","similar","new-deps","artifacts","unused","naming","style-drift","value-drift","sql","regex","decisions","renames","schema-drift","imports","boundaries","tamper","special-case","complexity","columns","routes","env","secrets","auth","structure"],
@@ -63,13 +128,14 @@ export const defaults = {
     /** @type {{ name: string, paths: string[] }[]} */
     layers: [],
     features: "",
-    baseline: "intersite-gates-baseline.json",
   },
   capture: {
     sample: 0.05,
     maxBodyBytes: 32_768,
     include: ["/**"],
+    /** @type {string[]} */
     exclude: [],
+    /** @type {string[]} */
     redactKeys: [],
     /** @type {string[]} */
     keepKeys: [],
@@ -81,7 +147,7 @@ export const defaults = {
     uiTarget: "",
     browser: "chrome",
     browserUrl: "",
-    adapter: "./intersite.adapter.mjs",
+    adapter: `./${INTERSITE_DIR}/adapter.mjs`,
     modes: ["baseline"],
     sample: 20,
     shiftDates: true,
@@ -118,10 +184,13 @@ export function projectName(cwd) {
  * The project's intersite.yml with defaults filled in. Sections merge one level deep. With no file at all every
  * default applies and the project is named after its package, so each command works in a fresh checkout.
  * @param {string} cwd
+ * @returns {{ project: string, collector: typeof defaults.collector, lint: typeof defaults.lint, gates: typeof defaults.gates,
+ *   capture: typeof defaults.capture, replay: typeof defaults.replay & { enabled: boolean }, checks: ReturnType<typeof projectChecks> }}
  */
 export function loadConfig(cwd) {
   const path = configPath(cwd);
-  const file = { project: projectName(cwd), ...(path && readFile(path)) };
+  /** @type {Record<string, any>} */
+  const file = { project: projectName(cwd), ...(path ? readFile(path) : {}) };
   if (typeof file.project !== "string" || !/^[a-z0-9-]{1,64}$/.test(file.project)) {
     throw new Error(`${CONFIG_FILE}: "project" must be lowercase letters, digits and dashes`);
   }
@@ -132,10 +201,13 @@ export function loadConfig(cwd) {
     gates: { ...defaults.gates, ...file.gates },
     capture: { ...defaults.capture, ...file.capture, ttlDays: { ...defaults.capture.ttlDays, ...file.capture?.ttlDays } },
     // `replay: false` is a project that only lints and gates: no replay stage, adapter or replay skill.
-    replay: { ...defaults.replay, ...file.replay, enabled: file.replay !== false },
+    replay: { ...defaults.replay, ...(existsSync(join(cwd, OLD_ADAPTER)) && { adapter: `./${OLD_ADAPTER}` }), ...file.replay, enabled: file.replay !== false },
     checks: projectChecks(file.checks, path ? basename(path) : CONFIG_FILE),
   };
 }
+
+/** Where versions before 1.0.0-rc.24 wrote the replay adapter; `intersite init` moves it into `.intersite`. */
+export const OLD_ADAPTER = "intersite.adapter.mjs";
 
 /** Stage names `intersite check` already uses, which a project check may not take. */
 const BUILT_IN = new Set(["lint", "replay", ...defaults.gates.run, "fails-on-base", "mutation", "protected", "coverage"]);

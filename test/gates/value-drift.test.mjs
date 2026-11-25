@@ -8,7 +8,7 @@ import { TEST_PATHS } from "../../shared/config.mjs";
 import { repo } from "./repo.mjs";
 
 /** @param {string} cwd @param {string} [base] */
-const check = async (cwd, base = "base") => (await valueDrift({ cwd, base, testPaths: TEST_PATHS, testCmd: "", setup: "", duplicateLines: 6, mutants: 0, timeout: 0, entryPaths: [], artifacts: [] })).findings.map((f) => f.message);
+const check = async (cwd, base = "base") => (await valueDrift({ cwd, base, testPaths: TEST_PATHS, testCmd: "", setup: "", duplicateLines: 6, mutants: 0, timeout: 0, entryPaths: [], artifacts: [], protected: [] })).findings.map((f) => f.message);
 
 const policy = "export const PRICING = {\n  paymentFeeBps: 150,\n  paymentFeeFixedCents: 30,\n} as const;\n";
 const pricingPage = 'export const Pricing = () => <p>The payment fee is 1.5% plus 30¢ per payment.</p>;\n';

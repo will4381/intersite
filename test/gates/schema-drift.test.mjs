@@ -7,7 +7,7 @@ import { TEST_PATHS } from "../../shared/config.mjs";
 import { repo } from "./repo.mjs";
 
 /** @param {string} cwd */
-const check = async (cwd) => (await schemaDrift({ cwd, base: "base", testPaths: TEST_PATHS, testCmd: "", setup: "", duplicateLines: 6, mutants: 0, timeout: 0, entryPaths: [], artifacts: [] })).findings.map((f) => f.message);
+const check = async (cwd) => (await schemaDrift({ cwd, base: "base", testPaths: TEST_PATHS, testCmd: "", setup: "", duplicateLines: 6, mutants: 0, timeout: 0, entryPaths: [], artifacts: [], protected: [] })).findings.map((f) => f.message);
 
 test("a type that restates a schema's keys by hand is reported with the derivation; a derived or different type is not", async () => {
   const r = repo({

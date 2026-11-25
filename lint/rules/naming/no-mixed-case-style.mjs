@@ -39,7 +39,7 @@ export const rule = defineRule({
         return !isTestFile(context) && mentions(context, NEEDS);
       },
       ...declared,
-      "Property, TSPropertySignature"(node) {
+      "Property, TSPropertySignature"(/** @type {any} */ node) {
         if (node.key?.type === "Identifier") keys.add(node.key.name);
         else if (node.key?.type === "Literal") keys.add(String(node.key.value));
       },

@@ -7,7 +7,7 @@ import { TEST_PATHS } from "../../shared/config.mjs";
 import { repo } from "./repo.mjs";
 
 /** @param {string} cwd */
-const check = async (cwd) => (await styleDrift({ cwd, base: "base", testPaths: TEST_PATHS, testCmd: "", setup: "", duplicateLines: 6, mutants: 0, timeout: 0, entryPaths: [], artifacts: [] })).findings.map((f) => f.message);
+const check = async (cwd) => (await styleDrift({ cwd, base: "base", testPaths: TEST_PATHS, testCmd: "", setup: "", duplicateLines: 6, mutants: 0, timeout: 0, entryPaths: [], artifacts: [], protected: [] })).findings.map((f) => f.message);
 
 const tokens = ":root {\n  --color-ink: #333333;\n  --gray-700: #374151;\n}\n";
 const uses = ".title { color: var(--color-ink); }\n.body { color: var(--color-ink); }\n.note { color: var(--color-ink); border-color: var(--gray-700); }\n";

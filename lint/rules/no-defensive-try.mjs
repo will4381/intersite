@@ -47,9 +47,9 @@ export const rule = defineRule({
       TryStatement(node) {
         if (node.handler && cannotThrow(node.block)) return context.report({ node, messageId: "nothing" });
         const fn = node.parent?.parent;
-        const wholeBody = node.parent?.type === "BlockStatement" && FUNCTIONS.has(fn?.type) && node.parent.body.length === 1;
+        const wholeBody = node.parent?.type === "BlockStatement" && FUNCTIONS.has(fn?.type ?? "") && node.parent.body.length === 1;
         if (wholeBody && !node.finalizer && rethrowsGeneric(node.handler)) {
-          const arg = node.handler.body.body[0].argument.arguments[0];
+          const arg = /** @type {any} */ (node.handler).body.body[0].argument.arguments[0];
           context.report({ node, messageId: "generic", data: { message: arg.value ?? arg.quasis[0].value.cooked } });
         }
       },

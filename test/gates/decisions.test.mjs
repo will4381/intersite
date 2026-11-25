@@ -2,12 +2,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { decisions } from "../../gates/decisions.mjs";
+import { gates } from "../../cli/gate.mjs";
 import { TEST_PATHS } from "../../shared/config.mjs";
 import { repo } from "./repo.mjs";
 
 /** @param {string} cwd */
-const check = async (cwd) => (await decisions({ cwd, base: "base", testPaths: TEST_PATHS, testCmd: "", setup: "", duplicateLines: 6, mutants: 0, timeout: 0, entryPaths: [], artifacts: [] })).findings.map((f) => f.message);
+const check = async (cwd) => (await gates.decisions({ cwd, base: "base", testPaths: TEST_PATHS, testCmd: "", setup: "", duplicateLines: 6, mutants: 0, timeout: 0, entryPaths: [], artifacts: [], protected: [] })).findings.map((f) => f.message);
 
 test("a third file reading the same environment variable or flag is reported; the env module and NODE_ENV are not", async () => {
   const r = repo({

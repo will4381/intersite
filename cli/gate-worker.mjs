@@ -4,9 +4,10 @@
 // tree does not change during a check, so each worker remembers what git answered for the gates after the first.
 import { parentPort } from "node:worker_threads";
 
-import { rememberGit } from "../gates/lib.mjs";
+import { quietExperimentalWarnings, rememberGit } from "../gates/lib.mjs";
 import gate from "./gate.mjs";
 
+quietExperimentalWarnings();
 rememberGit();
 parentPort?.on("message", async (/** @type {{ argv: string[], cwd: string, silent: boolean }} */ { argv, cwd, silent }) => {
   /** @type {string[]} */ const out = [];

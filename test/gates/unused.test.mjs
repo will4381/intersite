@@ -112,7 +112,7 @@ test("an acknowledgement or baseline entry naming a file is not a use of it", as
   r.write({
     "src/editor.ts": "export const editor = () => 1;\n",
     "intersite.json": JSON.stringify({ project: "t", gates: { base: "base", acknowledged: [{ gate: "similar", target: "src/editor.ts:editor", why: "x" }] } }),
-    "intersite-baseline.json": JSON.stringify({ "src/editor.ts": { "intersite/no-empty-catch": 1 } }),
+    ".intersite/baseline.json": JSON.stringify({ lint: { "src/editor.ts": { "intersite/no-empty-catch": 1 } }, gates: { similar: ["src/editor.ts:editor"] } }),
   });
   const { code, out } = await run(r.cwd, ["unused"]);
   assert.equal(code, 1);

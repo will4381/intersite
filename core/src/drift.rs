@@ -3,11 +3,8 @@
 //! money rate defined twice with different values. Constants come from `const` declarations and the object literals
 //! in them; claims from strings, JSX text and comments. A claim is matched to a constant by the words they share.
 
-use oxc_allocator::Allocator;
 use oxc_ast::ast::*;
 use oxc_ast_visit::{walk, Visit};
-use oxc_parser::Parser;
-use oxc_span::SourceType;
 use rayon::prelude::*;
 use regex::Regex;
 use std::collections::HashMap;
@@ -18,13 +15,76 @@ use crate::{rel, Answer, Finding, Request};
 
 /// Words that make a number a money number.
 const MONEY: &[&str] = &[
-    "fee", "commission", "tax", "vat", "gst", "price", "pricing", "cost", "payment", "earning", "revenue", "spend", "wage", "salary", "rent", "shipping", "donation", "wallet", "discount", "markup", "margin",
-    "payout", "refund", "surcharge", "tip", "deposit", "subscription", "credit", "rebate", "royalty", "affiliate", "referral", "bonus", "penalty", "interest", "apr", "charge", "billing", "invoice", "coupon", "promo",
+    "fee",
+    "commission",
+    "tax",
+    "vat",
+    "gst",
+    "price",
+    "pricing",
+    "cost",
+    "payment",
+    "earning",
+    "revenue",
+    "spend",
+    "wage",
+    "salary",
+    "rent",
+    "shipping",
+    "donation",
+    "wallet",
+    "discount",
+    "markup",
+    "margin",
+    "payout",
+    "refund",
+    "surcharge",
+    "tip",
+    "deposit",
+    "subscription",
+    "credit",
+    "rebate",
+    "royalty",
+    "affiliate",
+    "referral",
+    "bonus",
+    "penalty",
+    "interest",
+    "apr",
+    "charge",
+    "billing",
+    "invoice",
+    "coupon",
+    "promo",
 ];
 /// Name words that mark a sample amount for an illustration.
 const SAMPLE: &[&str] = &["example", "sample", "demo", "preview", "placeholder", "mock", "fake", "dummy"];
 /// Name words that say nothing about which number it is.
-const VAGUE: &[&str] = &["point", "const", "current", "default", "defaults", "initial", "value", "values", "config", "settings", "setting", "policy", "commercial", "the", "of", "a", "an", "in", "to", "and", "or", "for", "per"];
+const VAGUE: &[&str] = &[
+    "point",
+    "const",
+    "current",
+    "default",
+    "defaults",
+    "initial",
+    "value",
+    "values",
+    "config",
+    "settings",
+    "setting",
+    "policy",
+    "commercial",
+    "the",
+    "of",
+    "a",
+    "an",
+    "in",
+    "to",
+    "and",
+    "or",
+    "for",
+    "per",
+];
 /// Copy states fees and minimums in dollars; larger amounts are thresholds, plan prices or worked examples.
 const MAX_CLAIM_CENTS: f64 = 10_000.0;
 
@@ -79,7 +139,9 @@ fn words_of(text: &str) -> Vec<String> {
             "maximum" => "max".to_string(),
             "minimum" => "min".to_string(),
             _ if w.len() > 4 && w.ends_with("ies") => format!("{}y", &w[..w.len() - 3]),
-            _ if w.len() > 3 && w.ends_with('s') && !w.ends_with("is") && !w.ends_with("us") && !w.ends_with("ss") => w[..w.len() - 1].to_string(),
+            _ if w.len() > 3 && w.ends_with('s') && !w.ends_with("is") && !w.ends_with("us") && !w.ends_with("ss") => {
+                w[..w.len() - 1].to_string()
+            }
             _ => w.to_string(),
         })
         .collect()
@@ -122,7 +184,15 @@ fn constant(file: &str, line: u32, path: &[String], value: f64) -> Option<Consta
     }
     key.sort();
     key.dedup();
-    Some(Constant { file: file.to_string(), line, name: path.join("."), words, key: key.join(" "), kind: found_unit.map(|u| u.1), normal: value * found_unit.map_or(1.0, |u| u.0) })
+    Some(Constant {
+        file: file.to_string(),
+        line,
+        name: path.join("."),
+        words,
+        key: key.join(" "),
+        kind: found_unit.map(|u| u.1),
+        normal: value * found_unit.map_or(1.0, |u| u.0),
+    })
 }
 
 /// The number a constant expression comes to: literals and + - * / of them, under casts.
@@ -234,7 +304,14 @@ impl<'a, 's> Visit<'a> for Reader<'s> {
 
     fn visit_expression(&mut self, it: &Expression<'a>) {
         // The path carries through object and array literals and TypeScript wrappers; any other node ends it.
-        let keeps = matches!(it, Expression::ObjectExpression(_) | Expression::ArrayExpression(_) | Expression::TSAsExpression(_) | Expression::TSSatisfiesExpression(_) | Expression::ParenthesizedExpression(_));
+        let keeps = matches!(
+            it,
+            Expression::ObjectExpression(_)
+                | Expression::ArrayExpression(_)
+                | Expression::TSAsExpression(_)
+                | Expression::TSSatisfiesExpression(_)
+                | Expression::ParenthesizedExpression(_)
+        );
         if keeps {
             walk::walk_expression(self, it);
         } else {
@@ -245,20 +322,18 @@ impl<'a, 's> Visit<'a> for Reader<'s> {
 
 /// Money constants and the text of every string, JSX text and comment in a file.
 fn read(file: &str, src: &str) -> (Vec<Constant>, Vec<Claim>) {
-    let allocator = Allocator::default();
-    let parsed = Parser::new(&allocator, src, SourceType::from_path(file).unwrap_or_default()).parse();
-    if parsed.panicked {
-        return (vec![], vec![]);
-    }
-    let lines = Lines::new(src);
-    let mut reader = Reader { file: file.to_string(), lines: &lines, constants: vec![], texts: vec![], path: None };
-    reader.visit_program(&parsed.program);
-    for comment in &parsed.program.comments {
-        let span = comment.content_span();
-        reader.texts.push((span.start, src[span.start as usize..span.end as usize].to_string()));
-    }
-    let claims = reader.texts.iter().flat_map(|(start, t)| claims_in(file, &lines, *start as usize, t)).collect();
-    (reader.constants, claims)
+    crate::js::parse(file, src, |program| {
+        let lines = Lines::new(src);
+        let mut reader = Reader { file: file.to_string(), lines: &lines, constants: vec![], texts: vec![], path: None };
+        reader.visit_program(program);
+        for comment in &program.comments {
+            let span = comment.content_span();
+            reader.texts.push((span.start, src[span.start as usize..span.end as usize].to_string()));
+        }
+        let claims = reader.texts.iter().flat_map(|(start, t)| claims_in(file, &lines, *start as usize, t)).collect();
+        (reader.constants, claims)
+    })
+    .unwrap_or_default()
 }
 
 fn show(n: f64, kind: Kind) -> String {
@@ -266,7 +341,11 @@ fn show(n: f64, kind: Kind) -> String {
         Kind::Cents => format!("${:.2}", n / 100.0),
         Kind::Fraction => {
             let pct = (n * 100.0 * 10_000.0).round() / 10_000.0;
-            if pct.fract() == 0.0 { format!("{}%", pct as i64) } else { format!("{pct}%") }
+            if pct.fract() == 0.0 {
+                format!("{}%", pct as i64)
+            } else {
+                format!("{pct}%")
+            }
         }
     }
 }
@@ -277,7 +356,10 @@ fn sentences(text: &str) -> Vec<(usize, &str)> {
     let mut start = 0;
     let bytes = text.as_bytes();
     for (i, &b) in bytes.iter().enumerate() {
-        if matches!(b, b'.' | b';' | b'!' | b'?' | b'\n' | b'|') && !bytes.get(i + 1).is_some_and(|n| n.is_ascii_digit()) && text.is_char_boundary(i + 1) {
+        if matches!(b, b'.' | b';' | b'!' | b'?' | b'\n' | b'|')
+            && !bytes.get(i + 1).is_some_and(|n| n.is_ascii_digit())
+            && text.is_char_boundary(i + 1)
+        {
             out.push((start, &text[start..i + 1]));
             start = i + 1;
         }
@@ -290,9 +372,12 @@ fn sentences(text: &str) -> Vec<(usize, &str)> {
 
 /// The money numbers a piece of copy states, one sentence at a time.
 fn claims_in(file: &str, lines: &Lines, start: usize, text: &str) -> Vec<Claim> {
-    static EXAMPLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\be\.g\.|\bfor (?:example|instance)\b|\bsuch as\b|\bimagine\b|\bsay\b|^\s*for an?\b|\bif\b|[{}]|=").unwrap());
+    static EXAMPLE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)\be\.g\.|\bfor (?:example|instance)\b|\bsuch as\b|\bimagine\b|\bsay\b|^\s*for an?\b|\bif\b|[{}]|=").unwrap()
+    });
     static BOUNDS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bbetween\b|\b0 ?%|\b100 ?%").unwrap());
-    static FIGURE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d+(?:\.\d+)?)\s?(%|¢|bps\b|basis points)|\$(\d[\d,]*(?:\.\d{1,2})?)").unwrap());
+    static FIGURE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(\d+(?:\.\d+)?)\s?(%|¢|bps\b|basis points)|\$(\d[\d,]*(?:\.\d{1,2})?)").unwrap());
     let mut out = Vec::new();
     for (at, sentence) in sentences(text) {
         // Worked examples, hypotheticals and code are not the product's number.
@@ -318,10 +403,22 @@ fn claims_in(file: &str, lines: &Lines, start: usize, text: &str) -> Vec<Claim> 
             }
             let value = cents.unwrap_or_else(|| {
                 let n: f64 = m[1].parse().unwrap_or(0.0);
-                if &m[2] == "%" { n / 100.0 } else { n / 10_000.0 }
+                if &m[2] == "%" {
+                    n / 100.0
+                } else {
+                    n / 10_000.0
+                }
             });
             let shown: String = sentence.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(80).collect();
-            out.push(Claim { file: file.to_string(), line: lines.line(start + at), text: shown, said: m[0].to_string(), value, kind: if cents.is_some() { Kind::Cents } else { Kind::Fraction }, words: words.clone() });
+            out.push(Claim {
+                file: file.to_string(),
+                line: lines.line(start + at),
+                text: shown,
+                said: m[0].to_string(),
+                value,
+                kind: if cents.is_some() { Kind::Cents } else { Kind::Fraction },
+                words: words.clone(),
+            });
         }
     }
     out
@@ -355,7 +452,8 @@ fn same(a: f64, b: f64) -> bool {
 }
 
 pub fn run(request: &Request) -> Result<Answer, String> {
-    let per_file: Vec<(Vec<Constant>, Vec<Claim>)> = request.files.par_iter().map(|f| text::read(&request.root, f).map(|src| read(f, &src)).unwrap_or_default()).collect();
+    let per_file: Vec<(Vec<Constant>, Vec<Claim>)> =
+        request.files.par_iter().map(|f| text::read(&request.root, f).map(|src| read(f, &src)).unwrap_or_default()).collect();
     let mut constants = Vec::new();
     let mut claims = Vec::new();
     for (c, k) in per_file {
@@ -382,7 +480,17 @@ pub fn run(request: &Request) -> Result<Answer, String> {
             file: claim.file.clone(),
             line: claim.line,
             target,
-            message: format!("{}:{} says {} (\"{}\") but {} is {} at {}:{}: read the number from the constant, or fix whichever is wrong", name(&claim.file), claim.line, claim.said, claim.text, c.name, show(c.normal, claim.kind), name(&c.file), c.line),
+            message: format!(
+                "{}:{} says {} (\"{}\") but {} is {} at {}:{}: read the number from the constant, or fix whichever is wrong",
+                name(&claim.file),
+                claim.line,
+                claim.said,
+                claim.text,
+                c.name,
+                show(c.normal, claim.kind),
+                name(&c.file),
+                c.line
+            ),
         });
     }
     // One money rate in two files with two values: the code disagrees with itself.
@@ -403,17 +511,31 @@ pub fn run(request: &Request) -> Result<Answer, String> {
             continue;
         }
         // The finding sits on the changed one (or, judging everything, the later file), and names the other.
-        let (a, b) = if request.changed(&first.file, first.line) && !request.changed(&other.file, other.line) { (*other, first) } else { (first, *other) };
+        let (a, b) = if request.changed(&first.file, first.line) && !request.changed(&other.file, other.line) {
+            (*other, first)
+        } else {
+            (first, *other)
+        };
         let kind = b.kind.unwrap_or(Kind::Fraction);
         let target = format!("{}:{}", name(&b.file), b.name);
         findings.push(Finding {
             file: b.file.clone(),
             line: b.line,
             target,
-            message: format!("{}:{} sets {} to {} but {}:{} sets {} to {}: keep one constant and import it", name(&b.file), b.line, b.name, show(b.normal, kind), name(&a.file), a.line, a.name, show(a.normal, a.kind.unwrap_or(kind))),
+            message: format!(
+                "{}:{} sets {} to {} but {}:{} sets {} to {}: keep one constant and import it",
+                name(&b.file),
+                b.line,
+                b.name,
+                show(b.normal, kind),
+                name(&a.file),
+                a.line,
+                a.name,
+                show(a.normal, a.kind.unwrap_or(kind))
+            ),
         });
     }
-    Ok(Answer { findings, summary: format!("{} money figures in copy checked against {} money constants", claims.len(), constants.len()), data: None })
+    Ok(Answer::new(findings, format!("{} money figures in copy checked against {} money constants", claims.len(), constants.len())))
 }
 
 #[cfg(test)]
@@ -423,7 +545,10 @@ mod tests {
     #[test]
     fn reads_rates_with_their_units_and_claims_in_copy() {
         let (constants, claims) = read("p.tsx", "export const PRICING = { paymentFeeBps: 150, paymentFeeFixedCents: 30 } as const;\nlet total = 0;\nexport const P = () => <p>The payment fee is 1.5% plus 30¢ per payment.</p>;\n");
-        assert_eq!(constants.iter().map(|c| (c.name.as_str(), c.key.as_str(), (c.normal * 1e6).round() / 1e6)).collect::<Vec<_>>(), vec![("PRICING.paymentFeeBps", "fee payment", 0.015), ("PRICING.paymentFeeFixedCents", "fee fixed payment", 30.0)]);
+        assert_eq!(
+            constants.iter().map(|c| (c.name.as_str(), c.key.as_str(), (c.normal * 1e6).round() / 1e6)).collect::<Vec<_>>(),
+            vec![("PRICING.paymentFeeBps", "fee payment", 0.015), ("PRICING.paymentFeeFixedCents", "fee fixed payment", 30.0)]
+        );
         assert_eq!(claims.iter().map(|c| c.said.as_str()).collect::<Vec<_>>(), vec!["1.5%", "30¢"]);
         assert_eq!(show(0.0125, Kind::Fraction), "1.25%");
         assert_eq!(show(30.0, Kind::Cents), "$0.30");

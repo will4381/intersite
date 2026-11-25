@@ -48,35 +48,73 @@ static KINDS: LazyLock<Vec<Kind>> = LazyLock::new(|| {
 });
 
 /// A connection URL with an inline password: scheme, password and host, judged in `db_password`.
-static DB_URL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?|amqps?)://[^:/\s@]+:([^@\s/]+)@([^:/\s?#]+)").unwrap());
+static DB_URL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?|amqps?)://[^:/\s@]+:([^@\s/]+)@([^:/\s?#]+)").unwrap()
+});
 /// Hosts on the developer's machine or a compose network: their passwords guard nothing.
-const LOCAL_HOSTS: [&str; 13] = ["localhost", "127.0.0.1", "0.0.0.0", "host", "host.docker.internal", "db", "database", "postgres", "postgresql", "mysql", "redis", "mongo", "mongodb"];
+const LOCAL_HOSTS: [&str; 13] = [
+    "localhost",
+    "127.0.0.1",
+    "0.0.0.0",
+    "host",
+    "host.docker.internal",
+    "db",
+    "database",
+    "postgres",
+    "postgresql",
+    "mysql",
+    "redis",
+    "mongo",
+    "mongodb",
+];
 
 /// Whether a URL's password is real: eight characters or more with letters and digits, no variable, a remote host.
 fn db_password(password: &str, host: &str) -> bool {
-    password.len() >= 8 && password.chars().any(|c| c.is_ascii_digit()) && password.chars().any(|c| c.is_ascii_alphabetic()) && !password.contains('$') && !LOCAL_HOSTS.contains(&host) && !placeholder(password)
+    password.len() >= 8
+        && password.chars().any(|c| c.is_ascii_digit())
+        && password.chars().any(|c| c.is_ascii_alphabetic())
+        && !password.contains('$')
+        && !LOCAL_HOSTS.contains(&host)
+        && !placeholder(password)
 }
 
 /// A JSON Web Token; its payload is decoded to see whether it is a Supabase service-role key.
-static JWT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\beyJ[A-Za-z0-9_-]{10,}\.(eyJ[A-Za-z0-9_-]{10,})\.[A-Za-z0-9_-]{20,}").unwrap());
+static JWT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\beyJ[A-Za-z0-9_-]{10,}\.(eyJ[A-Za-z0-9_-]{10,})\.[A-Za-z0-9_-]{20,}").unwrap());
 /// Text that marks a value as a stand-in, not a credential.
-static PLACEHOLDER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)x{6}|\*{4}|\.\.\.|your[-_ ]?|replace|placeholder|dummy|fake|redacted|example|sample|changeme|<[^>]*>|\$\{|\{\{|0{10}|1234567890|abcdef").unwrap());
+static PLACEHOLDER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)x{6}|\*{4}|\.\.\.|your[-_ ]?|replace|placeholder|dummy|fake|redacted|example|sample|changeme|<[^>]*>|\$\{|\{\{|0{10}|1234567890|abcdef").unwrap()
+});
 /// Lockfiles and caches hold hashes, never credentials someone typed.
-static NEVER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|/)(?:node_modules|dist|build|out|vendor|coverage|\.next|\.turbo)/|(?:^|/)(?:package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|Cargo\.lock|Gemfile\.lock|poetry\.lock|composer\.lock|Package\.resolved|go\.sum)$|\.min\.|\.map$").unwrap());
+static NEVER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:^|/)(?:node_modules|dist|build|out|vendor|coverage|\.next|\.turbo)/|(?:^|/)(?:package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|Cargo\.lock|Gemfile\.lock|poetry\.lock|composer\.lock|Package\.resolved|go\.sum)$|\.min\.|\.map$").unwrap()
+});
 /// Tests, fixtures and mocks hold realistic fakes on purpose.
-static FAKES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|/)(?:tests?|__tests__|spec|fixtures?|__fixtures__|mocks?|__mocks__|testdata|stories|storybook)/").unwrap());
+static FAKES: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:^|/)(?:tests?|__tests__|spec|fixtures?|__fixtures__|mocks?|__mocks__|testdata|stories|storybook)/").unwrap()
+});
 static JS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.[cm]?[jt]sx?$").unwrap());
 /// Files that are a private key whatever they hold: keystores and SSH identities.
-static KEY_FILE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|/)(?:id_(?:rsa|dsa|ecdsa|ed25519)|[^/]+\.(?:p12|pfx|jks))$").unwrap());
+static KEY_FILE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:^|/)(?:id_(?:rsa|dsa|ecdsa|ed25519)|[^/]+\.(?:p12|pfx|jks))$").unwrap());
 /// An env file: `.env`, `.env.local`, `.env.production`, `prod.env`, `.dev.vars`; templates are meant to be committed.
 static ENV_FILE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|/)(?:\.env(?:\.[\w.-]+)?|[\w.-]+\.env|\.dev\.vars)$").unwrap());
-static ENV_TEMPLATE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)example|sample|template|dist|schema|defaults|\.test$|\.ci$").unwrap());
+static ENV_TEMPLATE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)example|sample|template|dist|schema|defaults|\.test$|\.ci$").unwrap());
 /// `KEY=value` in an env file, the value unquoted.
-static ENV_LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*["']?([^"'#\s]*)"#).unwrap());
-static SECRET_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"SECRET|PASSWORD|PASSWD|PRIVATE|TOKEN|API_?KEY|_KEY$|ACCESS_KEY|CREDENTIAL|DATABASE_URL|DB_URL|CONNECTION_STRING|DSN$").unwrap());
-static PUBLIC_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:NEXT_PUBLIC|VITE|PUBLIC|EXPO_PUBLIC|REACT_APP|GATSBY|NUXT_PUBLIC)_|PUBLISHABLE|ANON|PUBLIC_KEY|CLIENT_ID|SITE_KEY").unwrap());
+static ENV_LINE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*["']?([^"'#\s]*)"#).unwrap());
+static SECRET_NAME: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"SECRET|PASSWORD|PASSWD|PRIVATE|TOKEN|API_?KEY|_KEY$|ACCESS_KEY|CREDENTIAL|DATABASE_URL|DB_URL|CONNECTION_STRING|DSN$")
+        .unwrap()
+});
+static PUBLIC_NAME: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?:NEXT_PUBLIC|VITE|PUBLIC|EXPO_PUBLIC|REACT_APP|GATSBY|NUXT_PUBLIC)_|PUBLISHABLE|ANON|PUBLIC_KEY|CLIENT_ID|SITE_KEY")
+        .unwrap()
+});
 /// Values that point at a secret store instead of holding the secret.
-static REFERENCE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:op|vault|sm|gcp|aws|azure|doppler|infisical)://|^\$|localhost|127\.0\.0\.1").unwrap());
+static REFERENCE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?:op|vault|sm|gcp|aws|azure|doppler|infisical)://|^\$|localhost|127\.0\.0\.1").unwrap());
 
 /// Whether a matched credential is a stand-in: placeholder words, or too few distinct characters to be random.
 fn placeholder(token: &str) -> bool {
@@ -161,16 +199,29 @@ fn env_secret(line: &str) -> Option<(String, String)> {
 
 const ADVICE: &str = "remove it and rotate it, because a secret that reached git (or a pushed branch) is leaked; read it from an environment variable or secret store. Do not just move it to another tracked file";
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Options {
+    /// Files new to git (every file, judging the whole repository), where a key file is reported.
+    fresh: HashSet<String>,
+    /// Files under the test paths, whose secrets are fixtures.
+    fakes: HashSet<String>,
+}
+
 pub fn run(request: &Request) -> Result<Answer, String> {
-    let get = |k: &str| -> HashSet<String> { serde_json::from_value(request.options[k].clone()).unwrap_or_default() };
-    let (fresh, fakes) = (get("fresh"), get("fakes"));
+    let Options { fresh, fakes } = request.options()?;
     let files: Vec<&String> = request.files.iter().filter(|f| !NEVER.is_match(f) && !FAKES.is_match(f) && !fakes.contains(*f)).collect();
     let mut findings: Vec<Finding> = files
         .par_iter()
         .flat_map_iter(|file| {
             let mut out = Vec::new();
             if KEY_FILE.is_match(file) && fresh.contains(*file) && !file.ends_with("debug.keystore") {
-                out.push(Finding { file: file.to_string(), line: 0, target: format!("secrets:{file}"), message: format!("{file} is a private key file: {ADVICE}") });
+                out.push(Finding {
+                    file: file.to_string(),
+                    line: 0,
+                    target: format!("secrets:{file}"),
+                    message: format!("{file} is a private key file: {ADVICE}"),
+                });
                 return out;
             }
             let Some(src) = text::read(&request.root, file) else { return out };
@@ -191,7 +242,12 @@ pub fn run(request: &Request) -> Result<Answer, String> {
                 }
                 for (kind, shown) in hits {
                     if seen.insert(kind.clone()) {
-                        out.push(Finding { file: file.to_string(), line: n, target: format!("secrets:{file}:{kind}"), message: format!("{file}:{n} {kind} ({shown}): {ADVICE}") });
+                        out.push(Finding {
+                            file: file.to_string(),
+                            line: n,
+                            target: format!("secrets:{file}:{kind}"),
+                            message: format!("{file}:{n} {kind} ({shown}): {ADVICE}"),
+                        });
                     }
                 }
             }
@@ -199,7 +255,7 @@ pub fn run(request: &Request) -> Result<Answer, String> {
         })
         .collect();
     findings.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
-    Ok(Answer { findings, summary: format!("{} files checked for credentials", files.len()), data: None })
+    Ok(Answer::new(findings, format!("{} files checked for credentials", files.len())))
 }
 
 #[cfg(test)]
@@ -219,7 +275,10 @@ mod tests {
         assert!(kinds(&format!("aws_access_key_id = {}", "AKIAIOSFODNN7EXAMPLE"), false).is_empty());
         assert!(kinds("token: ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", false).is_empty());
         assert_eq!(kinds(&format!("  token: {}{}", "ghp_", "aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5"), false), vec!["GitHub token"]);
-        assert_eq!(kinds(&format!("DATABASE_URL=postgres://admin:{}@db.prod.acme.io:5432/app", "S3cr3tPassw0rd"), false), vec!["database URL with a password"]);
+        assert_eq!(
+            kinds(&format!("DATABASE_URL=postgres://admin:{}@db.prod.acme.io:5432/app", "S3cr3tPassw0rd"), false),
+            vec!["database URL with a password"]
+        );
         assert!(kinds("DATABASE_URL=postgres://postgres:postgres1@localhost:5432/dev", false).is_empty());
         assert!(kinds("url: postgres://app:s3cretpass1@db:5432/app", false).is_empty(), "a compose service is local");
     }
@@ -238,8 +297,13 @@ mod tests {
             }
             out
         };
-        let jwt = |payload: &str| format!("SUPABASE_KEY={}.{}.{}", enc(r#"{"alg":"HS256","typ":"JWT"}"#), enc(payload), "Zm9vYmFyYmF6cXV4cXV1eHF1dXg");
-        assert_eq!(kinds(&jwt(r#"{"iss":"supabase","ref":"abcd","role":"service_role","iat":1700000000}"#), true), vec!["Supabase service-role key"]);
+        let jwt = |payload: &str| {
+            format!("SUPABASE_KEY={}.{}.{}", enc(r#"{"alg":"HS256","typ":"JWT"}"#), enc(payload), "Zm9vYmFyYmF6cXV4cXV1eHF1dXg")
+        };
+        assert_eq!(
+            kinds(&jwt(r#"{"iss":"supabase","ref":"abcd","role":"service_role","iat":1700000000}"#), true),
+            vec!["Supabase service-role key"]
+        );
         assert!(kinds(&jwt(r#"{"iss":"supabase","ref":"abcd","role":"anon","iat":1700000000}"#), true).is_empty());
         assert!(kinds(&jwt(r#"{"iss":"supabase-demo","role":"service_role","exp":1983812996}"#), true).is_empty());
     }

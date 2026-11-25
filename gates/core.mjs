@@ -61,13 +61,23 @@ export function productCodeGate(command, { cwd, base, testPaths }, everyFile = f
   const product = listed.filter((f) => JS_FILE.test(f) && !NOT_PRODUCT.test(f) && !matches(f, testPaths));
   const files = everyFile ? listed : product;
   const answer = runCore({ command, root: top, files, added: whole ? undefined : Object.fromEntries(added), prefix, ...(everyFile && { options: { product } }) });
-  const name = (/** @type {string} */ file) => posix.relative(prefix || ".", file);
-  return { findings: answer.findings.map((f) => ({ ...located(f, name), target: f.target.replace(f.file, name(f.file)), message: f.message.replaceAll(f.file, name(f.file)) })), summary: answer.summary };
+  return { findings: fromEngine(answer.findings, prefix), summary: answer.summary };
 }
 
 /**
- * Where an engine finding is, for `--json` and CI annotations: its file as the project names it, and its line.
- * @param {{ file: string, line: number }} finding @param {(file: string) => string} [name] from the engine's path
- * @returns {{ file?: string, line?: number }}
+ * The engine's findings as a gate reports them: files named as the project names them (relative to its folder,
+ * `prefix` of the repository), in the target and message too, and no line where the engine had none.
+ * @param {{ file: string, line: number, target: string, message: string }[]} findings @param {string} [prefix]
+ * @returns {import("./lib.mjs").Finding[]}
  */
-export const located = ({ file, line }, name = (file) => file) => ({ ...(file && { file: name(file) }), ...(line > 0 && { line }) });
+export function fromEngine(findings, prefix = "") {
+  // Without a prefix the engine's paths are already the project's; posix.relative would resolve them against this
+  // process's folder, and `../../package.json` read from near the filesystem root would lose a `..`.
+  const name = (/** @type {string} */ file) => (prefix ? posix.relative(prefix, file) : file);
+  return findings.map(({ file, line, target, message }) => ({
+    ...(file && { file: name(file) }),
+    ...(line > 0 && { line }),
+    target: file ? target.replace(file, name(file)) : target,
+    message: file ? message.replaceAll(file, name(file)) : message,
+  }));
+}

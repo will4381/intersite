@@ -1,5 +1,6 @@
 // @ts-check
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -7,7 +8,7 @@ import { join, relative } from "node:path";
 import { after, before, beforeEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { notesSession, preexistingSession, recorded, replayCli, startCollector, startTarget } from "./helpers.mjs";
+import { READ_TOKEN, notesSession, preexistingSession, recorded, replayCli, startCollector, startTarget } from "./helpers.mjs";
 
 const adapterFile = fileURLToPath(new URL("./adapter.mjs", import.meta.url));
 
@@ -49,6 +50,16 @@ test("a healthy run prints one ok line with counts and the seed it picked, and m
   const seed = run.stdout.trim().split("seed ")[1];
   assert.ok(collector.requests.some((r) => r.includes(`seed=${seed}`)), "the printed seed is the one sent");
   assert.deepEqual(collector.results, [{ project: "demo", release: "abc123", results: [{ session: "s-a", pass: true }, { session: "s-b", pass: true }] }]);
+});
+
+test("check --json lists every replay FAIL line among the replay stage's findings", async () => {
+  target.bugs.add("status");
+  const bin = fileURLToPath(new URL("../../bin/intersite.mjs", import.meta.url));
+  /** @type {string} */
+  const stdout = await new Promise((done) => execFile(process.execPath, [bin, "check", "--skip", "lint", "--json"], { cwd, env: { ...process.env, INTERSITE_READ_TOKEN: READ_TOKEN } }, (_error, out) => done(out)));
+  const stage = JSON.parse(stdout).stages.find((/** @type {{ name: string }} */ s) => s.name === "replay");
+  assert.ok(stage.findings.length >= 2, JSON.stringify(stage));
+  assert.ok(stage.findings.every((/** @type {{ message: string }} */ f) => f.message.startsWith("FAIL baseline ")), JSON.stringify(stage.findings));
 });
 
 test("a failing run exits 1 with one FAIL line, marks the failure, and its rerun command reproduces it", async () => {

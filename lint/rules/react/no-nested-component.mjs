@@ -4,7 +4,7 @@ import { defineRule } from "@oxlint/plugins";
 import { walk } from "../shared.mjs";
 import { functionName } from "./hooks.mjs";
 
-/** `() => …`, or one wrapped in `memo(…)`/`forwardRef(…)` (also as `React.memo`). @param {any} init */
+/** `() => …`, or one wrapped in `memo(…)`/`forwardRef(…)` (also as `React.memo`). @param {any} init @returns {boolean | undefined} */
 const componentValue = (init) =>
   init?.type.endsWith("FunctionExpression") || (init?.type === "CallExpression" && /^(?:memo|forwardRef)$/.test(init.callee.name ?? init.callee.property?.name) && componentValue(init.arguments[0]));
 
@@ -34,7 +34,7 @@ export const rule = defineRule({
   },
   createOnce(context) {
     return {
-      ":function"(fn) {
+      ":function"(/** @type {any} */ fn) {
         const outer = functionName(fn);
         if (!/^[A-Z]/.test(outer ?? "") || fn.body?.type !== "BlockStatement") return;
         const inner = declaredComponents(fn.body);

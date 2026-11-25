@@ -14,10 +14,15 @@ use crate::{Answer, Finding, Request};
 static KIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|/)(?:components/ui|ui/components|packages/ui)/").unwrap());
 static JS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.[cm]?[jt]sx?$").unwrap());
 /// Entry points whose shape a framework or script convention dictates.
-static ENTRY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:main|run|handler|GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|loader|action|generateMetadata|generateStaticParams|getServerSideProps|getStaticProps|getStaticPaths)$").unwrap());
-static SELECTORS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:query|from|table|collection|doc|withIndex|index|rpc|invoke|channel|emit|on|select|insert|update|upsert|delete|eq|neq|where|orderBy|field|getItem|setItem)$").unwrap());
+static ENTRY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?:main|run|handler|GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|loader|action|generateMetadata|generateStaticParams|getServerSideProps|getStaticProps|getStaticPaths)$").unwrap()
+});
+static SELECTORS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?:query|from|table|collection|doc|withIndex|index|rpc|invoke|channel|emit|on|select|insert|update|upsert|delete|eq|neq|where|orderBy|field|getItem|setItem)$").unwrap()
+});
 /// URLs, routes, module specifiers and SQL: a string that says which thing a unit talks to. Env names too.
-static ADDRESS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)^["'`]?(?:\.{0,2}/|[@~#]/|https?:|\s*(?:select|insert into|update|delete from|with)\s)"#).unwrap());
+static ADDRESS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?i)^["'`]?(?:\.{0,2}/|[@~#]/|https?:|\s*(?:select|insert into|update|delete from|with)\s)"#).unwrap());
 static ENV_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"^["'`][A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+["'`]$"#).unwrap());
 const K: usize = 7;
 // Jaccard over 7-gram sets. Tuned on 21 agent-built repositories: real regenerated helpers scored 60-100%, and below
@@ -60,7 +65,10 @@ fn big(u: &Unit) -> bool {
     if u.kind == "type" {
         return u.members.len() >= MIN_MEMBERS;
     }
-    if ENTRY.is_match(&u.name) || (u.kind == "class" && u.raw.iter().enumerate().any(|(i, t)| t == "extends" && u.raw.get(i + 1).is_some_and(|n| n.ends_with("Error")))) {
+    if ENTRY.is_match(&u.name)
+        || (u.kind == "class"
+            && u.raw.iter().enumerate().any(|(i, t)| t == "extends" && u.raw.get(i + 1).is_some_and(|n| n.ends_with("Error"))))
+    {
         return false;
     }
     u.norm.len() >= MIN_TOKENS
@@ -98,7 +106,20 @@ fn member_similarity(a: &[String], b: &[String]) -> f64 {
 
 /// Whether `other` may be reported as the original of added `e`.
 fn candidate(e: &Entry, other: &Entry) -> bool {
-    other.file != e.file && family(&other.unit) == family(&e.unit) && big(&other.unit) && !(KIT.is_match(&e.file) && KIT.is_match(&other.file))
+    other.file != e.file
+        && family(&other.unit) == family(&e.unit)
+        && big(&other.unit)
+        && !(KIT.is_match(&e.file) && KIT.is_match(&other.file))
+}
+
+/// One more shared feature for each of `units`; `hit` lists each unit the first time it shares one.
+fn tally(units: &[usize], shared: &mut [usize], hit: &mut Vec<usize>) {
+    for &i in units {
+        if shared[i] == 0 {
+            hit.push(i);
+        }
+        shared[i] += 1;
+    }
 }
 
 /// The most similar other unit for each added unit, as (added, other, similarity).
@@ -131,12 +152,7 @@ fn best_matches(fresh: &mut [Entry], all: &mut [Entry], ids: &mut HashMap<String
         let prints = other.prints.as_ref().unwrap();
         let mut hit = Vec::new();
         for h in prints {
-            for &i in index.get(h).into_iter().flatten() {
-                if shared[i] == 0 {
-                    hit.push(i);
-                }
-                shared[i] += 1;
-            }
+            tally(index.get(h).map_or(&[][..], |v| v.as_slice()), &mut shared, &mut hit);
         }
         for i in hit {
             let sim = shared[i] as f64 / (fresh[i].prints.as_ref().unwrap().len() + prints.len() - shared[i]) as f64;
@@ -170,8 +186,15 @@ fn best_matches(fresh: &mut [Entry], all: &mut [Entry], ids: &mut HashMap<String
 fn pasted(root: &str, a: (&str, u32, u32), b: (&str, u32, u32), n: usize, cache: &mut HashMap<String, Vec<String>>) -> bool {
     static TRIVIAL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[\[\](){};,]*$|^</[\w.]*>$").unwrap());
     let mut lines = |(file, from, to): (&str, u32, u32)| -> Vec<String> {
-        let all = cache.entry(file.to_string()).or_insert_with(|| std::fs::read_to_string(std::path::Path::new(root).join(file)).unwrap_or_default().split('\n').map(str::to_string).collect());
-        all.iter().skip(from.saturating_sub(1) as usize).take((to + 1).saturating_sub(from) as usize).map(|l| l.split_whitespace().collect::<Vec<_>>().join(" ")).filter(|l| !l.is_empty()).collect()
+        let all = cache
+            .entry(file.to_string())
+            .or_insert_with(|| aroma::read_source(root, file).unwrap_or_default().split('\n').map(str::to_string).collect());
+        all.iter()
+            .skip(from.saturating_sub(1) as usize)
+            .take((to + 1).saturating_sub(from) as usize)
+            .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|l| !l.is_empty())
+            .collect()
     };
     let la = lines(a);
     let lb = lines(b);
@@ -179,7 +202,8 @@ fn pasted(root: &str, a: (&str, u32, u32), b: (&str, u32, u32), n: usize, cache:
         return false;
     }
     let runs: HashSet<String> = (0..=lb.len() - n).map(|i| lb[i..i + n].join("\n")).collect();
-    (0..=la.len() - n).any(|i| runs.contains(&la[i..i + n].join("\n")) && la[i..i + n].iter().filter(|l| !TRIVIAL.is_match(l)).count() * 2 >= n)
+    (0..=la.len() - n)
+        .any(|i| runs.contains(&la[i..i + n].join("\n")) && la[i..i + n].iter().filter(|l| !TRIVIAL.is_match(l)).count() * 2 >= n)
 }
 
 /// Matched token pairs of the longest common subsequence of two normalised streams, or None when too large.
@@ -212,7 +236,11 @@ fn align(a: &[String], b: &[String]) -> Option<Vec<(usize, usize)>> {
 }
 
 fn raw(u: &Unit, k: i64) -> &str {
-    if k < 0 { "" } else { u.raw.get(k as usize).map_or("", String::as_str) }
+    if k < 0 {
+        ""
+    } else {
+        u.raw.get(k as usize).map_or("", String::as_str)
+    }
 }
 
 fn literal(kind: &str) -> bool {
@@ -352,7 +380,8 @@ fn apart(a: &Unit, b: &Unit) -> bool {
         if !differs {
             continue;
         }
-        if a.raw_kind[i] == "str" && (selector(a, i) || [&a.raw[i], &b.raw[j]].iter().any(|t| ADDRESS.is_match(t) || ENV_NAME.is_match(t))) {
+        if a.raw_kind[i] == "str" && (selector(a, i) || [&a.raw[i], &b.raw[j]].iter().any(|t| ADDRESS.is_match(t) || ENV_NAME.is_match(t)))
+        {
             return true;
         }
         changed += 1;
@@ -363,12 +392,26 @@ fn apart(a: &Unit, b: &Unit) -> bool {
     if a.kind == "component" {
         return changed > 0 && props == changed;
     }
-    let branches = a.norm.iter().enumerate().filter(|(k, t)| *t == "case" || (*t == "return" && a.norm.get(k + 1).is_some_and(|n| matches!(n.as_str(), "S" | "N" | "T" | "R")))).count();
+    let branches = a
+        .norm
+        .iter()
+        .enumerate()
+        .filter(|(k, t)| *t == "case" || (*t == "return" && a.norm.get(k + 1).is_some_and(|n| matches!(n.as_str(), "S" | "N" | "T" | "R"))))
+        .count();
     branches >= 3 && changed >= 3 && changed * 2 >= literals
 }
 
 fn message(e: &Entry, other: &Entry, sim: f64) -> String {
-    let where_ = format!("{}:{} {} is {}% the same as {}:{} {}", e.file, e.unit.line, e.unit.name, (sim * 100.0).floor() as i64, other.file, other.unit.line, other.unit.name);
+    let where_ = format!(
+        "{}:{} {} is {}% the same as {}:{} {}",
+        e.file,
+        e.unit.line,
+        e.unit.name,
+        (sim * 100.0).floor() as i64,
+        other.file,
+        other.unit.line,
+        other.unit.name
+    );
     if e.unit.kind == "type" {
         return format!("{where_}: use one type");
     }
@@ -388,7 +431,11 @@ fn message(e: &Entry, other: &Entry, sim: f64) -> String {
 
 /// Aroma's first phase for partial copies: for each changed function, the existing functions most of whose features
 /// it shares, found through an index of the changed functions' features.
-fn copy_candidates<'a>(all: &'a [Indexed], added: &HashMap<&str, HashSet<u32>>, whole: bool) -> Vec<Vec<(&'a Indexed, &'a Indexed, f64)>> {
+fn copy_candidates<'a>(
+    all: &'a [Indexed],
+    added: &HashMap<String, HashSet<u32>>,
+    whole: bool,
+) -> Vec<Vec<(&'a Indexed, &'a Indexed, f64)>> {
     let added_in = |u: &Indexed| added.get(u.file.as_str()).map_or(0, |lines| (u.line..=u.end_line).filter(|l| lines.contains(l)).count());
     let containers: Vec<&Indexed> = all.iter().filter(|u| u.size >= MIN_LEAVES && added_in(u) > 0).collect();
     let mut postings: HashMap<i32, Vec<usize>> = HashMap::new();
@@ -412,19 +459,15 @@ fn copy_candidates<'a>(all: &'a [Indexed], added: &HashMap<&str, HashSet<u32>>, 
                 common += 1;
                 continue;
             }
-            for &i in list {
-                if shared[i] == 0 {
-                    hit.push(i);
-                }
-                shared[i] += 1;
-            }
+            tally(list, &mut shared, &mut hit);
         }
         for i in hit {
             let a = containers[i];
             let share = shared[i] as f64 / (e.set.len().saturating_sub(common)).max(1) as f64;
             shared[i] = 0;
             let nested = a.file == e.file && a.line <= e.end_line && e.line <= a.end_line;
-            if share >= CONTAINED && !nested && e.size as f64 * BIGGER <= a.size as f64 && !(KIT.is_match(&a.file) && KIT.is_match(&e.file)) {
+            if share >= CONTAINED && !nested && e.size as f64 * BIGGER <= a.size as f64 && !(KIT.is_match(&a.file) && KIT.is_match(&e.file))
+            {
                 candidates[i].push((a, e, share));
             }
         }
@@ -441,7 +484,15 @@ struct Hit<'a> {
 }
 
 /// Added code holding most of an existing function's body: a helper pasted inside a function instead of called.
-fn partial_copies(request: &Request, files: &[String], added: &HashMap<&str, HashSet<u32>>, whole: bool, n: usize, reported: &HashSet<String>, cache: &mut HashMap<String, Vec<String>>) -> Vec<Finding> {
+fn partial_copies(
+    request: &Request,
+    files: &[String],
+    added: &HashMap<String, HashSet<u32>>,
+    whole: bool,
+    n: usize,
+    reported: &HashSet<String>,
+    cache: &mut HashMap<String, Vec<String>>,
+) -> Vec<Finding> {
     let cache_dir = std::path::Path::new(&request.root).join("node_modules/.cache/intersite");
     let js: Vec<String> = files.iter().filter(|f| JS.is_match(f)).cloned().collect();
     let all = aroma::index_units(&request.root, &js, &cache_dir);
@@ -449,7 +500,7 @@ fn partial_copies(request: &Request, files: &[String], added: &HashMap<&str, Has
     let mut parsed: HashMap<String, Vec<aroma::Unit>> = HashMap::new();
     let mut hits: Vec<Hit> = Vec::new();
     for list in &mut candidates {
-        list.sort_by(|x, y| y.2.partial_cmp(&x.2).unwrap_or(std::cmp::Ordering::Equal));
+        list.sort_by(|x, y| y.2.total_cmp(&x.2));
         for &(a, e, _) in list.iter().take(PER_FUNCTION) {
             if reported.contains(&format!("{}:{} {}:{}", a.file, a.name, e.file, e.name)) {
                 continue;
@@ -485,11 +536,17 @@ fn partial_copies(request: &Request, files: &[String], added: &HashMap<&str, Has
     let mut out = Vec::new();
     for (hi, h) in hits.iter().enumerate() {
         // A copy inside a nested function is reported there, not again for every function around it.
-        if hits.iter().enumerate().any(|(oi, o)| oi != hi && std::ptr::eq(o.e, h.e) && o.a.file == h.a.file && h.a.line <= o.a.line && o.a.end_line <= h.a.end_line) {
+        if hits.iter().enumerate().any(|(oi, o)| {
+            oi != hi && std::ptr::eq(o.e, h.e) && o.a.file == h.a.file && h.a.line <= o.a.line && o.a.end_line <= h.a.end_line
+        }) {
             continue;
         }
         // Judging the whole repository, two copies of each other are one finding, at the later file.
-        let mutual = hits.iter().enumerate().find(|(oi, o)| *oi != hi && overlaps(&o.a.file, o.from, o.to, &h.e.file, h.e.line, h.e.end_line) && overlaps(&h.a.file, h.from, h.to, &o.e.file, o.e.line, o.e.end_line));
+        let mutual = hits.iter().enumerate().find(|(oi, o)| {
+            *oi != hi
+                && overlaps(&o.a.file, o.from, o.to, &h.e.file, h.e.line, h.e.end_line)
+                && overlaps(&h.a.file, h.from, h.to, &o.e.file, o.e.line, o.e.end_line)
+        });
         if let Some((_, m)) = mutual {
             if format!("{}:{}", h.a.file, h.from) <= format!("{}:{}", m.a.file, m.from) {
                 continue;
@@ -500,16 +557,34 @@ fn partial_copies(request: &Request, files: &[String], added: &HashMap<&str, Has
             file: h.a.file.clone(),
             line: h.from,
             target: format!("{}:{}", h.a.file, h.a.name),
-            message: format!("{}:{}-{} in {} repeats {}:{} {} ({}% of it): {advice}", h.a.file, h.from, h.to, h.a.name, h.e.file, h.e.line, h.e.name, (h.share * 100.0).floor() as i64),
+            message: format!(
+                "{}:{}-{} in {} repeats {}:{} {} ({}% of it): {advice}",
+                h.a.file,
+                h.from,
+                h.to,
+                h.a.name,
+                h.e.file,
+                h.e.line,
+                h.e.name,
+                (h.share * 100.0).floor() as i64
+            ),
         });
     }
     out
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Options {
+    /// The duplicates gate's block size: a pair sharing that many pasted lines is its finding, not this one's.
+    lines: usize,
+    /// Judging the whole repository.
+    whole: bool,
+}
+
 pub fn run(request: &Request) -> Result<Answer, String> {
-    let n = request.options.get("lines").and_then(|v| v.as_u64()).unwrap_or(6) as usize;
-    let whole = request.options.get("whole").and_then(|v| v.as_bool()).unwrap_or(false);
-    let added = request.added_sets().unwrap_or_default();
+    let Options { lines: n, whole } = request.options()?;
+    let added = request.added.clone().unwrap_or_default();
     let files = &request.files;
     // Every unit in the repository's source files, and which ones the change added (its first line is an added line).
     let per_file: Vec<Vec<Entry>> = {
@@ -526,8 +601,14 @@ pub fn run(request: &Request) -> Result<Answer, String> {
             .collect()
     };
     let mut all: Vec<Entry> = per_file.into_iter().flatten().collect();
-    let fresh_idx: Vec<usize> = all.iter().enumerate().filter(|(_, e)| big(&e.unit) && !KIT.is_match(&e.file) && added.get(e.file.as_str()).is_some_and(|l| l.contains(&e.unit.line))).map(|(i, _)| i).collect();
-    let mut fresh: Vec<Entry> = fresh_idx.iter().map(|&i| Entry { file: all[i].file.clone(), unit: all[i].unit.clone(), prints: None }).collect();
+    let fresh_idx: Vec<usize> = all
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| big(&e.unit) && !KIT.is_match(&e.file) && added.get(e.file.as_str()).is_some_and(|l| l.contains(&e.unit.line)))
+        .map(|(i, _)| i)
+        .collect();
+    let mut fresh: Vec<Entry> =
+        fresh_idx.iter().map(|&i| Entry { file: all[i].file.clone(), unit: all[i].unit.clone(), prints: None }).collect();
     let mut ids = HashMap::new();
     let matches = best_matches(&mut fresh, &mut all, &mut ids);
     let mut seen = HashSet::new();
@@ -540,13 +621,28 @@ pub fn run(request: &Request) -> Result<Answer, String> {
         key.sort();
         let key = key.join(" ");
         let threshold = if e.unit.kind == "type" { TYPE_THRESHOLD } else { THRESHOLD };
-        if sim < threshold || seen.contains(&key) || pasted(&request.root, (&e.file, e.unit.line, e.unit.end_line), (&other.file, other.unit.line, other.unit.end_line), n, &mut cache) || apart(&e.unit, &other.unit) {
+        if sim < threshold
+            || seen.contains(&key)
+            || pasted(
+                &request.root,
+                (&e.file, e.unit.line, e.unit.end_line),
+                (&other.file, other.unit.line, other.unit.end_line),
+                n,
+                &mut cache,
+            )
+            || apart(&e.unit, &other.unit)
+        {
             continue;
         }
         seen.insert(key);
         reported.insert(format!("{}:{} {}:{}", e.file, e.unit.name, other.file, other.unit.name));
-        findings.push(Finding { file: e.file.clone(), line: e.unit.line, target: format!("{}:{}", e.file, e.unit.name), message: message(e, other, sim) });
+        findings.push(Finding {
+            file: e.file.clone(),
+            line: e.unit.line,
+            target: format!("{}:{}", e.file, e.unit.name),
+            message: message(e, other, sim),
+        });
     }
     findings.extend(partial_copies(request, files, &added, whole, n, &reported, &mut cache));
-    Ok(Answer { findings, summary: format!("{} added units checked against {} units", fresh.len(), all.len()), data: None })
+    Ok(Answer::new(findings, format!("{} added units checked against {} units", fresh.len(), all.len())))
 }

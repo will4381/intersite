@@ -49,6 +49,7 @@ test("every Swift rule reports its bad examples and none of its good ones", asyn
   }
   const { out } = await runLint(fixture(files), ["--json"]);
   const reported = new Set(parse(out).findings.map((f) => `${f.file} ${f.rule}`));
+  /** @type {string[]} */
   const problems = [];
   for (const r of swiftRules) {
     r.bad.forEach((code, i) => reported.has(`${r.id}/bad-${i}.swift swift/${r.id}`) || problems.push(`${r.id} missed bad: ${code}`));

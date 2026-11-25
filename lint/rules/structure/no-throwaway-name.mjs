@@ -57,7 +57,7 @@ export const rule = defineRule({
       VariableDeclarator: (node) => bind(node.id),
       FunctionDeclaration: (node) => check(node.id),
       ClassDeclaration: (node) => check(node.id),
-      "MethodDefinition, PropertyDefinition": (node) => !node.computed && check(node.key),
+      "MethodDefinition, PropertyDefinition": (/** @type {any} */ node) => !node.computed && check(node.key),
       // Only next to the name it replaced: alone, handleNew (the New button) or stripeV2 (Stripe's v2 API) are real names.
       "Program:exit"() {
         for (const names of declared.values()) {

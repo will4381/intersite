@@ -57,9 +57,7 @@ export const rule = defineRule({
   },
   createOnce(context) {
     return {
-      before() {
-        return !isScriptFile(context);
-      },
+      before: () => !isScriptFile(context),
       ForOfStatement(node) {
         const left = /** @type {any} */ (node.left);
         const right = /** @type {any} */ (node.right);

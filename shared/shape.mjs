@@ -14,6 +14,12 @@ export const DEFAULT_ID_PATTERN =
  * @typedef {string | Shape[] | { [key: string]: Shape }} Shape
  */
 
+/**
+ * A JSON object, or an object's shape: not null, not an array.
+ * @template T @param {T} value @returns {value is Exclude<T, unknown[]> & Record<string, any>}
+ */
+export const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+
 /** @param {unknown} value @returns {Shape} */
 export function shapeOf(value) {
   if (value === null || value === undefined) return "null";
@@ -46,20 +52,23 @@ export function shapeDiff(recorded, replayed, path = "") {
   if (typeof recorded === "string" || typeof replayed === "string") {
     return recorded === replayed ? undefined : `${at}: recorded ${kind(recorded)}, got ${kind(replayed)}`;
   }
-  if (Array.isArray(recorded) || Array.isArray(replayed)) {
-    if (!Array.isArray(recorded) || !Array.isArray(replayed)) return `${at}: recorded ${kind(recorded)}, got ${kind(replayed)}`;
-    if (recorded.length === 0 || replayed.length === 0) return undefined;
-    // Rows of one list vary with the data (an account with a parent beside one without); the list keeps its shape while
-    // at least one replayed row matches a recorded one. A change to every row (a field renamed or retyped) still fails.
-    const diffs = replayed.map((element) => recorded.map((candidate) => shapeDiff(candidate, element, `${path}/*`)));
-    return diffs.some((row) => row.includes(undefined)) ? undefined : diffs[0][0];
-  }
+  if (Array.isArray(recorded) || Array.isArray(replayed)) return listDiff(recorded, replayed, path);
   for (const key of Object.keys(recorded)) if (!(key in replayed)) return `${path}/${key}: missing`;
   for (const key of Object.keys(recorded)) {
     const diff = shapeDiff(recorded[key], replayed[key], `${path}/${key}`);
     if (diff) return diff;
   }
   return undefined;
+}
+
+/** shapeDiff of two shapes of which at least one is a list. @param {Shape} recorded @param {Shape} replayed @param {string} path */
+function listDiff(recorded, replayed, path) {
+  if (!Array.isArray(recorded) || !Array.isArray(replayed)) return `${path || "/"}: recorded ${kind(recorded)}, got ${kind(replayed)}`;
+  if (recorded.length === 0 || replayed.length === 0) return undefined;
+  // Rows of one list vary with the data (an account with a parent beside one without); the list keeps its shape while
+  // at least one replayed row matches a recorded one. A change to every row (a field renamed or retyped) still fails.
+  const diffs = replayed.map((element) => recorded.map((candidate) => shapeDiff(candidate, element, `${path}/*`)));
+  return diffs.some((row) => row.includes(undefined)) ? undefined : diffs[0][0];
 }
 
 /** @param {Shape} shape */

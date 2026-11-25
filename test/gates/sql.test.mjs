@@ -8,7 +8,7 @@ import { tempPostgres } from "./postgres.mjs";
 import { repo } from "./repo.mjs";
 
 /** @param {string} cwd */
-const check = async (cwd) => (await sql({ cwd, base: "base", testPaths: TEST_PATHS, testCmd: "", setup: "", duplicateLines: 6, mutants: 0, timeout: 0, entryPaths: [], artifacts: [] })).findings.map((f) => f.message);
+const check = async (cwd) => (await sql({ cwd, base: "base", testPaths: TEST_PATHS, testCmd: "", setup: "", duplicateLines: 6, mutants: 0, timeout: 0, entryPaths: [], artifacts: [], protected: [] })).findings.map((f) => f.message);
 
 const schema = "CREATE TABLE users (id uuid PRIMARY KEY, email text);\nCREATE TABLE orders (id uuid PRIMARY KEY, total int);\n";
 

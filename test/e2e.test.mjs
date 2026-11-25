@@ -45,7 +45,7 @@ test("capture → collector → replay: a real session is stored scrubbed, repla
   await serve("POST", "/notes/:id/comments", `/notes/${note.id}/comments`, { noteId: note.id, text: "c" });
   await serve("POST", "/notes/:id/archive", `/notes/${note.id}/archive`);
 
-  const reader = { url: collector.url, token: collector.readToken, project: "demo" };
+  const reader = { url: collector.url, token: collector.readToken, tokenEnv: "INTERSITE_READ_TOKEN", project: "demo" };
   const sessions = await listSessions(reader, []);
   assert.equal(sessions.length, 1);
   assert.deepEqual(sessions[0].cases.map((item) => `${item.request.method} ${item.request.route} ${item.response.status}`), [

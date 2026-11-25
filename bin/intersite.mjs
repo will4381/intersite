@@ -2,7 +2,10 @@
 // @ts-check
 import { relative, resolve } from "node:path";
 
+import { quietExperimentalWarnings } from "../gates/lib.mjs";
 import { projectRoot } from "../shared/config.mjs";
+
+quietExperimentalWarnings();
 
 const commands = ["init", "check", "lint", "gate", "search", "trace", "twins", "replay", "flow", "actions", "audit", "pin", "collector", "deploy", "hook", "stats"];
 const readsCases = ["check", "replay", "flow", "actions", "audit", "pin"];

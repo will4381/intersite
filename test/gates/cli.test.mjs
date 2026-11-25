@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
+import { DIR_GITIGNORE } from "../../shared/config.mjs";
 import { repo, run } from "./repo.mjs";
 
 test("an unknown gate exits 2 with one line", async () => {
@@ -62,9 +63,10 @@ test("outside a git repository a gate exits 2 with one line saying so", async ()
   assert.match(err[0], /^gate artifacts: not a git repository/);
 });
 
-test("installed packages and .intersite are never part of a change, even with no .gitignore", async () => {
+test("installed packages and Intersite's generated files are never part of a change, with no .gitignore of the project's", async () => {
   const r = repo({ "package.json": "{}", "src/a.mjs": "export const a = 1;\n" });
-  r.write({ "node_modules/dep/package.json": JSON.stringify({ name: "dep", dependencies: { x: "1" } }), "node_modules/dep/index.js": "module.exports = 1;\n", ".intersite/cases.db": "x" });
+  // .intersite/.gitignore is written by every command that writes into the folder.
+  r.write({ "node_modules/dep/package.json": JSON.stringify({ name: "dep", dependencies: { x: "1" } }), "node_modules/dep/index.js": "module.exports = 1;\n", ".intersite/.gitignore": DIR_GITIGNORE, ".intersite/cases.db": "x" });
   for (const name of ["new-deps", "unused", "artifacts"]) {
     const { code, out } = await run(r.cwd, [name]);
     assert.equal(code, 0, `${name}: ${out.join("\n")}`);
@@ -89,7 +91,7 @@ test("--all judges the whole repository, and --write records today's findings so
   assert.match(whole.out[0], /or record today's with `intersite gate duplicates --all --write`$/);
 
   const written = await run(r.cwd, ["duplicates", "--all", "--write"]);
-  assert.match(written.out[0], /^ok gate duplicates: \d+ findings recorded in intersite-gates-baseline\.json; only new ones fail from here$/);
+  assert.match(written.out[0], /^ok gate duplicates: \d+ findings recorded in \.intersite\/baseline\.json; only new ones fail from here$/);
   assert.equal((await run(r.cwd, ["duplicates", "--all"])).code, 0);
 
   r.write({ "src/c.mjs": twin("openTotals"), "src/use2.mjs": "import { openTotals } from './c.mjs';\nconsole.log(openTotals);\n" });

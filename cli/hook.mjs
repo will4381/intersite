@@ -9,7 +9,7 @@ import { dirname, relative } from "node:path";
 import { loadConfig, projectRoot } from "../shared/config.mjs";
 import { runCore } from "../gates/core.mjs";
 import { matches } from "../gates/lib.mjs";
-import { EVALUATOR, PRAGMA, tamperContext } from "../gates/tamper.mjs";
+import { EVALUATOR, PRAGMA, TAMPER_CONTEXT } from "../gates/tamper.mjs";
 
 /**
  * The file's text after the tool call, or undefined when the call would fail anyway (an old string not found).
@@ -37,7 +37,7 @@ export default async function hook(_argv, _context) {
     const root = projectRoot(dirname(file));
     const path = relative(root, file);
     const config = loadConfig(root);
-    const context = tamperContext(config);
+    const context = TAMPER_CONTEXT;
     const before = existsSync(file) ? readFileSync(file, "utf8") : "";
     const now = after(before, tool, input);
     if (now === undefined) return 0;

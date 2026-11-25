@@ -28,25 +28,8 @@ export default async function twins(argv, { cwd }) {
     return 2;
   }
   try {
-    if (!inGit(cwd)) throw new GateError("twins reads the repository's files through git: run `git init`");
-    const config = loadConfig(cwd);
-    const top = topLevel(cwd);
-    const prefix = projectPrefix(cwd);
-    const files = listFiles(top).filter((f) => JS_FILE.test(f) && !SKIP.test(f) && !NOT_PRODUCT.test(f) && !matches(f, config.gates.testPaths));
+    const { answer, prefix } = findTwins(cwd, values, positionals[0], min);
     const name = (/** @type {string} */ file) => posix.relative(prefix || ".", file);
-    /** @type {Record<string, unknown>} */
-    const options = { minScore: min, max: Number(values.max ?? 10) };
-    let added;
-    if (positionals[0]) {
-      const [, file, line] = /^(.*):(\d+)$/.exec(positionals[0]) ?? [];
-      if (!file) throw new GateError(`point at a line: ${usage}`);
-      options.at = { file: posix.normalize(prefix + file), line: Number(line) };
-    } else if (!values.all) {
-      const sha = resolveBase(cwd, values.base ?? config.gates.base);
-      const [patch] = sha === EMPTY_TREE ? [""] : workingDiff(cwd, [["-U0", "-M", sha]]);
-      added = Object.fromEntries([...addedLines(patch)].map(([file, lines]) => [prefix + file, [...lines]]));
-    }
-    const answer = runCore({ command: "twins", root: top, files, added, prefix, options });
     if (values.json) {
       console.log(JSON.stringify({ summary: answer.summary, findings: answer.findings, matches: answer.data?.matches ?? [] }));
       return 0;
@@ -65,3 +48,30 @@ export default async function twins(argv, { cwd }) {
     return 2;
   }
 }
+
+/**
+ * The engine's answer: the functions most like the one at `at`, every pair with `--all`, or else this change's
+ * functions against the rest.
+ * @param {string} cwd @param {{ all?: boolean, base?: string, max?: string }} values @param {string | undefined} at @param {number} min
+ */
+function findTwins(cwd, values, at, min) {
+  if (!inGit(cwd)) throw new GateError("twins reads the repository's files through git: run `git init`");
+  const config = loadConfig(cwd);
+  const top = topLevel(cwd);
+  const prefix = projectPrefix(cwd);
+  const files = listFiles(top).filter((f) => JS_FILE.test(f) && !SKIP.test(f) && !NOT_PRODUCT.test(f) && !matches(f, config.gates.testPaths));
+  /** @type {Record<string, unknown>} */
+  const options = { minScore: min, max: Number(values.max ?? 10) };
+  let added;
+  if (at) {
+    const [, file, line] = /^(.*):(\d+)$/.exec(at) ?? [];
+    if (!file) throw new GateError(`point at a line: ${usage}`);
+    options.at = { file: posix.normalize(prefix + file), line: Number(line) };
+  } else if (!values.all) {
+    const sha = resolveBase(cwd, values.base ?? config.gates.base);
+    const [patch] = sha === EMPTY_TREE ? [""] : workingDiff(cwd, [["-U0", "-M", sha]]);
+    added = Object.fromEntries([...addedLines(patch)].map(([file, lines]) => [prefix + file, [...lines]]));
+  }
+  return { answer: runCore({ command: "twins", root: top, files, added, prefix, options }), prefix };
+}
+

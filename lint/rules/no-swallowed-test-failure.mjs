@@ -60,7 +60,7 @@ export const rule = defineRule({
       CatchClause(node) {
         const test = tests.at(-1);
         if (!test || counted.test(context.sourceCode.getText(test)) || rethrows(node.body) || keeps(node)) return;
-        const tried = node.parent.block;
+        const tried = /** @type {import("@oxlint/plugins").ESTree.TryStatement} */ (node.parent).block;
         // `try { await run(); assert.fail('should throw'); } catch (e) { expect(e.code)... }`: if nothing throws, the
         // fail lands in the catch and its assertion fails on it.
         if (tried.body.some(fails) && asserts(node.body)) return;

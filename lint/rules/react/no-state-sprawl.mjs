@@ -22,7 +22,7 @@ export const rule = defineRule({
   },
   createOnce(context) {
     return {
-      ":function"(fn) {
+      ":function"(/** @type {any} */ fn) {
         const name = functionName(fn);
         if (!/^[A-Z]/.test(name ?? "") || fn.body?.type !== "BlockStatement") return;
         let count = 0;

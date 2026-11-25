@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { createCapture } from "../../capture/index.mjs";
 
 test("a collector that refuses or cannot be reached is reported once on stderr, without the token, and record still resolves", async () => {
+  /** @type {string[]} */
   const lines = [];
   const original = console.error;
   console.error = (line) => lines.push(line);

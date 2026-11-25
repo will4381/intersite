@@ -27,13 +27,13 @@ test("check runs every gate, names the ones that failed, and passes once the cha
   const target = `http://127.0.0.1:${/** @type {import("node:net").AddressInfo} */ (server.address()).port}`;
   r.write({ "intersite.json": JSON.stringify({ project: "t", gates: { base: "base" }, replay: { target } }) });
   r.commit("replay target");
-  r.write({ "PLAN.md": "# Plan\n\n1. do the thing\n", "intersite.adapter.mjs": "export async function signIn() { return {}; }\n" });
+  r.write({ "PLAN.md": "# Plan\n\n1. do the thing\n", ".intersite/adapter.mjs": "export async function signIn() { return {}; }\n" });
 
   const dirty = await check(r.cwd);
   assert.equal(dirty.code, 1, dirty.stderr);
   assert.equal(dirty.lines.at(-1), "FAIL check: artifacts");
   assert.ok(dirty.lines.some((line) => line.startsWith("PLAN.md")));
-  assert.ok(!dirty.lines.some((line) => line.startsWith("intersite.adapter.mjs")), "the adapter is loaded by convention, not unused");
+  assert.ok(!dirty.lines.some((line) => line.startsWith(".intersite/adapter.mjs")), "the adapter is loaded by convention, not unused");
 
   rmSync(join(r.cwd, "PLAN.md"));
   const clean = await check(r.cwd);
@@ -44,13 +44,13 @@ test("check runs every gate, names the ones that failed, and passes once the cha
 test("outside a git repository check skips the gates with one line and passes", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "intersite-check-nogit-"));
   const { code, lines } = await check(cwd);
-  assert.deepEqual(lines, ["skip gates: not a git repository (run `git init` to check changes)", "skip replay: no adapter at ./intersite.adapter.mjs", "ok check: no stages ran"]);
+  assert.deepEqual(lines, ["skip gates: not a git repository (run `git init` to check changes)", "skip replay: no adapter at ./.intersite/adapter.mjs", "ok check: no stages ran"]);
   assert.equal(code, 0);
 });
 
 test("check skips replay with one line when nothing answers at replay.target", async () => {
   const r = repo({ "src/a.mjs": "export const a = 1;\n" });
-  r.write({ "intersite.json": JSON.stringify({ project: "t", gates: { base: "base" }, replay: { target: "http://127.0.0.1:9" } }), "intersite.adapter.mjs": "export async function signIn() { return {}; }\n" });
+  r.write({ "intersite.json": JSON.stringify({ project: "t", gates: { base: "base" }, replay: { target: "http://127.0.0.1:9" } }), ".intersite/adapter.mjs": "export async function signIn() { return {}; }\n" });
   r.commit("adapter");
   const { code, lines } = await check(r.cwd);
   assert.deepEqual(lines, ["skip replay: nothing answers at http://127.0.0.1:9 (start the server to replay recorded sessions)", "ok check: test-integrity, duplicates, similar, new-deps, artifacts, unused, naming, style-drift, value-drift, sql, regex, decisions, renames, schema-drift, imports, boundaries, tamper, special-case, complexity, columns, routes, env, secrets, auth, structure"]);

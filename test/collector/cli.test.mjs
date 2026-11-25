@@ -105,7 +105,7 @@ test("a local collector that is not running is served from the project's databas
   assert.equal(run(local, ["pin", "c1"]).stderr, "case c1 not found in project p\n");
   const remote = run(project("https://collector.invalid"), ["actions"]);
   assert.equal(remote.status, 2);
-  assert.equal(remote.stderr, "collector at https://collector.invalid is not reachable: check collector.url in intersite.yml\n");
+  assert.equal(remote.stderr, "cannot reach the collector at https://collector.invalid; check collector.url in intersite.yml\n");
 });
 
 test("two commands at once each serve the case database themselves, so the first to finish does not cut off the other", async () => {
@@ -128,7 +128,8 @@ test("two commands at once each serve the case database themselves, so the first
   await new Promise((done) => closed.listen(0, "127.0.0.1", () => done(undefined)));
   const freePort = /** @type {import("node:net").AddressInfo} */ (closed.address()).port;
   await new Promise((done) => closed.close(done));
-  writeFileSync(join(cwd, "intersite.adapter.mjs"), "export async function signIn() { return {}; }\n");
+  mkdirSync(join(cwd, ".intersite"), { recursive: true });
+  writeFileSync(join(cwd, ".intersite/adapter.mjs"), "export async function signIn() { return {}; }\n");
   writeFileSync(join(cwd, "intersite.json"), JSON.stringify({
     project: "p",
     collector: { url: `http://127.0.0.1:${freePort}` },

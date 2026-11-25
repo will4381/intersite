@@ -173,7 +173,11 @@ impl Model<'_> {
 
     fn resolve_uncached(&self, file: &str, name: &str, depth: u32) -> Res {
         let Some(model) = self.files.get(file) else {
-            return if self.graph.modules.contains_key(file) && !NOT_DESIGN.is_match(file) { Res::File(file.to_string()) } else { Res::Unknown };
+            return if self.graph.modules.contains_key(file) && !NOT_DESIGN.is_match(file) {
+                Res::File(file.to_string())
+            } else {
+                Res::Unknown
+            };
         };
         if depth > 12 {
             return Res::Unknown;
@@ -276,7 +280,8 @@ pub fn run(request: &Request) -> Result<Answer, String> {
     let prefix = request.prefix.as_str();
     let mut paths: Vec<&String> = graph.modules.keys().filter(|f| !NOT_DESIGN.is_match(f)).collect();
     paths.sort();
-    let files: HashMap<String, FileModel> = paths.par_iter().filter_map(|f| Some(((*f).clone(), things::read(f, &text::read(&request.root, f)?)?))).collect();
+    let files: HashMap<String, FileModel> =
+        paths.par_iter().filter_map(|f| Some(((*f).clone(), things::read(f, &text::read(&request.root, f)?)?))).collect();
     let mut names: Vec<String> = files.keys().cloned().collect();
     names.sort();
     let mut things_list = vec![];
@@ -365,7 +370,8 @@ pub fn run(request: &Request) -> Result<Answer, String> {
         }
         for circle in circles(&uses) {
             let members: Vec<&String> = circle.iter().map(|&i| children[i]).collect();
-            let inside: Vec<(&(String, String), &Tie)> = ties.iter().filter(|((a, b), _)| members.contains(&a) && members.contains(&b)).collect();
+            let inside: Vec<(&(String, String), &Tie)> =
+                ties.iter().filter(|((a, b), _)| members.contains(&a) && members.contains(&b)).collect();
             // The tie to report: one only the change makes, else (judging everything) the cheapest to cut.
             let reported = match &request.added {
                 Some(_) => inside.iter().filter(|(_, t)| t.all_new).min_by_key(|(_, t)| (t.names.len(), t.site().clone())),
@@ -429,7 +435,11 @@ pub fn run(request: &Request) -> Result<Answer, String> {
     let mut tangles = 0;
     for members in circles(&knows) {
         let files: BTreeSet<&str> = members.iter().map(|&g| model.file_of(g)).collect();
-        let inside: Vec<(&(Gid, Gid), &Tie)> = members.iter().flat_map(|&a| knows[a].iter().filter(|b| members.binary_search(b).is_ok()).map(move |&b| (a, b))).filter_map(|k| thing_ties.get_key_value(&k)).collect();
+        let inside: Vec<(&(Gid, Gid), &Tie)> = members
+            .iter()
+            .flat_map(|&a| knows[a].iter().filter(|b| members.binary_search(b).is_ok()).map(move |&b| (a, b)))
+            .filter_map(|k| thing_ties.get_key_value(&k))
+            .collect();
         // A circle across files whose every tie is between modules side by side is module-cycle's.
         let crosses_into_parent = inside.iter().any(|((a, b), _)| {
             let (fa, fb) = (model.file_of(*a), model.file_of(*b));
@@ -446,7 +456,8 @@ pub fn run(request: &Request) -> Result<Answer, String> {
         tangles += 1;
         let (file, line) = tie.site();
         let label = |g: Gid| format!("{} ({})", model.thing(g).name, rel(prefix, model.file_of(g)));
-        let mut names: Vec<String> = members.iter().map(|&g| format!("{}:{}", rel(prefix, model.file_of(g)), model.thing(g).name)).collect();
+        let mut names: Vec<String> =
+            members.iter().map(|&g| format!("{}:{}", rel(prefix, model.file_of(g)), model.thing(g).name)).collect();
         names.sort();
         let message = if members.len() == 2 {
             format!(
@@ -473,7 +484,7 @@ pub fn run(request: &Request) -> Result<Answer, String> {
     }
 
     // field-leak: fields changed from outside their class.
-    let mut leaks: BTreeMap<(Gid, String), Vec<(String, u32, String)>> = BTreeMap::new();
+    let mut leaks: BTreeMap<(Gid, String), Vec<_>> = BTreeMap::new();
     for f in &ordered {
         for m in &model.files[*f].mutations {
             let Some(class) = model.class_of(f, &m.base) else { continue };
@@ -506,7 +517,15 @@ pub fn run(request: &Request) -> Result<Answer, String> {
         leak_count += 1;
         let name = &model.thing(*class).name;
         let files: BTreeSet<&str> = sites.iter().map(|(f, _, _)| f.as_str()).collect();
-        let more = if sites.len() > 1 { format!(" ({} places in {})", sites.len(), if files.len() == 1 { "1 file".to_string() } else { format!("{} files", files.len()) }) } else { String::new() };
+        let more = if sites.len() > 1 {
+            format!(
+                " ({} places in {})",
+                sites.len(),
+                if files.len() == 1 { "1 file".to_string() } else { format!("{} files", files.len()) }
+            )
+        } else {
+            String::new()
+        };
         findings.push(Finding {
             file: file.clone(),
             line: *line,
@@ -553,7 +572,8 @@ pub fn run(request: &Request) -> Result<Answer, String> {
     let mut uses_of: Vec<Vec<(Caller, String, u32)>> = vec![vec![]; functions.len()];
     // Per free function, the types and classes it knows.
     let mut known: HashMap<Gid, BTreeSet<Gid>> = HashMap::new();
-    let caller = |user: Option<Gid>, file: &str, scope: u32| user.map_or_else(|| Caller::Top(file.to_string(), scope), |g| Caller::Thing(g, scope));
+    let caller =
+        |user: Option<Gid>, file: &str, scope: u32| user.map_or_else(|| Caller::Top(file.to_string(), scope), |g| Caller::Thing(g, scope));
     for e in &edges {
         if let Res::Thing(g) = e.used {
             if let Some(&f) = free.get(&g) {
@@ -628,7 +648,13 @@ pub fn run(request: &Request) -> Result<Answer, String> {
         if shown.len() <= HELD_IN_MIND || hidden > shown.len() {
             continue;
         }
-        let Some(((who, list), used)) = by_caller.iter().filter(|(k, used)| used.len() > HELD_IN_MIND && !reported.contains(*k)).max_by_key(|(k, used)| (used.len(), std::cmp::Reverse((*k).clone()))) else { continue };
+        let Some(((who, list), used)) = by_caller
+            .iter()
+            .filter(|(k, used)| used.len() > HELD_IN_MIND && !reported.contains(*k))
+            .max_by_key(|(k, used)| (used.len(), std::cmp::Reverse((*k).clone())))
+        else {
+            continue;
+        };
         reported.insert((who.clone(), *list));
         // A change is judged when it adds one of those functions, or one of that caller's uses of them.
         let site = |f: usize| uses_of[f].iter().filter(|(c, _, _)| c == who).map(|(_, file, line)| (file.clone(), *line)).min();
@@ -672,12 +698,14 @@ pub fn run(request: &Request) -> Result<Answer, String> {
         f.message = format!("{}:{} {}", rel(prefix, &f.file), f.line, f.message);
     }
     findings.sort_by(|a, b| (&a.file, a.line, &a.target).cmp(&(&b.file, b.line, &b.target)));
-    let summary = format!(
-        "{} files, {} declarations: {cycles} module cycles, {tangles} tangles, {leak_count} field leaks, {shallow} shallow modules",
-        model.files.len(),
-        model.things.len()
-    );
-    Ok(Answer { findings, summary, data: None })
+    Ok(Answer::new(
+        findings,
+        format!(
+            "{} files, {} declarations: {cycles} module cycles, {tangles} tangles, {leak_count} field leaks, {shallow} shallow modules",
+            model.files.len(),
+            model.things.len()
+        ),
+    ))
 }
 
 #[cfg(test)]
@@ -690,7 +718,7 @@ mod tests {
             command: "structure".into(),
             root,
             files: files.iter().map(|(f, _)| f.to_string()).collect(),
-            added: added.map(|a| a.into_iter().map(|(f, l)| (f.to_string(), l)).collect()),
+            added: added.map(|a| a.into_iter().map(|(f, l)| (f.to_string(), l.into_iter().collect())).collect()),
             prefix: String::new(),
             database_url: None,
             options: serde_json::Value::Null,
@@ -708,9 +736,15 @@ mod tests {
     fn sibling_folders_that_use_each_other_are_a_module_cycle_and_a_folder_with_its_files_is_not() {
         let files = [
             ("src/lib/format.ts", "import { TONES } from '../components/badge';\nexport const format = (i: number) => TONES[i];\n"),
-            ("src/components/badge.ts", "import { format } from '../lib/format';\nexport const TONES = ['a', 'b'];\nexport const badge = () => format(0);\n"),
+            (
+                "src/components/badge.ts",
+                "import { format } from '../lib/format';\nexport const TONES = ['a', 'b'];\nexport const badge = () => format(0);\n",
+            ),
             ("src/views/card.ts", "import type { Row } from '../models/row';\nexport const card = (r: Row) => r;\n"),
-            ("src/models/row.ts", "import { card } from '../views/card';\nexport type Row = { id: number };\nexport const show = () => card({ id: 1 });\n"),
+            (
+                "src/models/row.ts",
+                "import { card } from '../views/card';\nexport type Row = { id: number };\nexport const show = () => card({ id: 1 });\n",
+            ),
             ("src/kinds/index.ts", "import { wait } from './epoll';\nexport const poll = () => wait();\nexport type Kind = 1;\n"),
             ("src/kinds/epoll.ts", "import { poll } from './index';\nexport const wait = (): unknown => poll;\n"),
         ];
@@ -746,9 +780,15 @@ mod tests {
             ("orm/save.ts", "import { User } from './user';\nexport const save = (u: User) => { u.name = 'x'; };\n"),
         ];
         let found = run_on(&files, None);
-        let leaks: Vec<(&str, u32, &str)> = found.iter().filter(|f| f.target.starts_with("field-leak")).map(|f| (f.file.as_str(), f.line, f.target.as_str())).collect();
+        let leaks: Vec<(&str, u32, &str)> =
+            found.iter().filter(|f| f.target.starts_with("field-leak")).map(|f| (f.file.as_str(), f.line, f.target.as_str())).collect();
         assert_eq!(leaks, [("sched/policy.ts", 3, "field-leak q/queue.ts:RunQueue.items")], "{found:?}");
-        assert!(found.iter().any(|f| f.message.starts_with("sched/policy.ts:3 `q.items.push` changes RunQueue's `items` from outside RunQueue (2 places in 1 file)")), "{found:?}");
+        assert!(
+            found.iter().any(|f| f
+                .message
+                .starts_with("sched/policy.ts:3 `q.items.push` changes RunQueue's `items` from outside RunQueue (2 places in 1 file)")),
+            "{found:?}"
+        );
     }
 
     #[test]
@@ -757,7 +797,8 @@ mod tests {
         for i in 0..9 {
             store.push_str(&format!("export function op{i}(s: Store) {{ s.rows.push({i}); return s.rows.length; }}\n"));
         }
-        let mut app = String::from("import { op0, op1, op2, op3, op4, op5, op6, op7, op8 } from '../store/ops';\nexport function main(s: any) {\n");
+        let mut app =
+            String::from("import { op0, op1, op2, op3, op4, op5, op6, op7, op8 } from '../store/ops';\nexport function main(s: any) {\n");
         for i in 0..9 {
             app.push_str(&format!("  op{i}(s);\n"));
         }
