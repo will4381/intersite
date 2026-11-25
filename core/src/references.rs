@@ -729,7 +729,8 @@ fn comments(file: &str, src: &str) -> Vec<Mention> {
         let mut at = 0;
         for line in src.split_inclusive('\n') {
             // A shebang is not prose, nor a setting left commented out (`# path = "./keys.json"`): its value is an example.
-            if let Some(c) = hash_comment(line).filter(|&c| !(at == 0 && line.starts_with("#!")) && !SETTING.is_match(&line[c + 1..])) {
+            let shebang = at == 0 && line.starts_with("#!");
+            if let Some(c) = hash_comment(line).filter(|&c| !shebang && !SETTING.is_match(&line[c + 1..])) {
                 prose(&line[c..], at + c, false, &mut out);
             }
             at += line.len();
