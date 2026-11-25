@@ -10,6 +10,7 @@ mod columns;
 mod complexity;
 mod contract;
 mod coverage;
+mod datamodel;
 mod decisions;
 mod drift;
 mod dup;
@@ -205,6 +206,7 @@ fn main() {
         "special-case" => special::run(&request),
         "hook" => tamper::hook(&request),
         "columns" => columns::run(&request),
+        "data-model" => datamodel::run(&request),
         "secrets" => secrets::run(&request),
         "auth" => auth::run(&request),
         "structure" => structure::run(&request),

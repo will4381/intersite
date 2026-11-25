@@ -8,6 +8,7 @@ import { artifacts } from "../gates/artifacts.mjs";
 import { complexity } from "../gates/complexity.mjs";
 import { coverage } from "../gates/coverage.mjs";
 import { columns } from "../gates/columns.mjs";
+import { dataModel } from "../gates/data-model.mjs";
 import { duplicates } from "../gates/duplicates.mjs";
 import { productCodeGate } from "../gates/core.mjs";
 import { graphGate, imports } from "../gates/imports.mjs";
@@ -36,7 +37,7 @@ export const gates = {
   decisions: (options) => productCodeGate("decisions", options),
   renames, "schema-drift": schemaDrift, "fails-on-base": failsOnBase, mutation, protected: protectedPaths, imports,
   boundaries: (options) => graphGate("boundaries", options, { entryPaths: options.entryPaths, layers: options.layers, features: options.features }),
-  tamper, "special-case": specialCase, complexity, coverage, columns,
+  tamper, "special-case": specialCase, complexity, coverage, columns, "data-model": dataModel,
   routes: (options) => productCodeGate("routes", options, true),
   env: (options) => productCodeGate("env", options, true),
   secrets,
@@ -45,7 +46,7 @@ export const gates = {
 };
 
 /** Gates that can judge the whole repository (`--all`): the rest only mean something for a change. */
-export const WHOLE = new Set(["duplicates", "similar", "unused", "naming", "style-drift", "value-drift", "sql", "regex", "decisions", "schema-drift", "artifacts", "imports", "boundaries", "complexity", "columns", "routes", "env", "secrets", "auth", "structure"]);
+export const WHOLE = new Set(["duplicates", "similar", "unused", "naming", "style-drift", "value-drift", "sql", "regex", "decisions", "schema-drift", "artifacts", "imports", "boundaries", "complexity", "columns", "routes", "env", "secrets", "auth", "structure", "data-model"]);
 
 const usage = `usage: intersite gate <${Object.keys(gates).join("|")}> [--base <ref>] [--json] [--cmd "<test command>"] [--paths <glob>]... [--setup "<command>"] [--max <n>] [--timeout <seconds>] [--all [--write]]`;
 
