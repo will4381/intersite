@@ -1,6 +1,19 @@
 // Types for TypeScript projects. The JSDoc in index.mjs is the source; test/types.test.mjs fails when an export is missing here.
 
-export interface UiEvent { page: string; outcome: "error" | "warn"; name?: string; errorName?: string }
+export interface UiStep {
+  n: number;
+  kind?: "nav" | "click" | "fill";
+  how?: "load" | "reload" | "push" | "pop";
+  name?: string;
+  nth?: number;
+  role?: string;
+  label?: string;
+  field?: string;
+  ms?: number;
+  env?: { rtt?: number; down?: number; cpu?: number; viewport?: [number, number]; mobile?: boolean };
+}
+/** `session` is the tab's ID, for `recordUi` when the app has no caller of its own. A step's outcome is "ok". */
+export interface UiEvent { page: string; outcome: "ok" | "error" | "warn"; session: string; name?: string; errorName?: string; step?: UiStep }
 type Target = Pick<EventTarget, "addEventListener" | "removeEventListener">;
 
 export interface TrackerOptions {
@@ -16,6 +29,8 @@ export interface TrackerOptions {
   page?: () => string;
   /** The project's `capture.idPattern`, so IDs in the page path are kept. */
   idPattern?: string;
+  /** Also report each page load, route change, click and filled field to `onUi`, and number the requests they cause. */
+  steps?: boolean;
   now?: () => number;
 }
 

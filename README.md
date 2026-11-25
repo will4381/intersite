@@ -144,6 +144,7 @@ finding, exit code 0, 1 or 2.
 | `intersite trace [--base <ref>] [--runs <n>] -- <command>` | Every function a test or script touched and where its time went; with `--base`, what got slower. `--server "<cmd>" --url <origin> --request "GET /x"` (or `--replay`) measures each request to a server, `--page <url>` a page in Chrome (web vitals, JS run, CPU) |
 | `intersite collector` | Runs the local collector (SQLite file in `.intersite/`) |
 | `intersite replay [--id] [--tag] [--action] [--sample] [--mode] [--verbose] [--metrics-out] [--metrics-base] [--snapshot-out] [--snapshot-base] [--openapi]` | Replays recorded sessions against a local server (experimental) |
+| `intersite flow [<file>...] [--concurrency] [--network] [--timing]` / `--from <caseId>` | Plays JSON browser flows in one shared browser, or writes a recorded session as one (experimental) |
 | `intersite actions` | Lists named user actions seen, with error counts |
 | `intersite audit` | Lists every value capture kept, per key, so personal data that slipped through is easy to spot |
 | `intersite pin <id>` | Keeps a recorded case from expiring |
@@ -320,9 +321,9 @@ Fastify, Next.js and browser-only (`wrapFetch`) forms are shown at the top of
   `race` (the same webhook or idempotent write sent twice at once must not fail or create two records), `cross-tenant` (another account must be refused, and its lists must not show records the session created; a record public by design goes in
   `replay.crossTenantIgnore` with a reason), `ui` (each named action's page loads cleanly in Chrome;
   reads are clicked, and writes fill the form from the recorded body, submit it and must get the recorded status).
-- **Cheaper `ui` runs:** `npx playwright install chromium-headless-shell` makes `ui` use Chrome Headless Shell instead
-  of full Chrome (about half the memory and a third of the browser CPU in our benchmark). Lightpanda
-  (`replay.browser: lightpanda`) is lighter still but has no real layout, so clicks and visibility checks may not
+- **Cheaper `ui` runs:** `ui` runs in Intersite's Rust browser engine (the one flows use) and needs no playwright-core.
+  `npx playwright install chromium-headless-shell` makes it use Chrome Headless Shell instead of full Chrome (about
+  half the memory and a third of the browser CPU in our benchmark). Lightpanda (`replay.browser: lightpanda`) is lighter still but has no real layout, so clicks and visibility checks may not
   work; it is unverified with Intersite.
 - **The adapter** (`intersite.adapter.mjs`) tells replay how to sign in a seeded test user and which seeded record
   stands in for an ID from production. Its optional `state()` returns what the app holds as JSON (counts, balances),
@@ -348,6 +349,36 @@ INTERSITE_UI_BROWSER=lightpanda node --test test/replay/ui.test.mjs
 
 If every test passes, `replay.browser: lightpanda` works with Intersite. Lightpanda has no layout, so the tests most
 likely to fail are the ones that click or fill forms; each failure names the step.
+
+### Flows: recorded sessions as browser tests
+
+Turn on steps in the tracker and send its events to capture, as for errors:
+
+```js
+const tracker = createTracker({ steps: true, onUi: (event) => navigator.sendBeacon("/api/ui-case", JSON.stringify(event)) });
+// on the server, for POST /api/ui-case:
+capture.recordUi({ ...event, session: user?.id ?? event.session, actor: { kind: user?.role ?? "anonymous" } });
+```
+
+The tracker then records each page load (with the user's connection and device in rough buckets), reload, route
+change, click and filled field, never what was typed or a list row's text. Turn a recorded session into a test and
+play it:
+
+```bash
+npx intersite flow --from <caseId>
+```
+
+```bash
+npx intersite flow --concurrency 8
+```
+
+A flow is a JSON file in `.intersite/flows/` with a handful of verbs (`open`, `reload`, `click`, `fill`, `see`, and
+`expect` on a click), so an agent can write one too; the format is in [CONTRACT.md](CONTRACT.md#flows-experimental).
+Flows share one headless browser, a context each, driven by Intersite's Rust engine over the DevTools protocol, so
+they need no playwright-core. By default a flow runs on the connection and device it was
+recorded on (`--network none` turns that off), and `--timing recorded` clicks when the user clicked, which is how a
+click before the page finished loading or a double submit on a slow phone comes back. If your API is on another
+origin, allow the `x-intersite-step` header in its CORS settings.
 
 ### Catching an endpoint that got slower
 

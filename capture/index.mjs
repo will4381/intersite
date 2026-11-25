@@ -36,7 +36,7 @@
  * }
  */
 
-import { ACTION_NAME, ERROR_NAME, OUTCOMES, UI_METHOD, caseProblem, reducePage as reduce } from "../shared/case.mjs";
+import { ACTION_NAME, ERROR_NAME, OUTCOMES, UI_METHOD, caseProblem, reducePage as reduce, stepProblem } from "../shared/case.mjs";
 import { DEFAULT_ID_PATTERN, idsOf, shapeOf } from "../shared/shape.mjs";
 import { createScrubber } from "./scrub.mjs";
 
@@ -96,6 +96,7 @@ const enc = new TextEncoder();
  * @property {string} [session]
  * @property {{ kind: string }} [actor]
  * @property {string} [release]
+ * @property {import("../shared/case.mjs").UiStep} [step]  A step the tracker reported (`steps: true`); dropped when malformed.
  */
 
 /** @typedef {{ route: string, actor?: { kind: string }, session?: string } | undefined} Described */
@@ -296,7 +297,13 @@ export function createCapture(options) {
       return typeof name === "string" && ACTION_NAME.test(name) && reduced ? { action: { name, page: reduced } } : {};
     }
 
-    /** @param {{ kind: string } | undefined} actor */
+    /** The tab's step that caused a request, from its `x-intersite-step` header. @param {string | null} value */
+function stepOf(value) {
+  const step = { n: Number(value) };
+  return value !== null && /^\d{1,7}$/.test(value) && !stepProblem(step, false) ? { step } : {};
+}
+
+/** @param {{ kind: string } | undefined} actor */
     const actorOf = (actor) => ({ kind: /^[a-z][a-z0-9_-]{0,31}$/.test(actor?.kind ?? "") ? /** @type {{ kind: string }} */ (actor).kind : "unknown" });
 
     /**
@@ -416,6 +423,7 @@ export function createCapture(options) {
           ...(status >= 400 && typeof code === "string" && /^[A-Za-z][A-Za-z0-9_.:-]{0,63}$/.test(code) ? { errorCode: code } : {}),
         },
         ...actionOf(header(request.headers, "x-intersite-action"), header(request.headers, "x-intersite-page")),
+        ...stepOf(header(request.headers, "x-intersite-step")),
       };
       if (caseProblem(item)) item.request.body = { $omitted: "too large" };
       return item;
@@ -479,7 +487,8 @@ export function createCapture(options) {
         const at = new Date(ms).toISOString();
         const id = crypto.randomUUID();
         const session = String(input.session ?? id);
-        if (!page || !OUTCOMES.includes(outcome) || !sampled(outcome, session, ms)) return resolved;
+        if (!page || !OUTCOMES.includes(outcome) || (input.step !== undefined && stepProblem(input.step, true))) return resolved;
+        if (!sampled(outcome, session, ms)) return resolved;
         const errorName = typeof input.errorName === "string" && ERROR_NAME.test(input.errorName) ? { errorCode: input.errorName } : {};
         return enqueue(
           base(session, at, outcome, id).then((fields) => ({
@@ -489,6 +498,7 @@ export function createCapture(options) {
             request: { method: UI_METHOD, route: page, path: page, query: {}, body: null },
             response: { status: 0, shape: "null", ids: {}, ...errorName },
             ...actionOf(input.name, page),
+            ...(input.step !== undefined && { step: input.step }),
           })),
         );
       } catch {

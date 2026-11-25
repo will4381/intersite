@@ -83,20 +83,21 @@ export function answers(url) {
  * Replay each session against `target` in every mode and compare with what was recorded.
  * `concurrency` sessions run at once, except when the adapter has `reset` (shared state), when they run one at a time.
  * @param {{ sessions: { session: string, cases: Case[] }[], target: string, adapter: Adapter, modes: Mode[], idPattern: string,
- *   fetch?: typeof fetch, shiftDates?: boolean, now?: number, concurrency?: number, uiTarget?: string, headed?: boolean, cwd?: string,
+ *   fetch?: typeof fetch, shiftDates?: boolean, now?: number, concurrency?: number, uiTarget?: string, headed?: boolean,
  *   browser?: string, browserUrl?: string, snapshots?: boolean, crossTenantIgnore?: Accepted[] }} options
  * @returns {Promise<SessionResult[]>}
  */
 export async function replaySessions({
   sessions, target, adapter, modes, idPattern, fetch = globalThis.fetch,
-  shiftDates = true, now = Date.now(), concurrency = 1, uiTarget = "", headed = false, cwd = process.cwd(), browser, browserUrl, snapshots = false, crossTenantIgnore = [],
+  shiftDates = true, now = Date.now(), concurrency = 1, uiTarget = "", headed = false, browser, browserUrl, snapshots = false, crossTenantIgnore = [],
 }) {
   /** @type {Context} */
   const context = {
     target: target.replace(/\/$/, ""), adapter, pattern: new RegExp(idPattern), fetch, startedAt: shiftDates ? now : undefined, snapshots, contract: modes.includes("contract"),
     crossTenantIgnore,
   };
-  const ui = modes.includes("ui") ? await (await import("./ui.mjs")).openBrowser({ uiTarget, headed, cwd, browser, browserUrl }) : undefined;
+  const workers = adapter.reset ? 1 : Math.max(1, Math.min(concurrency, sessions.length));
+  const ui = modes.includes("ui") ? await (await import("./ui.mjs")).openBrowser({ uiTarget, target: context.target, headed, browser, browserUrl, concurrency: workers }) : undefined;
   try {
     /** @type {SessionResult[]} */
     const results = Array(sessions.length);
@@ -104,7 +105,6 @@ export async function replaySessions({
     const worker = async () => {
       for (let index = next++; index < sessions.length; index = next++) results[index] = await replaySession(sessions[index], modes, context, ui);
     };
-    const workers = adapter.reset ? 1 : Math.max(1, Math.min(concurrency, sessions.length));
     await Promise.all(Array.from({ length: workers }, worker));
     return results;
   } finally {

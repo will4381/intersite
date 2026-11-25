@@ -72,5 +72,5 @@ test("in Chrome, a click inside a named element stamps the request, and a thrown
   const reported = page.waitForResponse((response) => response.url().endsWith("/ui"));
   await page.click("#boom");
   await reported;
-  assert.deepEqual(ui, [{ page: "/app/users/_", outcome: "error", name: "note.delete", errorName: "TypeError" }]);
+  assert.deepEqual(ui, [{ page: "/app/users/_", outcome: "error", session: api[0]["x-intersite-session"], name: "note.delete", errorName: "TypeError" }]);
 });

@@ -30,7 +30,7 @@ What every part of this package agrees on. Change it here first, then in code.
 - One runtime dependency, `yaml`, used only where config and rule files are read (never in `capture/` or `track/`).
   `oxlint` and `@oxlint/plugins` are optional peers that `lint` needs (a package that only imports
   `intersite/capture` or `intersite/track` installs neither); `playwright-core` is an optional peer used only
-  by the `ui` replay mode and `trace --page`; `wrangler` is a dev dependency, and `oxc-parser` one only for search's recall test.
+  by `trace --page` (the `ui` replay mode and flows drive the browser from intersite-core); `wrangler` is a dev dependency, and `oxc-parser` one only for search's recall test.
 - `capture/`, `track/`, `shared/case.mjs` and `shared/shape.mjs` use only web-standard APIs.
 - Tests are `node --test` files under `test/<part>/`. Test behavior through the part's public entry, not its internals.
 - A deliberate shortcut gets a `// ponytail: <ceiling>, <upgrade path>` comment.
@@ -99,6 +99,29 @@ markup can change freely as long as the element keeps its name.
   `request.route` and `request.path` are the page, `response.status` is 0, and `response.errorCode` is the error's
   name (never its message).
 
+### Steps
+
+With `createTracker({ steps: true })` the tracker also reports what the user does, so a session can become a flow.
+Each step goes to `onUi` as `{ page, outcome: "ok", session, step }`, and the app passes it to capture's `recordUi`
+like an error; capture samples it with the session and stores it as a UI case with `case.step` (`UiStep` and
+`stepProblem` in `shared/case.mjs`). `step.n` counts the tab's steps in order, kept in `sessionStorage` across reloads.
+
+- `nav`: `how` is `load`, `reload`, `pop` (back or forward) or `push` (the app changed the route; noticed at the next
+  step or on back/forward). A loaded page's nav carries `env`, the connection and device in buckets: `rtt` (ms, one
+  of `RTT_MS`, rounded up), `down` (Mbit/s, one of `DOWN_MBPS`, rounded down), `cpu` (a slowdown of 1, 2, 4 or 6,
+  guessed from cores and memory), `viewport` ([width, height] to 10 px) and `mobile` (a coarse pointer). Latency and
+  bandwidth come from Navigation and Resource Timing, else `navigator.connection`.
+- `click`: `name` is the nearest `data-intersite` around the element; `nth` the list item (`LIST_ITEM`: `li`, `tr`,
+  `listitem`, `row`, `option`) clicked inside it, by position; `role` and `label` the clickable element inside those
+  when it has no name of its own. A label keeps a sentence-case first word and lowercase words; every other word is
+  `_` (`reduceLabel`), and a list item's text is never kept. Clicks on form fields are not steps.
+- `fill`: `field` is the control's `name` or `id`, and `name` the named element around it. What was typed is never
+  sent; a flow takes the value from the scrubbed body of the write that followed.
+- Every step but a nav has `ms`, the time since the page loaded or the route changed, to 100 ms.
+
+Requests carry `x-intersite-step`, the tab's latest step number; capture stores it as `case.step = { n }`, linking
+each request to the step that caused it. A malformed step is dropped by the tracker, capture and the collector.
+
 ### Headers
 
 | Header | Set by | Meaning |
@@ -106,6 +129,7 @@ markup can change freely as long as the element keeps its name.
 | `x-intersite-action` | `track/` | Action name for this request |
 | `x-intersite-page` | `track/` | Page path, already reduced as above |
 | `x-intersite-session` | `track/` | Random per-tab ID; capture uses it as the session when the caller gives none |
+| `x-intersite-step` | `track/` with `steps: true` | The tab's latest step number; stored as `case.step.n` |
 | `x-intersite-replay` | replay | The case ID being replayed. Capture skips these; a server may use it to stub outside calls |
 | `x-intersite-time` | replay | The case's recorded `at`. A server may pin its clock to it |
 
@@ -354,8 +378,9 @@ UI cases are skipped by every mode except `ui`.
   in the same run it reads the baseline answers instead of sending again. `--openapi <file>` (JSON, with
   `--mode contract` only) lints a documented contract with no server and no traffic. `check` in an ignore entry is
   one of casing, types, envelope, errors, status, values, exposure, size, requests, routes.
-- `ui`: needs `replay.uiTarget` and `playwright-core`. It drives Chrome Headless Shell when Playwright has it installed,
-  else the installed Chrome; with `replay.browser: lightpanda` it starts `lightpanda serve` from PATH on a local port
+- `ui`: needs `replay.uiTarget`. It runs in the flows' engine in intersite-core (see "Flows"), one browser context
+  per session, with Node sending each session's actions already signed in, its IDs resolved and its dates shifted. It
+  drives Chrome Headless Shell when Playwright has installed one, else the installed Chrome; with `replay.browser: lightpanda` it starts `lightpanda serve` from PATH on a local port
   (exit 2 with an install line when it is missing) and runs one session at a time; with `replay.browserUrl` it connects
   over CDP to that running browser and leaves it running. Images are answered with a 1x1 GIF and fonts and media with
   an empty body, never fetched; stylesheets load, because the visibility checks need layout. For each distinct
@@ -399,3 +424,47 @@ by position, or by `id` when every row has a distinct one, so a reorder is one d
 bodies from the local server: keep it under `.intersite/`. Two timestamps whose offsets from their own run's
 `startedAt` differ by under a minute are the same value, so `now + 7 days` matches across runs and 7 days becoming
 14 does not. A file without `startedAt` still loads; its timestamps are compared as written.
+
+## Flows (experimental)
+
+A flow is a browser test as JSON (`Flow` in `replay/flow.mjs`, checked by `flowProblem`), kept in
+`.intersite/flows/`. `intersite flow --from <caseId> [--out <file>]` writes the session up to that case as one
+(`toFlow`); agents and people write them by hand too.
+
+```json
+{ "as": "member", "env": { "rtt": 600, "down": 1.5, "cpu": 4, "viewport": [390, 844], "mobile": true },
+  "steps": [
+    { "open": "/ads" },
+    { "click": { "in": "nav", "role": "link", "label": "Paid ads" } },
+    { "click": { "in": "ads.list", "nth": 0 } },
+    { "click": "ad.new" },
+    { "reload": true },
+    { "fill": { "headline": "Spring sale", "budget": 50 }, "at": 2300 },
+    { "click": { "in": "ad.form", "role": "button", "label": "Save" }, "expect": "POST /api/ads 201", "ids": { "/ad/id": "ad_123" } },
+    { "see": "Spring sale" }
+  ] }
+```
+
+Each step has exactly one verb. `open` goes to a path on `replay.uiTarget` (IDs remapped as replay does; after a
+click that already navigated there, it does not load the page again). `reload` reloads. `click` takes a
+`data-intersite` name or `{ in, nth, role, label }`: inside the named element, its nth list item, then the element
+with that role and accessible name (`_` matches one word). `fill` sets each named control (`name` or `id`) as the
+`ui` mode does. `see` waits up to 5 s for visible text. A click's `expect` (`"METHOD /route status"`) waits for that
+request's answer and fails on another status (a recorded 5xx passes once the answer is below 500); `ids` maps the
+JSON pointers of IDs it created to the recorded IDs, for later steps. `at` is the step's recorded time after its page
+loaded. `as` signs in through the adapter.
+
+`intersite flow [<file>...]` plays every flow (default `.intersite/flows/*.json`) in intersite-core
+(`core/src/flow.rs`), which drives one browser over the DevTools protocol with no automation library: Chrome
+Headless Shell when Playwright installed one, else the installed Chrome (or `replay.browserUrl`, or Lightpanda). Each
+flow gets its own browser context. The engine reads its options from the first stdin line, prints `{"ready": true}`
+once the browser is up, and takes each job as a `{"run": <i>, "flow": {...}}` line until stdin closes. Before a job
+sent without `prepared`, it prints `{"prepare": <i>}` and Node answers with the adapter's reset, sign-in and resolved
+IDs, since the adapter is the project's JavaScript. Flows run
+`--concurrency <n>` at a time (one when the adapter has `reset`, which runs before each flow, or with Lightpanda). A flow stops at its first failed or skipped step, and fails on a page error, a console error or a 5xx
+from the app or API, at that step or after the last. `--network recorded` (the default) plays a flow with `env` on
+that connection and device: Chrome's network and CPU throttling, the viewport, touch and mobile, and each write's
+answer delayed by `rtt`; `none` plays it unthrottled. `--timing fast` (the default) acts as soon as each element is
+there; `recorded` acts at each step's `at` after the page commits, as the user did. Output: one line per failed or
+skipped flow, `FAIL flow <file> step <n> <verb>: <reason>; rerun: npx intersite flow <file>`, then
+`ok flow: <passed> of <n> flows passed`; exit 1 when one failed. Non-local targets need `--allow-remote`.

@@ -53,6 +53,8 @@ export interface UiInput {
   session?: string;
   actor?: { kind: string };
   release?: string;
+  /** A step the tracker reported (`steps: true`); the event is dropped when it is malformed. */
+  step?: import("../track/index.mjs").UiStep;
 }
 
 export type Described = { route: string; actor?: { kind: string }; session?: string } | undefined;

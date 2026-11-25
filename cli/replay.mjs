@@ -123,7 +123,7 @@ async function main(argv, cwd, quiet) {
   const startedAt = Date.now();
   const results = await replaySessions({
     sessions, target, adapter, modes, idPattern: config.capture.idPattern, shiftDates: config.replay.shiftDates,
-    concurrency, uiTarget: config.replay.uiTarget, headed: flags.headed, cwd, browser: config.replay.browser, browserUrl: config.replay.browserUrl,
+    concurrency, uiTarget: config.replay.uiTarget, headed: flags.headed, browser: config.replay.browser, browserUrl: config.replay.browserUrl,
     snapshots: Boolean(files.snapshot || flags["snapshot-out"]), crossTenantIgnore,
   });
 

@@ -103,17 +103,20 @@ test("the action expires after 5 seconds, and an invalid name is ignored", async
 });
 
 test("errors and warnings reach onUi with the error name only", () => {
-  const { window, tracker, ui } = setup();
+  const { window, tracker, ui, stored } = setup();
   tracker.action("program.save");
   window.dispatch("error", { error: new TypeError("Cannot read alice@example.com") });
   window.dispatch("unhandledrejection", { reason: "a string with no name" });
   tracker.warn("cart.empty");
   tracker.warn("Free text from the page");
+  // The tab's session goes along, for an app with no signed-in caller to pass to recordUi.
+  const session = stored.get("intersite-session");
+  assert.match(String(session), /^[0-9a-f]{32}$/);
   assert.deepEqual(ui, [
-    { page: "/programs/prog_8fK2abQ9/_", outcome: "error", name: "program.save", errorName: "TypeError" },
-    { page: "/programs/prog_8fK2abQ9/_", outcome: "error", name: "program.save" },
-    { page: "/programs/prog_8fK2abQ9/_", outcome: "warn", name: "cart.empty" },
-    { page: "/programs/prog_8fK2abQ9/_", outcome: "warn" },
+    { page: "/programs/prog_8fK2abQ9/_", outcome: "error", session, name: "program.save", errorName: "TypeError" },
+    { page: "/programs/prog_8fK2abQ9/_", outcome: "error", session, name: "program.save" },
+    { page: "/programs/prog_8fK2abQ9/_", outcome: "warn", session, name: "cart.empty" },
+    { page: "/programs/prog_8fK2abQ9/_", outcome: "warn", session },
   ]);
   assert.ok(!JSON.stringify(ui).includes("Cannot read"));
 });

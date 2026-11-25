@@ -83,6 +83,15 @@ npx intersite gate duplicates
 npx intersite replay --action program.save --verbose
 ```
 
+```bash
+npx intersite flow --concurrency 4
+```
+
+After a UI change, play the browser flows in `.intersite/flows/`. A journey that broke in production becomes one with
+`npx intersite flow --from <ref>`. To add one by hand, write `{ "steps": [...] }` with steps such as
+`{ "open": "/ads/new" }`, `{ "fill": { "title": "Spring" } }`, `{ "click": "ad.save", "expect": "POST /api/ads 201" }`
+and `{ "see": "Spring" }`; a click names a `data-intersite` value.
+
 `npx intersite lint --rules` lists the rules that apply here. `npx intersite check --skip replay` skips the replay.
 
 ## Related skills

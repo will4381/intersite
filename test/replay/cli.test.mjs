@@ -1,6 +1,6 @@
 // @ts-check
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
@@ -242,8 +242,6 @@ document.getElementById("read").onclick = () => fetch("/api" + location.pathname
   }]);
   try {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), "intersite-replay-ui-")));
-    mkdirSync(join(dir, "node_modules"));
-    symlinkSync(fileURLToPath(new URL("../../node_modules/playwright-core", import.meta.url)), join(dir, "node_modules/playwright-core"));
     writeFileSync(join(dir, "intersite.json"), JSON.stringify({
       project: "demo",
       collector: { url: uiCollector.url },
@@ -258,7 +256,7 @@ document.getElementById("read").onclick = () => fetch("/api" + location.pathname
     broken = true;
     const run = await cli(["--mode", "ui", "--seed", "1"], dir);
     assert.equal(run.code, 1, run.stderr);
-    const fail = "FAIL ui u-1 note.open /notes/note_prod99: page error: boom on load | rerun: intersite replay --id u-1 --mode ui";
+    const fail = "FAIL ui u-1 note.open /notes/note_prod99: page error: Error: boom on load | rerun: intersite replay --id u-1 --mode ui";
     assert.deepEqual(run.stdout.trim().split("\n"), ["replay: 1 sessions; steps: 0 passed, 1 failed, 0 skipped; seed 1", fail]);
 
     const rerun = await cli(fail.split("rerun: intersite replay ")[1].split(" "), dir);
@@ -278,8 +276,6 @@ test("--mode ui without replay.uiTarget exits 2 with one line", async () => {
 
 test("--mode ui with replay.browser lightpanda and no lightpanda on PATH exits 2 with one line saying how to install it", async () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "intersite-replay-lightpanda-")));
-  mkdirSync(join(dir, "node_modules"));
-  symlinkSync(fileURLToPath(new URL("../../node_modules/playwright-core", import.meta.url)), join(dir, "node_modules/playwright-core"));
   writeFileSync(join(dir, "intersite.json"), JSON.stringify({
     project: "demo",
     collector: { url: collector.url },

@@ -16,7 +16,6 @@ import { DEFAULT_ID_PATTERN } from "../../shared/shape.mjs";
 import * as adapter from "./adapter.mjs";
 import { recorded, startTarget } from "./helpers.mjs";
 
-const root = fileURLToPath(new URL("../..", import.meta.url));
 const macChrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const chromePath = existsSync(macChrome) ? macChrome
   : ["google-chrome", "chrome"].map((name) => spawnSync("which", [name], { encoding: "utf8" }).stdout.trim()).find(Boolean) ?? "";
@@ -119,13 +118,13 @@ const session = [
 ];
 
 /**
- * @param {string} [cwd] @param {import("../../shared/case.mjs").Case[]} [cases]
+ * @param {import("../../shared/case.mjs").Case[]} [cases]
  * @param {{ browser?: string, browserUrl?: string }} [engine] the engine under test unless a test picks its own
  */
-async function replayUi(cwd = root, cases = session, signIn = adapter.signIn, engine = { browser: engineUnderTest }) {
+async function replayUi(cases = session, signIn = adapter.signIn, engine = { browser: engineUnderTest }) {
   assert.ok(engine.browser !== "chrome" || hasChrome, "the ui replay tests need Google Chrome installed (https://www.google.com/chrome/)");
   const [result] = await replaySessions({
-    sessions: [{ session: "u", cases }], target: target.url, uiTarget: appUrl, adapter: { ...adapter, signIn }, modes: ["ui"], idPattern: DEFAULT_ID_PATTERN, cwd, ...engine,
+    sessions: [{ session: "u", cases }], target: target.url, uiTarget: appUrl, adapter: { ...adapter, signIn }, modes: ["ui"], idPattern: DEFAULT_ID_PATTERN, ...engine,
   });
   return result.steps.map((step) => `${step.caseId} ${step.method} ${step.route} ${step.result}${step.reason ? `: ${step.reason}` : ""}${step.checked ? ` (${step.checked})` : ""}`);
 }
@@ -150,7 +149,7 @@ test("an element that lost its data-intersite name is reported as not found", as
 
 test("a page that throws on load is reported", async () => {
   mode = "throws";
-  assert.equal((await replayUi())[0], "u-1 note.open /notes/note_prod99 failed: page error: boom on load");
+  assert.equal((await replayUi())[0], "u-1 note.open /notes/note_prod99 failed: page error: Error: boom on load");
 });
 
 test("a click whose handler logs console.error or gets a 500 is reported", async () => {
@@ -163,11 +162,6 @@ test("a click whose handler logs console.error or gets a 500 is reported", async
   assert.equal((await replayUi())[0], "u-1 note.open /notes/note_prod99 failed: 500 from GET /api/notes/note_seed01");
 });
 
-test("without playwright-core in the project, ui mode says what to install", async () => {
-  const empty = realpathSync(mkdtempSync(join(tmpdir(), "intersite-ui-")));
-  await assert.rejects(replayUi(empty), { message: "ui mode needs playwright-core in the project: npm install --save-dev playwright-core" });
-});
-
 /** Fill in the new-note form and save it, then open the note it created. */
 const writeSession = [
   { ...recorded({ id: "w-1", session: "w", seq: 1, method: "POST", route: "/notes", path: "/notes", body: { text: "from prod", color: "blue", pinned: true }, status: 201, json: { note: { id: "note_prodW1", text: "from prod" } } }), action: { name: "note.add", page: "/new" } },
@@ -175,7 +169,7 @@ const writeSession = [
 ];
 
 test("a write action's form is filled from the recorded body and submitted; a later read opens the record it created", async () => {
-  assert.deepEqual(await replayUi(root, writeSession), ["w-1 note.add /new passed", "w-2 note.open /notes/note_prodW1 passed"]);
+  assert.deepEqual(await replayUi(writeSession), ["w-1 note.add /new passed", "w-2 note.open /notes/note_prodW1 passed"]);
   const posts = target.log.filter((entry) => entry.method === "POST");
   assert.deepEqual(posts.map((entry) => entry.body), [{ text: "from prod", color: "blue", pinned: true }]);
   assert.ok(target.log.some((entry) => entry.method === "GET" && entry.path === "/notes/note_000001"), "the Open button read the note the form created");
@@ -183,35 +177,35 @@ test("a write action's form is filled from the recorded body and submitted; a la
 
 test("a form that sends the wrong payload shape fails with the status the server answered", async () => {
   mode = "wrong-shape";
-  assert.equal((await replayUi(root, writeSession))[0], "w-1 note.add /new failed: status 400, recorded 201 for POST /notes");
+  assert.equal((await replayUi(writeSession))[0], "w-1 note.add /new failed: status 400, expected 201 for POST /notes");
 });
 
 test("a form whose submit handler sends nothing fails because the request never went out", async () => {
   mode = "sends-nothing";
-  assert.equal((await replayUi(root, writeSession))[0], "w-1 note.add /new failed: no POST /notes request was sent");
+  assert.equal((await replayUi(writeSession))[0], "w-1 note.add /new failed: no POST /notes request was sent");
 });
 
 test("a body key with no matching control falls back to checking the action is there", async () => {
   mode = "no-color";
-  assert.equal((await replayUi(root, writeSession))[0], "w-1 note.add /new passed (presence)");
+  assert.equal((await replayUi(writeSession))[0], "w-1 note.add /new passed (presence)");
   assert.ok(target.log.every((entry) => entry.method !== "POST"), "nothing was submitted");
 });
 
 test("a write production answered with 400 passes when the replay is answered 400 too", async () => {
   mode = "wrong-shape";
   const rejected = { ...writeSession[0], response: { ...writeSession[0].response, status: 400, ids: {} } };
-  assert.deepEqual(await replayUi(root, [rejected]), ["w-1 note.add /new passed"]);
+  assert.deepEqual(await replayUi([rejected]), ["w-1 note.add /new passed"]);
 });
 
 test("a write production answered with a 500 passes once the replay is answered without one: the crash was the bug", async () => {
   const crashed = { ...writeSession[0], outcome: /** @type {const} */ ("error"), response: { ...writeSession[0].response, status: 500, ids: {} } };
-  assert.deepEqual(await replayUi(root, [crashed]), ["w-1 note.add /new passed"]);
+  assert.deepEqual(await replayUi([crashed]), ["w-1 note.add /new passed"]);
 });
 
 test("an adapter that signs in with a cookie reaches the app and the API on page loads, clicks and submitted forms", async () => {
   mode = "cookie";
   const signIn = async () => ({ cookie: "session=abc" });
-  assert.deepEqual(await replayUi(root, writeSession, signIn), ["w-1 note.add /new passed", "w-2 note.open /notes/note_prodW1 passed"]);
+  assert.deepEqual(await replayUi(writeSession, signIn), ["w-1 note.add /new passed", "w-2 note.open /notes/note_prodW1 passed"]);
   assert.deepEqual(rejected, [], "every request carried the session cookie");
   assert.deepEqual(target.log.map((entry) => `${entry.method} ${entry.path} ${entry.headers["x-tenant"]}`), ["POST /notes a", "GET /notes/note_000001 a"]);
 });
@@ -219,7 +213,7 @@ test("an adapter that signs in with a cookie reaches the app and the API on page
 test("the sign-in cookie and headers reach the app and the API, never a third party the page loads from", async () => {
   mode = "cookie";
   const signIn = async () => ({ Cookie: "session=abc; theme=dark", "x-sign-in": "secret-header" });
-  assert.deepEqual(await replayUi(root, writeSession, signIn), ["w-1 note.add /new passed", "w-2 note.open /notes/note_prodW1 passed"]);
+  assert.deepEqual(await replayUi(writeSession, signIn), ["w-1 note.add /new passed", "w-2 note.open /notes/note_prodW1 passed"]);
   assert.deepEqual(rejected, [], "every request to the app carried the session cookie");
   assert.ok(appSignIn.length > 0 && appSignIn.every((value) => value === "secret-header"), "every request to the app carried the sign-in header");
   assert.ok(thirdSeen.length > 0, "the page loaded the third-party script");
@@ -231,7 +225,7 @@ test("the sign-in cookie and headers reach the app and the API, never a third pa
 
 test("images, fonts and media are answered in the browser, never fetched; stylesheets still load", async () => {
   mode = "assets";
-  assert.deepEqual(await replayUi(root, session.slice(0, 3)), [
+  assert.deepEqual(await replayUi(session.slice(0, 3)), [
     "u-1 note.open /notes/note_prod99 passed",
     "u-2 note.create /notes/note_prod99 passed (presence)",
     "u-3 UI /notes/note_prod99 passed",
@@ -265,7 +259,7 @@ test("replay.browser lightpanda with no lightpanda on PATH says how to install i
   const saved = process.env.PATH;
   process.env.PATH = realpathSync(mkdtempSync(join(tmpdir(), "intersite-empty-")));
   try {
-    await assert.rejects(replayUi(root, session.slice(0, 1), adapter.signIn, { browser: "lightpanda" }), {
+    await assert.rejects(replayUi(session.slice(0, 1), adapter.signIn, { browser: "lightpanda" }), {
       message: "replay.browser lightpanda needs the lightpanda binary on PATH; install it with curl -fsSL https://pkg.lightpanda.io/install.sh | bash"
         + " (it goes to ~/.local/bin), or set replay.browserUrl to a running one",
     });
@@ -277,7 +271,7 @@ test("replay.browser lightpanda starts lightpanda serve on a local port, connect
   await withPath({ lightpanda: `#!/bin/sh\nexec "${process.execPath}" "${fake}" "$@"\n` }, async (dir) => {
     process.env.FAKE_LIGHTPANDA_LOG = join(dir, "args.log");
     process.env.FAKE_LIGHTPANDA_CHROME = chromePath;
-    assert.deepEqual(await replayUi(root, session.slice(0, 3), adapter.signIn, { browser: "lightpanda" }), healthy);
+    assert.deepEqual(await replayUi(session.slice(0, 3), adapter.signIn, { browser: "lightpanda" }), healthy);
     const args = readFileSync(join(dir, "args.log"), "utf8").trim();
     assert.match(args, /^serve --host 127\.0\.0\.1 --port \d+$/);
     const port = args.split(" ").at(-1);
@@ -298,7 +292,7 @@ test("replay.browserUrl connects to a browser that is already running and leaves
         if (found) done(`http://${found[1]}`);
       });
     });
-    assert.deepEqual(await replayUi(root, session.slice(0, 3), adapter.signIn, { browserUrl: url }), healthy);
+    assert.deepEqual(await replayUi(session.slice(0, 3), adapter.signIn, { browserUrl: url }), healthy);
     assert.equal(chrome.exitCode, null, "the browser is still running");
   } finally {
     chrome.kill();

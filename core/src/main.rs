@@ -9,7 +9,9 @@
 
 mod aroma;
 mod boundaries;
+mod cdp;
 mod columns;
+mod flow;
 mod auth;
 mod decisions;
 mod drift;
@@ -118,6 +120,15 @@ pub fn rel(prefix: &str, file: &str) -> String {
 }
 
 fn main() {
+    // Flows talk with Node line by line while they run (the adapter is the project's JavaScript), so they do not take
+    // the one-request, one-answer path below.
+    if std::env::args().nth(1).as_deref() == Some("flow") {
+        if let Err(message) = flow::serve() {
+            eprintln!("intersite-core: {message}");
+            std::process::exit(2);
+        }
+        return;
+    }
     let mut input = String::new();
     if let Err(error) = std::io::stdin().read_to_string(&mut input) {
         eprintln!("intersite-core: cannot read the request: {error}");

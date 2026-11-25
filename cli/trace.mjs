@@ -346,7 +346,7 @@ async function measureReplay(server, cwd, origin, flags) {
     }
     return /** @type {Response} */ (response);
   };
-  await replaySessions({ sessions, target: origin, adapter, modes: ["baseline"], idPattern: config.capture.idPattern, fetch: measuredFetch, cwd });
+  await replaySessions({ sessions, target: origin, adapter, modes: ["baseline"], idPattern: config.capture.idPattern, fetch: measuredFetch });
   return byLabel;
 }
 
@@ -444,6 +444,23 @@ async function loadPage(browser, url, top) {
   }
 }
 
+/**
+ * Chrome Headless Shell when Playwright has it installed (`npx playwright install chromium-headless-shell`), else the
+ * installed Google Chrome. Headed runs always use Chrome: the shell has no window.
+ * @param {typeof import("playwright-core").chromium} chromium @param {boolean} headed
+ */
+async function launchChrome(chromium, headed) {
+  // The headless shell is optional: when Playwright has not installed it, the installed Chrome below is used.
+  const noShell = () => undefined;
+  const shell = headed ? undefined : await chromium.launch({ channel: "chromium-headless-shell" }).catch(noShell);
+  try {
+    const browser = shell ?? (await chromium.launch({ channel: "chrome", headless: !headed }));
+    return { browser, stop: () => browser.close() };
+  } catch (error) {
+    throw new GateError(`--page could not start Google Chrome; install it from https://www.google.com/chrome/ (${String(error instanceof Error ? error.message : error).split("\n")[0]})`);
+  }
+}
+
 /** @param {string} url @param {{ cwd: string, flags: Record<string, any>, runs: number }} options */
 async function pageMode(url, { cwd, flags, runs }) {
   /** @type {typeof import("playwright-core").chromium} */
@@ -453,7 +470,6 @@ async function pageMode(url, { cwd, flags, runs }) {
   } catch {
     throw new GateError("--page needs playwright-core: npm install --save-dev playwright-core (it drives your installed Chrome)");
   }
-  const { launchChrome } = await import("../replay/ui.mjs");
   const { browser, stop } = await launchChrome(chromium, flags.headed);
   const top = topLevel(cwd);
   const prefix = projectPrefix(cwd);
