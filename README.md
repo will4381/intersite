@@ -45,7 +45,7 @@ In a monorepo, install `intersite`, `oxlint` and `@oxlint/plugins` once at the r
 | `special-case` | Production code that answers the tests instead of solving the problem: a branch on running under a test runner, or a branch on a changed test's own input that returns exactly what that test expects | git |
 | `duplicates` | A pasted block that already exists in the repository | git |
 | `new-deps` | A dependency added without saying why; one npm has never heard of (an invented name anyone could register later) is named as such, and a days-old one says so | git |
-| `similar` | A new function, component, hook or type that already exists under another name; when two differ only in a few literals it says to make one with a variant. Also a helper's body pasted inside a new function | git |
+| `similar` | A new function, component, hook or type that already exists under another name; when two differ only in a few literals it says to make one with a variant. Also a helper's body pasted inside a new function. Suggests, and fails nothing: a function the change edits whose copy elsewhere, the same code before the change, is left as it was | git |
 | `naming` | A file or folder named against the casing, suffix or test pattern its siblings keep, or unlike its main export | git |
 | `style-drift` | A colour, size or token that is almost one the project already has, or off a scale it keeps closed | git |
 | `value-drift` | Copy, an API description or a comment that states a fee, rate or price ("1.5% + $0.30 per payment") the constant of the same name no longer holds, or one money rate set to two values in two files | git |

@@ -5,7 +5,7 @@
 // function's body (a helper pasted inside a new function instead of called), found with Aroma's structural features.
 // Exact pasted blocks are left to the duplicates gate. The work is in core/similar.rs, core/units.rs and core/aroma.rs.
 import { fromEngine, runCore } from "./core.mjs";
-import { EMPTY_TREE, SKIP, addedLines, listFiles, matches, resolveBase, workingDiff } from "./lib.mjs";
+import { EMPTY_TREE, SKIP, addedLines, changes, listFiles, matches, resolveBase, showMany, workingDiff } from "./lib.mjs";
 
 // Never one side of a pair: tests, fixtures and stories, configs, and route files whose shape the framework dictates.
 const NOT_SOURCE = /(?:^|\/)(?:__tests__|__mocks__|__fixtures__|(?:[\w-]*[-_])?(?:fixtures?|mocks?|e2e|tests?|testing)|stories|seeds?|migrations)\/|\.(?:test|spec|stories|story|e2e|config)\.[^/]+$|[-_.]fixtures?\.[^/]+$|(?:^|\/)(?:page|layout|loading|error|global-error|not-found|template|default|route|middleware)\.[cm]?[jt]sx?$/;
@@ -22,6 +22,11 @@ export async function similar({ cwd, base, testPaths, duplicateLines }) {
   const files = listFiles(cwd).filter((f) => !SKIP.test(f) && !NOT_SOURCE.test(f) && !matches(f, testPaths));
   const sources = new Set(files);
   if (![...added.keys()].some((f) => sources.has(f))) return { findings: [], summary: "0 added units checked" };
-  const answer = runCore({ command: "similar", root: cwd, files, added: Object.fromEntries([...added].map(([f, l]) => [f, [...l]])), options: { lines: duplicateLines, whole: sha === EMPTY_TREE } });
-  return { findings: fromEngine(answer.findings), summary: answer.summary };
+  // The source files the change edits, as they were: an edited function whose copy elsewhere is left as it was is a
+  // suggestion to look at the copy.
+  const edited = sha === EMPTY_TREE ? [] : changes(cwd, sha).filter((c) => c.status !== "A" && c.status !== "D" && sources.has(c.path));
+  const was = showMany(cwd, sha, edited.map((c) => c.from || c.path));
+  const before = Object.fromEntries(edited.map((c) => [c.path, was.get(c.from || c.path) ?? ""]).filter(([, text]) => text));
+  const answer = runCore({ command: "similar", root: cwd, files, added: Object.fromEntries([...added].map(([f, l]) => [f, [...l]])), options: { lines: duplicateLines, whole: sha === EMPTY_TREE, before } });
+  return { findings: fromEngine(answer.findings), suggestions: fromEngine(answer.data?.suggestions ?? []), summary: answer.summary };
 }

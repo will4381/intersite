@@ -25,7 +25,7 @@ instead of changing code to satisfy it.
 | `path <rule>: N findings, baseline allows M` | Old findings were fixed | Lower the baseline with `npx intersite lint --write` |
 | contains `"gate": "test-integrity"` | A test was deleted, weakened or skipped | Restore it; fix the code instead |
 | contains `"gate": "duplicates"` | You pasted a block that already exists | Import or extract the original, named in the line |
-| contains `"gate": "similar"` | You wrote something that already exists under another name, or pasted a helper's body (`repeats … (N% of it)`) | Reuse the one named in the line; if they differ only in a few values, make one with a variant; for a pasted body, call the helper, or extract the part they share |
+| contains `"gate": "similar"` | You wrote something that already exists under another name, or pasted a helper's body (`repeats … (N% of it)`) | Reuse the one named in the line; if they differ only in a few values, make one with a variant; for a pasted body, call the helper, or extract the part they share A line that starts `suggestion:` names a copy of the function you edited that still says what yours said: make the change there too if it belongs to both, or have one call the other |
 | contains `"gate": "naming"` | A new file or folder does not follow its neighbours' naming | Rename it to the form the line gives |
 | contains `"gate": "style-drift"` | A new colour or size is almost an existing one | Use the token or value the line names |
 | contains `"gate": "value-drift"` | Copy states a fee or price the code's constant does not hold | Find out which is right; render the copy from the constant so they cannot drift again |
