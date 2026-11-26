@@ -958,6 +958,11 @@ pub fn run(request: &Request) -> Result<Answer, String> {
     Ok(Answer::new(findings, summary))
 }
 
+/// A connection to the project's database, with TLS unless it is local.
+pub(crate) fn connect(url: &str) -> Result<postgres::Client, String> {
+    explain::connect(url)
+}
+
 mod explain {
     //! The planner's verdict on a query, without running it: PREPARE, then EXPLAIN the generic plan, all in a
     //! read-only transaction that is rolled back. A sequential scan with a filter on a large table is an index to add.
@@ -965,7 +970,7 @@ mod explain {
     use super::{bare, Finding, Stmt};
     use postgres::{Client, NoTls};
 
-    fn connect(url: &str) -> Result<Client, String> {
+    pub(super) fn connect(url: &str) -> Result<Client, String> {
         if url.contains("sslmode=disable") || url.contains("localhost") || url.contains("127.0.0.1") {
             return Client::connect(url, NoTls).map_err(|e| format!("cannot connect to the database: {e}"));
         }

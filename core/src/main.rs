@@ -8,6 +8,7 @@ mod boundaries;
 mod cdp;
 mod columns;
 mod complexity;
+mod constraints;
 mod contract;
 mod coverage;
 mod datamodel;
@@ -34,6 +35,7 @@ mod secrets;
 mod similar;
 mod special;
 mod sql;
+mod statistics;
 mod stats;
 mod structure;
 mod style;
@@ -90,6 +92,14 @@ pub struct Answer {
 impl Answer {
     pub fn new(findings: Vec<Finding>, summary: String) -> Self {
         Answer { findings, summary, data: None }
+    }
+
+    /// With what the check suggests and does not fail on: worth doing, and the owner's call.
+    pub fn suggesting(mut self, suggestions: Vec<Finding>) -> Self {
+        if !suggestions.is_empty() {
+            self.data = Some(serde_json::json!({ "suggestions": suggestions }));
+        }
+        self
     }
 }
 

@@ -16,6 +16,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::LazyLock;
 
 use crate::columns::{self, Column, Table};
+use crate::constraints::{self, Allowed, Checks};
+use crate::statistics::{self, Stats};
 use crate::{sql, text, Answer, Finding, Request};
 
 /// What a column holds, as far as two columns can be compared.
@@ -112,6 +114,8 @@ const RECORD_TABLES: &str = "log logs event events audit audits history snapshot
 /// Words that name an amount of money.
 const MONEY: &str =
     "amount price total subtotal fee fees cost balance payout charge refund tax tip discount revenue earnings salary wage budget cents";
+/// Words that name a copy of a table set aside: a backup before a migration, last year's rows.
+const ASIDE: &str = "backup backups bak old tmp temp copy";
 /// Schemas a platform owns: Supabase's auth and storage, Postgres' own.
 const PLATFORM_SCHEMAS: &str = "auth storage realtime extensions graphql graphql_public vault pgsodium pgbouncer net cron supabase_functions supabase_migrations information_schema pg_catalog";
 
@@ -133,6 +137,13 @@ struct Model {
     retyped: HashMap<(String, String), String>,
     /// A table's name without case or underscores -> the table: `visit_assignment` and a `VisitAssignment` model.
     by_stem: HashMap<String, String>,
+    /// (table, column) -> the closed set of values an enum or a CHECK gives it.
+    allowed: HashMap<(String, String), Allowed>,
+    checks: Checks,
+    /// Each Prisma file's lines, for the comment above a field.
+    prisma: HashMap<String, Vec<String>>,
+    /// The planner's statistics, when a database was given.
+    stats: Option<Stats>,
 }
 
 impl Model {
@@ -226,6 +237,10 @@ static ENUM_RENAMED: LazyLock<Regex> =
 static ENUM_DROPPED: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"(?i)\bdrop\s+type\s+(?:if\s+exists\s+)?((?:"?\w+"?\.)?"?\w+"?)"#).unwrap());
 
+/// Rules that suggest and do not fail: a matter of design, a tidying, or a reading of the data, where the owner knows
+/// what the schema cannot say. The rest are slips with one fix, cheapest in the change that makes them.
+const SUGGESTED: &str = "twice-told id-list same-columns idle-enum loose-json never-filled one-value few-values";
+
 /// One flaw, where the schema declares it.
 struct Flaw {
     file: String,
@@ -281,6 +296,26 @@ fn happened(words: &[String]) -> bool {
     words.iter().any(|w| (w.len() > 3 && w.ends_with("ed")) || among(HAPPENED, w))
 }
 
+/// The share of a table's rows a column's statistics give `value`, when the table is big enough to say.
+fn share(model: &Model, table: &Table, column: &Column, value: &str) -> Option<f64> {
+    let seen = model.stats.as_ref()?.get(&(table.name.clone(), column.name.clone())).filter(|s| s.rows >= BIG)?;
+    Some(seen.common.iter().find(|(v, _)| v == value).map_or(0.0, |(_, share)| *share))
+}
+
+/// What the data says of two columns that should agree: nothing while they do, or while no statistics are at hand.
+fn disagreement(flag: Option<f64>, other: Option<f64>, what: &str) -> String {
+    match (flag, other) {
+        (Some(flag), Some(other)) if (flag - other).abs() >= 0.02 => {
+            format!(
+                ". In the data they already disagree: the flag is true in about {:.0}% of the rows and {what} in about {:.0}%",
+                flag * 100.0,
+                other * 100.0
+            )
+        }
+        _ => String::new(),
+    }
+}
+
 fn twice_told(model: &Model, out: &mut Vec<Flaw>) {
     for table in model.tables.values().filter(|t| judged(t)) {
         for flag in table.columns.iter().filter(|c| model.kind(table, c).0 == Family::Boolean) {
@@ -288,26 +323,167 @@ fn twice_told(model: &Model, out: &mut Vec<Flaw>) {
             if stem.len() > 1 && matches!(stem[0].as_str(), "is" | "has" | "was" | "did") {
                 stem.remove(0);
             }
-            if !happened(&stem) {
-                continue;
-            }
-            let time = table.columns.iter().find(|c| {
+            let is_true = share(model, table, flag, "t");
+            let time = table.columns.iter().filter(|_| happened(&stem)).find(|c| {
                 let mut words = name_words(&c.name);
                 let moment = matches!(model.kind(table, c).0, Family::Timestamp | Family::Timestamptz | Family::Date);
                 moment && matches!(words.pop().as_deref(), Some("at" | "on" | "date" | "time")) && words == stem
             });
+            // `active` beside a status that can be 'active': the status already says it.
+            let state = table.columns.iter().find_map(|c| {
+                let values = &model.allowed.get(&(table.name.clone(), c.name.clone()))?.stored;
+                Some((c, values.iter().find(|v| name_words(v).concat() == stem.concat())?))
+            });
+            let key = format!("{}.{}", table.name, flag.name);
             if let Some(time) = time {
-                out.push(flaw(
-                    &flag.file,
-                    flag.line,
-                    "twice-told",
-                    format!("{}.{}", table.name, flag.name),
-                    format!(
-                        "{}.{} and {}.{} record one fact twice, a flag and the time it happened: nothing stops them disagreeing. Keep the time and read the flag from it (`{} IS NOT NULL`)",
-                        table.name, flag.name, table.name, time.name, time.name
-                    ),
-                ));
+                let set = model
+                    .stats
+                    .as_ref()
+                    .and_then(|s| s.get(&(table.name.clone(), time.name.clone())))
+                    .filter(|s| s.rows >= BIG)
+                    .map(|s| 1.0 - s.nulls);
+                let message = format!(
+                    "{}.{} and {}.{} record one fact twice, a flag and the time it happened: nothing stops them disagreeing. Keep the time and read the flag from it (`{} IS NOT NULL`){}",
+                    table.name,
+                    flag.name,
+                    table.name,
+                    time.name,
+                    time.name,
+                    disagreement(is_true, set, "the time is set")
+                );
+                out.push(flaw(&flag.file, flag.line, "twice-told", key, message));
+            } else if let Some((state, value)) = state {
+                let message = format!(
+                    "{}.{} and {}.{} = '{value}' record one fact twice, a flag and a value of the status: nothing stops them disagreeing. Keep the status and read the flag from it{}",
+                    table.name,
+                    flag.name,
+                    table.name,
+                    state.name,
+                    disagreement(is_true, share(model, table, state, value), &format!("the status is '{value}'"))
+                );
+                out.push(flaw(&flag.file, flag.line, "twice-told", key, message));
             }
+        }
+    }
+}
+
+/// A table no statement gives a primary key.
+fn no_key(model: &Model, out: &mut Vec<Flaw>) {
+    for table in model.tables.values().filter(|t| judged(t)) {
+        // ponytail: a Drizzle table's `.primaryKey()` is not read, so a Drizzle table is taken to have one.
+        let keyed = table.source == 1 || table.indexes.iter().any(|i| i.primary) || model.checks.keyed.contains(&table.name);
+        // A copy set aside by a migration (`orders_backup_20260728`) is not a table of the model.
+        let aside = name_words(&table.name).iter().any(|w| among(ASIDE, w));
+        if !keyed && !aside {
+            let message = format!(
+                "{} has no primary key: two rows can be alike in every column, and nothing can point at one of them. Give it a key",
+                table.name
+            );
+            out.push(flaw(&table.file, table.line, "no-key", table.name.clone(), message));
+        }
+    }
+}
+
+/// The share of a schema's JSON columns that say their shape, from which saying it is the schema's own practice and
+/// one that does not is worth a suggestion. Below it the schema does not do this, and every column would be named.
+const SHAPED_SHARE: f64 = 0.25;
+
+/// A JSON column nothing says the shape of, in a schema that says it of others.
+fn loose_json(model: &Model, out: &mut Vec<Flaw>) {
+    // prisma-json-types-generator and zod-prisma-types both type a Json field in the comment above it.
+    let typed = |column: &Column| {
+        let above = model.prisma.get(&column.file).and_then(|lines| lines.get((column.line as usize).checked_sub(2)?));
+        above.is_some_and(|l| l.trim_start().starts_with("///") && (l.contains('[') || l.contains("@zod")))
+    };
+    let all: Vec<(&Table, &Column, bool)> = model
+        .tables
+        .values()
+        .filter(|t| judged(t))
+        .flat_map(|t| t.columns.iter().map(move |c| (t, c)))
+        .filter(|(t, c)| model.kind(t, c).0 == Family::Json)
+        .map(|(t, c)| (t, c, typed(c) || model.checks.shaped.contains(&(t.name.clone(), c.name.clone()))))
+        .collect();
+    let said = all.iter().filter(|(_, _, said)| *said).count();
+    if (said as f64) < all.len() as f64 * SHAPED_SHARE {
+        return;
+    }
+    for (table, column, _) in all.iter().filter(|(_, _, said)| !said) {
+        let message = format!(
+            "{}.{} is JSON with nothing said of its shape, where {said} of the schema's {} JSON columns say theirs: a string or an array can land where an object is read. Say it as the others do (`CHECK (jsonb_typeof({}) = 'object')`)",
+            table.name,
+            column.name,
+            all.len(),
+            column.name
+        );
+        out.push(flaw(&column.file, column.line, "loose-json", format!("{}.{}", table.name, column.name), message));
+    }
+}
+
+/// Rows from which the planner's word on a column is worth reading.
+const BIG: f64 = 1000.0;
+
+/// A value from the data, short enough for a message.
+fn shown(value: &str) -> String {
+    if value.chars().count() > 30 {
+        format!("{}…", value.chars().take(30).collect::<String>())
+    } else {
+        value.to_string()
+    }
+}
+
+// ponytail: what a column holds is read from the words of its name, as a table of records is. A label column named
+// for an identifier (`shipping_name` holding three carriers) is not suggested.
+/// Words in a column's name that say it holds an identifier or free text, never one of a few labels.
+const NOT_LABELS: &str = "id ids uuid hash sha256 checksum digest token secret ip domain url uri email phone name title notes note body message description text content path file address model campaign";
+
+/// Whether a value reads as a label: a word or three, with none of what a sentence, an address or a digest has.
+fn label(value: &str) -> bool {
+    let digest = value.len() >= 16 && value.chars().all(|c| c.is_ascii_hexdigit());
+    value.chars().count() <= 40
+        && (1..=3).contains(&value.split_whitespace().count())
+        && value.chars().any(char::is_alphabetic)
+        && value.chars().all(|c| c.is_alphanumeric() || " _-.".contains(c))
+        && !digest
+}
+
+/// What the planner's statistics say of the columns: one nothing has ever filled, one that holds a single value, a
+/// text column with a handful of labels and no enum or CHECK to hold it to them. A column almost nothing fills is
+/// not named: in the statistics tried, most such columns were new, and their old rows had not been filled yet.
+/// The planner reads a sample of a large table, so each message says what the sample holds, not every row.
+fn in_the_data(model: &Model, stats: &Stats, out: &mut Vec<Flaw>) {
+    for (table, column) in model.tables.values().filter(|t| judged(t)).flat_map(|t| t.columns.iter().map(move |c| (t, c))) {
+        let at = (table.name.clone(), column.name.clone());
+        let Some(seen) = stats.get(&at).filter(|s| s.rows >= BIG) else { continue };
+        let (family, array) = model.kind(table, column);
+        let name = format!("{}.{}", table.name, column.name);
+        let rows = seen.rows.round();
+        // The time something happened is NULL until it does, and a status has one value until the second is reached.
+        let moment = matches!(family, Family::Timestamp | Family::Timestamptz | Family::Date);
+        let closed = model.allowed.contains_key(&at) || seen.held;
+        let known: f64 = seen.common.iter().map(|c| c.1).sum();
+        let labels = !name_words(&column.name).iter().any(|w| among(NOT_LABELS, w)) && seen.common.iter().all(|c| label(&c.0));
+        if seen.nulls >= 1.0 && !moment {
+            let message =
+                format!("{name} is NULL in every row the planner sampled, of about {rows}: nothing seems to fill it. If nothing is about to, drop it");
+            out.push(flaw(&column.file, column.line, "never-filled", name, message));
+        } else if seen.distinct == 1.0 && seen.nulls < 0.01 && family != Family::Boolean && !moment && !closed {
+            // A value is shown only where it reads as a label: a name or an address never leaves the database.
+            let value = seen.common.first().filter(|_| labels).map_or(String::new(), |c| format!(" ('{}')", shown(&c.0)));
+            let message = format!("{name} holds one value{value} in every row the planner sampled, of about {rows}: a column that tells no two rows apart. Drop it, or make the value a constant in the code");
+            out.push(flaw(&column.file, column.line, "one-value", name, message));
+        } else if family == Family::Text
+            && !array
+            && (2.0..=12.0).contains(&seen.distinct)
+            && !closed
+            && labels
+            && known >= (1.0 - seen.nulls) * 0.99
+        {
+            let values = seen.common.iter().map(|c| shown(&c.0)).collect::<Vec<_>>().join(", ");
+            let message = format!(
+                "{name} holds only {} values in the rows the planner sampled, of about {rows} ({values}), and nothing holds it to them: a typo is a new value. Make it an enum, or a CHECK that lists them",
+                seen.distinct
+            );
+            out.push(flaw(&column.file, column.line, "few-values", name, message));
         }
     }
 }
@@ -540,7 +716,14 @@ fn read_schema(root: &str, file: &str) -> Option<Read> {
     }
 }
 
-pub fn run(request: &Request) -> Result<Answer, String> {
+/// What a request's files declare: the SQL in the order `columns` applies it, the Prisma schemas, and every table.
+pub(crate) struct Schemas {
+    pub(crate) sql_files: Vec<(String, String)>,
+    pub(crate) prisma_files: Vec<(String, String)>,
+    pub(crate) tables: HashMap<String, Table>,
+}
+
+pub(crate) fn schemas(request: &Request) -> Schemas {
     let mut reads: Vec<Read> = request.files.par_iter().filter_map(|file| read_schema(&request.root, file)).collect();
     let mut sql_files: Vec<(String, String)> = vec![];
     let mut prisma_files: Vec<(String, String)> = vec![];
@@ -564,6 +747,29 @@ pub fn run(request: &Request) -> Result<Answer, String> {
     let (mut tables, _) = columns::declared(&mut sql_files, ormed);
     let scratch = scratch_tables(&sql_files);
     tables.retain(|name, table| table.source != 0 || !scratch.contains(name));
+    Schemas { sql_files, prisma_files, tables }
+}
+
+#[derive(serde::Deserialize, Default)]
+struct Options {
+    /// The planner's statistics, handed over instead of read from a database.
+    #[serde(default)]
+    statistics: Option<Vec<statistics::Column>>,
+}
+
+pub fn run(request: &Request) -> Result<Answer, String> {
+    let options: Options = request.options()?;
+    // The data is read only to judge the schema as it stands: a change is judged on what it declares.
+    let url = request.database_url.as_deref().filter(|u| !u.is_empty() && request.added.is_none());
+    let stats = match (options.statistics, url) {
+        (Some(given), _) => Some(statistics::given(given)),
+        (None, Some(url)) => Some(statistics::read(url)?),
+        _ => None,
+    };
+    let read = schemas(request);
+    let checks = constraints::checks(&read.sql_files);
+    let allowed = constraints::allowed(&read, &checks);
+    let Schemas { mut sql_files, prisma_files, tables } = read;
     if tables.is_empty() {
         return Ok(Answer::new(vec![], "no database schema found".into()));
     }
@@ -591,7 +797,9 @@ pub fn run(request: &Request) -> Result<Answer, String> {
         .flat_map(|t| [(name_words(&t.name).concat(), t.name.clone()), (t.model.to_lowercase(), t.name.clone())])
         .filter(|(stem, _)| !stem.is_empty())
         .collect();
-    let model = Model { tables: tables.into_iter().collect(), linked, primary, retyped: inventory.types, by_stem };
+    let prisma = prisma_files.iter().map(|(file, src)| (file.clone(), src.lines().map(str::to_string).collect())).collect();
+    let model =
+        Model { tables: tables.into_iter().collect(), linked, primary, retyped: inventory.types, by_stem, allowed, checks, prisma, stats };
 
     let mut flaws = vec![];
     open_links(&model, &mut flaws);
@@ -601,31 +809,42 @@ pub fn run(request: &Request) -> Result<Answer, String> {
     covered_indexes(&model, &mut flaws);
     wrong_types(&model, !sql::mysql_project(&request.root, &request.files), &mut flaws);
     same_columns(&model, &mut flaws);
+    no_key(&model, &mut flaws);
+    loose_json(&model, &mut flaws);
+    if let Some(stats) = &model.stats {
+        in_the_data(&model, stats, &mut flaws);
+    }
     sql_files.extend(prisma_files);
     idle_enums(&model, &sql_files, &mut flaws);
 
-    let mut findings: Vec<Finding> = flaws
-        .into_iter()
-        .filter(|f| request.changed(&f.file, f.line))
-        .map(|f| Finding {
-            target: format!("data-model:{}:{}", f.rule, f.key),
-            message: format!("{}:{} {}", f.file, f.line, f.message),
-            file: f.file,
-            line: f.line,
-        })
-        .collect();
-    findings.sort_by(|a, b| (&a.file, a.line, &a.target).cmp(&(&b.file, b.line, &b.target)));
-    findings.dedup_by(|a, b| a.target == b.target);
-    let summary = format!("{} tables read, {} flaws in the data model", model.tables.len(), findings.len());
-    Ok(Answer::new(findings, summary))
+    flaws.retain(|f| request.changed(&f.file, f.line));
+    flaws.sort_by(|a, b| (&a.file, a.line, a.rule, &a.key).cmp(&(&b.file, b.line, b.rule, &b.key)));
+    flaws.dedup_by(|a, b| (a.rule, &a.key) == (b.rule, &b.key));
+    let (suggested, failing): (Vec<Flaw>, Vec<Flaw>) = flaws.into_iter().partition(|f| among(SUGGESTED, f.rule));
+    let finding = |f: Flaw| Finding {
+        target: format!("data-model:{}:{}", f.rule, f.key),
+        message: format!("{}:{} {}", f.file, f.line, f.message),
+        file: f.file,
+        line: f.line,
+    };
+    let read = model.stats.as_ref().map_or(String::new(), |s| format!(", the statistics of {} columns read", s.len()));
+    let summary =
+        format!("{} tables read, {} flaws in the data model and {} suggestions{read}", model.tables.len(), failing.len(), suggested.len());
+    Ok(Answer::new(failing.into_iter().map(finding).collect(), summary).suggesting(suggested.into_iter().map(finding).collect()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The targets found. With `added`, only those (file, lines) are the change's; without, the whole repository.
-    fn targets(name: &str, files: &[(&str, &str)], added: Option<&[(&str, &[u32])]>) -> Vec<String> {
+    /// What was found, as (line, target, message): what fails, then what is suggested. With `added`, only those
+    /// (file, lines) are the change's; without, the whole repository.
+    fn judged_as(
+        name: &str,
+        files: &[(&str, &str)],
+        added: Option<&[(&str, &[u32])]>,
+        options: serde_json::Value,
+    ) -> [Vec<(u64, String, String)>; 2] {
         let request = Request {
             command: "data-model".into(),
             root: text::temp_tree(&format!("data-model-{name}"), files),
@@ -633,9 +852,20 @@ mod tests {
             added: added.map(|a| a.iter().map(|(f, l)| (f.to_string(), l.iter().copied().collect())).collect()),
             prefix: String::new(),
             database_url: None,
-            options: serde_json::json!({}),
+            options,
         };
-        run(&request).unwrap().findings.into_iter().map(|f| f.target).collect()
+        let answer = run(&request).unwrap();
+        let text = |v: &serde_json::Value, key: &str| v[key].as_str().unwrap_or("").to_string();
+        let suggested = answer.data.iter().flat_map(|d| d["suggestions"].as_array().cloned().unwrap_or_default());
+        let failing = answer.findings.into_iter().map(|f| (f.line as u64, f.target, f.message)).collect();
+        [failing, suggested.map(|s| (s["line"].as_u64().unwrap_or(0), text(&s, "target"), text(&s, "message"))).collect()]
+    }
+
+    /// Every target found, failing or suggested, in the order of the schema.
+    fn targets(name: &str, files: &[(&str, &str)], added: Option<&[(&str, &[u32])]>) -> Vec<String> {
+        let mut all = judged_as(name, files, added, serde_json::json!({})).concat();
+        all.sort_by_key(|found| found.0);
+        all.into_iter().map(|found| found.1).collect()
     }
 
     const SHOP: &str = "create table customers (id uuid primary key, name text not null);\ncreate table stores (id uuid primary key, name text not null);\n";
@@ -677,6 +907,78 @@ mod tests {
         assert_eq!(
             targets("scratch", &[("migrations/001.sql", SHOP), ("migrations/002.sql", scratch)], None),
             vec!["data-model:twice-told:challenges.is_sent"]
+        );
+    }
+
+    #[test]
+    fn a_table_with_no_key_fails_and_a_flag_beside_its_status_and_json_with_no_shape_among_the_shaped_are_suggested() {
+        let sql = "create table notes (body text);\ncreate table accounts (\n  id uuid primary key,\n  status text not null check (status in ('active', 'closed')),\n  active boolean not null,\n  a jsonb check (jsonb_typeof(a) = 'object'),\n  b jsonb check (jsonb_typeof(b) = 'object'),\n  c jsonb check (jsonb_typeof(c) = 'array'),\n  d jsonb check (jsonb_typeof(d) = 'object'),\n  loose jsonb\n);\n";
+        let [failing, suggested] = judged_as("keys", &[("migrations/001.sql", sql)], None, serde_json::json!({}));
+        assert_eq!(failing.iter().map(|f| f.1.as_str()).collect::<Vec<_>>(), vec!["data-model:no-key:notes"]);
+        assert_eq!(
+            suggested.iter().map(|f| f.1.as_str()).collect::<Vec<_>>(),
+            vec!["data-model:twice-told:accounts.active", "data-model:loose-json:accounts.loose"]
+        );
+        assert!(suggested[0].2.contains("accounts.active and accounts.status = 'active' record one fact twice"), "{}", suggested[0].2);
+        assert!(suggested[1].2.contains("where 4 of the schema's 5 JSON columns say theirs"), "{}", suggested[1].2);
+        // A schema that says the shape of one JSON column in five does not make a practice of it, and a copy a
+        // migration set aside is not a table of the model.
+        let few = "create table events (id uuid primary key, a jsonb check (jsonb_typeof(a) = 'object'), b jsonb, c jsonb, d jsonb, loose jsonb);\ncreate table events_backup_20260728 (body text);\n";
+        assert_eq!(targets("few", &[("migrations/001.sql", few)], None), Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_planners_statistics_suggest_a_column_nothing_fills_one_with_one_value_and_a_text_with_a_handful() {
+        let sql = "create table orders (\n  id uuid primary key,\n  kind text not null,\n  note text,\n  region text not null,\n  paid boolean not null,\n  paid_at timestamptz,\n  cancelled_at timestamptz,\n  state text not null check (state in ('new', 'done')),\n  carrier_ref_id text,\n  summary text,\n  seen text,\n  scope text,\n  tier text\n);\ncreate table tiny (id uuid primary key, note text);\n";
+        let column = |table: &str, column: &str, rows: f64, nulls: f64, distinct: f64, common: serde_json::Value| serde_json::json!({ "table": table, "column": column, "rows": rows, "nulls": nulls, "distinct": distinct, "common": common });
+        let none = serde_json::json!([]);
+        let statistics = serde_json::json!([
+            column("orders", "kind", 5000.0, 0.0, 3.0, serde_json::json!([["retail", 0.6], ["trade", 0.3], ["gift", 0.1]])),
+            column("orders", "note", 5000.0, 1.0, 0.0, none.clone()),
+            column("orders", "region", 5000.0, 0.0, 1.0, serde_json::json!([["eu", 1.0]])),
+            column("orders", "paid", 5000.0, 0.0, 2.0, serde_json::json!([["f", 0.7], ["t", 0.3]])),
+            column("orders", "paid_at", 5000.0, 0.75, -0.2, none.clone()),
+            // A time is NULL until the thing happens, a CHECK already holds `state` to its values (one of them, so
+            // far), a small table says little.
+            column("orders", "cancelled_at", 5000.0, 1.0, 0.0, none.clone()),
+            column("orders", "state", 5000.0, 0.0, 1.0, serde_json::json!([["new", 1.0]])),
+            // A few identifiers and a few sentences are not labels, and a column filled now and then is not judged.
+            column("orders", "carrier_ref_id", 5000.0, 0.0, 2.0, serde_json::json!([["ups", 0.5], ["dhl", 0.5]])),
+            column("orders", "summary", 5000.0, 0.0, 2.0, serde_json::json!([["Left at the door, as asked.", 0.5], ["Signed for", 0.5]])),
+            column("orders", "scope", 5000.0, 0.0, 2.0, serde_json::json!([["booking", 0.5], ["profile:pro-3575", 0.5]])),
+            // The database says a CHECK already holds this one, though no migration here shows it.
+            serde_json::json!({ "table": "orders", "column": "tier", "rows": 5000.0, "distinct": 2.0, "common": [["gold", 0.5], ["plain", 0.5]], "held": true }),
+            column("orders", "seen", 5000.0, 0.997, -0.5, none.clone()),
+            column("tiny", "note", 50.0, 1.0, 0.0, none),
+        ]);
+        let [failing, suggested] = judged_as("data", &[("migrations/001.sql", sql)], None, serde_json::json!({ "statistics": statistics }));
+        assert_eq!(failing.len(), 0);
+        assert_eq!(
+            suggested.iter().map(|f| (f.0, f.1.as_str())).collect::<Vec<_>>(),
+            vec![
+                (3, "data-model:few-values:orders.kind"),
+                (4, "data-model:never-filled:orders.note"),
+                (5, "data-model:one-value:orders.region"),
+                (6, "data-model:twice-told:orders.paid"),
+            ]
+        );
+        assert!(suggested[0].2.ends_with("orders.kind holds only 3 values in the rows the planner sampled, of about 5000 (retail, trade, gift), and nothing holds it to them: a typo is a new value. Make it an enum, or a CHECK that lists them"), "{}", suggested[0].2);
+        assert!(
+            suggested[1].2.contains("orders.note is NULL in every row the planner sampled, of about 5000: nothing seems to fill it"),
+            "{}",
+            suggested[1].2
+        );
+        assert!(
+            suggested[2].2.contains("orders.region holds one value ('eu') in every row the planner sampled, of about 5000"),
+            "{}",
+            suggested[2].2
+        );
+        assert!(
+            suggested[3]
+                .2
+                .ends_with("In the data they already disagree: the flag is true in about 30% of the rows and the time is set in about 25%"),
+            "{}",
+            suggested[3].2
         );
     }
 

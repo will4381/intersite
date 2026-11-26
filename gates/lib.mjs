@@ -28,24 +28,31 @@ export function quietExperimentalWarnings() {
  *   protected: { paths: string[], needs?: string[], why?: string }[], layers?: { name: string, paths: string[] }[],
  *   features?: string }} GateOptions
  * @typedef {{ file?: string, line?: number, target: string, message: string }} Finding `file` relative to the project
- * @typedef {{ findings: Finding[], summary: string }} GateResult
+ * @typedef {{ findings: Finding[], summary: string, suggestions?: Finding[] }} GateResult `suggestions` are worth
+ *   doing and never fail: a matter of design, a tidying, or a reading of the data that its owner has to judge
  * @typedef {{ status: string, path: string, from: string }} Change
  */
 
 /** Whether findings print as GitHub Actions annotations, which GitHub shows on the pull request's diff. */
 export const inGitHubActions = () => process.env.GITHUB_ACTIONS === "true";
 
+/** The database the checks may read, when the project gives one in `INTERSITE_DATABASE_URL`; "" for none. */
+export function databaseUrl() {
+  return process.env.INTERSITE_DATABASE_URL ?? "";
+}
+
 /**
  * A finding as a GitHub Actions annotation line: still one line per finding.
  * @param {string} prefix the project's folder from the repository top (`git rev-parse --show-prefix`)
  * @param {string} title @param {{ file?: string, line?: number }} at `file` relative to the project
  * @param {string} text the line a terminal would print
+ * @param {"error" | "notice"} [level] a suggestion is a notice: it shows on the pull request and fails nothing
  */
-export function annotation(prefix, title, { file, line }, text) {
+export function annotation(prefix, title, { file, line }, text, level = "error") {
   const escape = (/** @type {string} */ s) => s.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A");
   const property = (/** @type {string} */ s) => escape(s).replaceAll(":", "%3A").replaceAll(",", "%2C");
   const where = [file && `file=${property(posix.normalize(prefix + file))}`, line && `line=${line}`, `title=${property(title)}`].filter(Boolean).join(",");
-  return `::error ${where}::${escape(text)}`;
+  return `::${level} ${where}::${escape(text)}`;
 }
 
 /** @type {Map<string, string> | undefined} */

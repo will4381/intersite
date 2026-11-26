@@ -265,7 +265,7 @@ fn attr_string(text: &str, attr: &str) -> Option<String> {
     Some(rest[open + 1..open + 1 + close].to_string())
 }
 
-fn lower_first(name: &str) -> String {
+pub(crate) fn lower_first(name: &str) -> String {
     let mut chars = name.chars();
     chars.next().map(|c| c.to_lowercase().chain(chars).collect()).unwrap_or_default()
 }
@@ -1027,7 +1027,7 @@ static TYPED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\w+):\s*\{\s*Row:
 static REST: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/rest/v1/(\w+)").unwrap());
 
 /// A column as Postgres reads it: a quoted name keeps its case (`"Status"`), an unquoted one folds to lowercase.
-fn ident(name: &str) -> String {
+pub(crate) fn ident(name: &str) -> String {
     let last = name.rsplit('.').next().unwrap_or(name);
     match last.strip_prefix('"').and_then(|l| l.strip_suffix('"')) {
         Some(quoted) => quoted.to_string(),

@@ -38,8 +38,8 @@ function kindOf(output, code) {
 
 /**
  * @typedef {{ file?: string, line?: number, target: string, message: string }} Finding
- * @typedef {{ name: string, code: number, findings: Finding[], acknowledged: Finding[], output: string[] }} Record
- *   one stage's result; `output` is what a project check or replay printed, kept for `--json`
+ * @typedef {{ name: string, code: number, findings: Finding[], acknowledged: Finding[], suggestions: Finding[], output: string[] }} Record
+ *   one stage's result; `suggestions` fail nothing; `output` is what a project check or replay printed, kept for `--json`
  */
 
 /**
@@ -99,7 +99,7 @@ function gatePool(size) {
   };
   idle.push(...workers);
   return {
-    /** @param {{ argv: string[], cwd: string, silent: boolean }} job @returns {Promise<{ code: number, out: string[], err: string[], findings: Finding[], accepted: Finding[] }>} */
+    /** @param {{ argv: string[], cwd: string, silent: boolean }} job @returns {Promise<{ code: number, out: string[], err: string[], findings: Finding[], accepted: Finding[], suggestions?: Finding[] }>} */
     run: (job) => new Promise((done) => (queue.push({ job, done }), next())),
     close: () => Promise.all(workers.map((worker) => worker.terminate())),
   };
@@ -110,7 +110,7 @@ function gatePool(size) {
  * replay would print is kept as the stage's output, and replay's `FAIL` lines are its findings.
  * @param {{ name: string, command: string, argv: string[], check?: { name: string, run: string, cwd: string } }} stage
  * @param {string} cwd @param {Record} record @param {boolean} silent
- * @param {Promise<{ code: number, out: string[], err: string[], findings: Finding[], accepted: Finding[] }>} [pooled] the stage's answer from a gate worker
+ * @param {Promise<{ code: number, out: string[], err: string[], findings: Finding[], accepted: Finding[], suggestions?: Finding[] }>} [pooled] the stage's answer from a gate worker
  * @returns {Promise<number>}
  */
 async function runStage(stage, cwd, record, silent, pooled) {
@@ -121,6 +121,7 @@ async function runStage(stage, cwd, record, silent, pooled) {
     for (const line of answer.err) console.error(line);
     record.findings.push(...answer.findings);
     record.acknowledged.push(...answer.accepted);
+    record.suggestions.push(...(answer.suggestions ?? []));
     return answer.code;
   }
   const run = (await import(`./${stage.command}.mjs`)).default;
@@ -130,10 +131,11 @@ async function runStage(stage, cwd, record, silent, pooled) {
     return run(stage.argv, { cwd, quiet: true, silent, collect });
   }
   if (stage.command === "gate") {
-    /** @param {{ findings: Finding[], accepted: Finding[] }} result */
-    const collect = ({ findings, accepted }) => {
+    /** @param {{ findings: Finding[], accepted: Finding[], suggestions?: Finding[] }} result */
+    const collect = ({ findings, accepted, suggestions = [] }) => {
       record.findings.push(...findings);
       record.acknowledged.push(...accepted);
+      record.suggestions.push(...suggestions);
     };
     return run(stage.argv, { cwd, quiet: true, silent, collect });
   }
@@ -192,7 +194,7 @@ export default async function check(argv, { cwd }) {
   const tag = await upgrade;
   if (inRepo) addToLedger(cwd, flags.base ?? config.gates.base, records);
   if (flags.json) {
-    console.log(JSON.stringify({ ok: !failed.length, stages: records.map(({ name, code, findings, output }) => ({ name, ok: code === 0, code, findings, ...(output.length && { output }) })), skipped, ...(tag && { upgrade: tag }) }));
+    console.log(JSON.stringify({ ok: !failed.length, stages: records.map(({ name, code, findings, suggestions, output }) => ({ name, ok: code === 0, code, findings, ...(suggestions.length && { suggestions }), ...(output.length && { output }) })), skipped, ...(tag && { upgrade: tag }) }));
     return worst;
   }
   if (tag) console.log(`upgrade intersite: ${tag} is out and this is v${installed}; install github:will4381/intersite#${tag} as a dev dependency (npm i -D, or the project's package manager), then run \`npx intersite init\``);
@@ -304,7 +306,7 @@ async function runStages(stages, cwd, silent) {
   /** @param {Stage} stage @param {Parameters<typeof runStage>[4]} [pooled] */
   const runOne = async (stage, pooled) => {
     /** @type {Record} */
-    const record = { name: stage.name, code: 0, findings: [], acknowledged: [], output: [] };
+    const record = { name: stage.name, code: 0, findings: [], acknowledged: [], suggestions: [], output: [] };
     records.push(record);
     record.code = await runStage(stage, cwd, record, silent, pooled);
     if (record.code !== 0) failed.push(stage.name);

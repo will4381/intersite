@@ -7,7 +7,7 @@
 // database, and a sequential scan of a large table is reported with the index to add. The work is in core/sql.rs.
 
 import { fromEngine, runCore } from "./core.mjs";
-import { JS_FILE, NOT_PRODUCT, SKIP, changeOf, listFiles, matches } from "./lib.mjs";
+import { JS_FILE, NOT_PRODUCT, SKIP, changeOf, databaseUrl, listFiles, matches } from "./lib.mjs";
 
 /** Scripts, CI and deploy files: where a command that empties a database runs unattended (core/sql.rs reads them). */
 const DEPLOY = /(?:^|\/)(?:package\.json|Dockerfile[^/]*|[^/]*\.Dockerfile|Makefile|Justfile|justfile|Procfile|vercel\.json|netlify\.toml|fly\.toml|render\.ya?ml|railway\.(?:json|toml)|nixpacks\.toml|\.gitlab-ci\.ya?ml|bitbucket-pipelines\.ya?ml|[^/]*\.sh)$|(?:^|\/)\.github\/workflows\/[^/]+\.ya?ml$/;
@@ -19,7 +19,7 @@ export async function sql({ cwd, base, testPaths }) {
   // Every migration is read, for the indexes a new foreign key may already have; code only where it changed.
   // Scripts, CI and deploy files are read where they changed, for commands that empty a database.
   const files = listFiles(top).filter((f) => !SKIP.test(f) && !matches(f, testPaths) && (/\.(?:sql|prisma)$/.test(f) || ((JS_FILE.test(f) && !NOT_PRODUCT.test(f)) || DEPLOY.test(f)) && (whole || added.has(f))));
-  const answer = runCore({ command: "sql", root: top, files, added: whole ? undefined : Object.fromEntries(added), prefix, databaseUrl: process.env.INTERSITE_DATABASE_URL ?? "" });
+  const answer = runCore({ command: "sql", root: top, files, added: whole ? undefined : Object.fromEntries(added), prefix, databaseUrl: databaseUrl() });
   const findings = fromEngine(answer.findings, prefix);
   return { findings, summary: answer.summary };
 }
