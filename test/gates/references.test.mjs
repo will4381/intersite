@@ -161,3 +161,84 @@ test("a shallow clone has no history to ask: only what the prose asserts is repo
   execFileSync("git", ["clone", "-q", "--depth", "1", `file://${r.root}`, shallow]);
   assert.deepEqual(await whole(shallow), ["docs/api.md:3 names `docs/missing.md`, which is not in the repository: point it at the real file, or drop it"]);
 });
+
+test("a plan or survey known by its first lines, a table that maps names, and what is elsewhere are not judged line by line", async () => {
+  const r = repo({ ...BASE, "src/lib/parser.ts": "export const parse = 1;\n" });
+  r.rm("src/lib/parser.ts");
+  r.commit("drop the parser");
+  r.write({
+    "docs/layout.md": "# Repository layout move: mapping and move plan\n\n`src/lib/parser.ts` becomes `src/lib/grammar.ts`.\n",
+    "docs/plans/p160.md": "# p160\n\np160 adds the CI `test:setup` step.\n",
+    "docs/icons.md": "# Icons\n\n| Lucide | Ours |\n|---|---|\n| `AlertCircle` | `AppError` |\n| `solar:add-bold` | `AddCircleIcon` |\n\n- `RotateCcw` → `UndoIcon`.\n",
+    "docs/handoff.md": [
+      "# Handoff",
+      "",
+      "- The **`docs/IMPROVE.md` deletion** is merged.",
+      "- The register (`docs/decisions.md` on the docs PR) wins.",
+      "- The wiring plan is `docs/WIRING.md` in the Urbanmount repo.",
+      "",
+    ].join("\n"),
+  });
+  assert.deepEqual(await check(r.cwd), []);
+  r.commit("docs");
+  assert.match((await whole(r.cwd)).join("\n"), /^ok gate references: .*, 0 references that point at nothing$/);
+});
+
+test("a file most of whose paths are stale is reported once, at its first", async () => {
+  const gone = ["alpha", "beta", "gamma", "delta", "kappa", "omega", "sigma"].map((n) => `src/old/${n}.ts`);
+  const r = repo({ ...BASE, ...Object.fromEntries(gone.map((f) => [f, "export const x = 1;\n"])) });
+  for (const f of gone) r.rm(f);
+  r.commit("drop the old folder");
+  const sha = r.git("rev-parse", "--short", "HEAD").trim();
+  const day = r.git("log", "-1", "--format=%as").trim();
+  r.write({ "docs/tour.md": `# Tour\n\n${gone.map((f) => `- \`${f}\``).join("\n")}\n- \`src/lib/errors.ts\`\n- \`docs/guide.md\`\n` });
+  r.commit("docs");
+  assert.deepEqual(await whole(r.cwd), [
+    `docs/tour.md:3 names \`src/old/alpha.ts\`, which is not in the repository (7 of the 9 paths this file gives are not here, this one first): src/old/alpha.ts was deleted in ${sha} (${day}); point it at where that lives now, or drop it`,
+  ]);
+});
+
+test("git's ignored folders, paths only another branch has, and a site's own routes are left alone", async () => {
+  const r = repo({ ...BASE, ".gitignore": "/.recovery/\n", "site/src/pages/llms.txt.ts": "export const GET = () => 1;\n", "docs/site/plans/governance.md": "# Governance\n\n## Rules\n" });
+  r.git("checkout", "-qb", "docs-pr");
+  r.write({ "docs/product/training.md": "# Training\n" });
+  r.commit("training docs");
+  r.git("checkout", "-q", "main");
+  r.write({
+    "CLAUDE.md": "# Rules\n\nLog what you changed in `.recovery/`.\n",
+    "docs/notes.md": "# Notes\n\nThe page `docs/product/training.md` says how training works.\n",
+    "site/src/docs/agents.md": "# Agents\n\n[/llms.txt](/llms.txt) indexes these docs.\n",
+    "docs/site/plans/p1.md": "# P1\n\nPer [the rules](/plans/governance.md#rules), and see [nothing](/plans/missing.md).\n",
+  });
+  assert.deepEqual(await check(r.cwd), [`docs/site/plans/p1.md:3 links to \`/plans/missing.md\`, which is not in the repository: ${NEVER}`]);
+});
+
+test("history is cited only for the file a path names: a bare name many files had is not one of them", async () => {
+  const r = repo({ ...BASE, "src/db/client.ts": "export const a = 1;\n", "src/api/client.ts": "export const b = 1;\n", "src/lib/parser.ts": "export const p = 1;\n" });
+  r.rm("src/db/client.ts");
+  r.rm("src/api/client.ts");
+  r.rm("src/lib/parser.ts");
+  r.commit("drop the clients and the parser");
+  const sha = r.git("rev-parse", "--short", "HEAD").trim();
+  const day = r.git("log", "-1", "--format=%as").trim();
+  r.write({ "CLAUDE.md": "# Rules\n\nThe client is `client.ts`; the grammar is `parser.ts`.\n" });
+  assert.deepEqual(await check(r.cwd), [
+    `CLAUDE.md:3 names \`client.ts\`, which is not in the repository: ${NEVER}`,
+    `CLAUDE.md:3 names \`parser.ts\`, which is not in the repository: src/lib/parser.ts was deleted in ${sha} (${day}); point it at where that lives now, or drop it`,
+  ]);
+});
+
+test("in a project in a subfolder, only its own prose is judged, a nested project's left out, and an acknowledged finding is not reported", async () => {
+  const r = repo({ "apps/web/src/lib/errors.ts": "export class AppError extends Error {}\n", "apps/web/packages/sub/intersite.json": JSON.stringify({ project: "sub" }) }, {}, { at: "apps/web" });
+  r.write({
+    "apps/web/docs/new.md": "# New\n\nSee `docs/setup.md`.\n",
+    "apps/web/packages/sub/docs/new.md": "# Sub\n\nSee `docs/setup.md`.\n",
+    "docs/top.md": "# Top\n\nSee `docs/setup.md`.\n",
+  });
+  const first = await run(r.cwd, ["references", "--json"]);
+  const findings = JSON.parse(first.out[0]).findings;
+  assert.deepEqual(findings.map((/** @type {{ target: string }} */ f) => f.target), ["references:docs/new.md:docs/setup.md"]);
+  r.write({ "apps/web/intersite.json": JSON.stringify({ project: "t", gates: { base: "base", acknowledged: [{ gate: "references", target: findings[0].target, why: "the setup guide lands next" }] } }) });
+  const second = await run(r.cwd, ["references"]);
+  assert.equal(second.code, 0, second.out.join("\n"));
+});

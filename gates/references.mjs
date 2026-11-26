@@ -15,8 +15,9 @@ const CODE = /\.(?:[cm]?[jt]sx?|swift|kts?|java|rs|go)$/;
 
 /**
  * One reference the engine found pointing at nothing: how often the file names it, and for a path, the path asked
- * about, whether it is a Markdown link, and whether the prose gives it as an example or something to build.
- * @typedef {{ count: number, path?: string, link?: boolean, soft?: boolean }} Ref
+ * about, whether it is a Markdown link, whether the prose gives it as an example or something to build, and how many
+ * paths its file gives.
+ * @typedef {{ count: number, path?: string, link?: boolean, soft?: boolean, paths?: number }} Ref
  */
 
 /**
@@ -47,8 +48,8 @@ export async function references({ cwd, base }) {
   const asked = [...new Set([...Object.values(found).flatMap((r) => (r.path === undefined ? [] : [r.path])), ...Object.values(docs).flatMap((d) => d.missing)])];
   const ignored = ignoredPaths(top, asked);
   const shallow = git(top, ["rev-parse", "--is-shallow-repository"]).trim() === "true";
-  const past = history(top, asked.filter((p) => !ignored.has(p)), shallow);
-  const kept = answer.findings.filter((f) => asserted(found[f.target], ignored, past));
+  const past = history(top, asked.filter((p) => !ignored.has(p)), shallow, files);
+  const kept = capped(answer.findings.filter((f) => asserted(found[f.target], ignored, past)), found);
   const findings = kept.map((f) => ({ ...f, message: f.message + whyMissing(found[f.target], past, shallow) }));
   const ended = finishedDocs(docs, ignored, past);
   const count = kept.reduce((n, f) => n + (found[f.target]?.count ?? 1), 0);
@@ -93,14 +94,39 @@ function ownFiles(cwd, prefix, files) {
 }
 
 /**
- * Whether a finding stands. One that is not a path does. A path git ignores does not. A path history knows, or a
- * link, does: it is stale or broken. A path that never was stands only where the prose asserts it.
+ * Whether a finding stands. One that is not a path does. A path git ignores does not. A path history deleted, or a
+ * link, does: it is stale or broken. A path history only added does not: it is on another branch, or removed and not
+ * committed. A path that never was stands only where the prose asserts it.
  * @param {Ref | undefined} ref @param {Set<string>} ignored @param {Past} past
  */
 function asserted(ref, ignored, past) {
   if (ref?.path === undefined) return true;
   if (ignored.has(ref.path)) return false;
-  return ref.link || past.of(ref.path) !== undefined || !ref.soft;
+  const was = past.of(ref.path);
+  return ref.link || was?.deleted || (!was && !ref.soft);
+}
+
+/**
+ * One finding for a file most of whose paths are stale: a plan or survey named otherwise, or a file about another
+ * checkout. Its first stale path stands for the rest, as the engine lets a file whose code names are mostly not this
+ * repository's go unjudged.
+ * @param {{ file: string, line: number, target: string, message: string }[]} findings @param {Record<string, Ref>} found
+ */
+function capped(findings, found) {
+  /** @type {Map<string, number>} */
+  const stale = new Map();
+  for (const f of findings) if (found[f.target]?.path !== undefined) stale.set(f.file, (stale.get(f.file) ?? 0) + (found[f.target]?.count ?? 1));
+  /** @type {Set<string>} */
+  const first = new Set();
+  return findings.flatMap((f) => {
+    const ref = found[f.target];
+    const n = stale.get(f.file) ?? 0;
+    const of = ref?.paths ?? 0;
+    if (ref?.path === undefined || n <= ref.count || of < 8 || n * 10 <= of * 6) return [f];
+    if (first.has(f.file)) return [];
+    first.add(f.file);
+    return [{ ...f, message: `${f.message} (${n} of the ${of} paths this file gives are not here, this one first)` }];
+  });
 }
 
 /**
@@ -139,12 +165,15 @@ function finishedDocs(docs, ignored, past) {
 
 /**
  * The paths git ignores: a local file (`.env.local`) or a build's output, which a doc may name and a checkout lacks.
+ * Each is asked as a folder too: `/.recovery/` ignores `.recovery/` and not `.recovery`, which git cannot tell is a
+ * folder when it is not there.
  * @param {string} top @param {string[]} paths
  */
 function ignoredPaths(top, paths) {
   if (!paths.length) return new Set();
-  const run = withStdin(paths.join("\n") + "\n", (fd) => spawnSync("git", ["check-ignore", "--no-index", "--stdin"], { cwd: top, stdio: [fd, "pipe", "pipe"], encoding: "utf8" }));
-  return new Set(run.stdout.split("\n").filter(Boolean));
+  const asked = paths.flatMap((p) => [p, `${p}/`]).join("\n") + "\n";
+  const run = withStdin(asked, (fd) => spawnSync("git", ["check-ignore", "--no-index", "--stdin"], { cwd: top, stdio: [fd, "pipe", "pipe"], encoding: "utf8" }));
+  return new Set(run.stdout.split("\n").filter(Boolean).map((p) => p.replace(/\/$/, "")));
 }
 
 /**
@@ -190,13 +219,16 @@ function recordChange(byName, edited, commit, status, file) {
 
 /**
  * What history knows of each missing path: when it was deleted, else when it was added (it is on another branch, or
- * removed in the working tree and not committed yet), else undefined: nothing at it ever was. A path cut short at a
- * space (`App/src/x.js` for `Mobile App/src/x.js`) matches too. A shallow clone has no history to tell, so every
- * path reads as never there: only what the prose asserts is reported.
- * @param {string} top @param {string[]} paths @param {boolean} shallow @returns {Past}
+ * removed in the working tree and not committed yet), else undefined: nothing at it ever was. A longer path that ends
+ * in it matches too, the closest first, and one cut short at a space (`App/src/x.js` for `Mobile App/src/x.js`); a
+ * file name alone only when history had one file of that name (`client.ts` could be any). A path that is there now is
+ * not what the prose meant. A shallow clone has no history to tell, so every path reads as never there: only what
+ * the prose asserts is reported.
+ * @param {string} top @param {string[]} paths @param {boolean} shallow @param {string[]} files @returns {Past}
  */
-function history(top, paths, shallow) {
+function history(top, paths, shallow, files) {
   if (!paths.length || shallow) return { of: () => undefined, edited: new Map() };
+  const here = new Set(files.flatMap((f) => f.split("/").map((_, i, parts) => parts.slice(0, i + 1).join("/"))));
   const { byName, edited } = walkHistory(top);
   /** @type {Map<string, Was | undefined>} */
   const known = new Map();
@@ -204,7 +236,9 @@ function history(top, paths, shallow) {
   const of = (path) => {
     if (known.has(path)) return known.get(path);
     const seen = byName.get(path.split("/").pop() ?? "") ?? new Map();
-    const matches = [...seen.keys()].filter((p) => p === path || p.endsWith(`/${path}`) || p.endsWith(` ${path}`));
+    const others = [...seen.keys()].filter((p) => !here.has(p));
+    const ends = others.filter((p) => p === path || p.endsWith(`/${path}`) || p.endsWith(` ${path}`)).sort((a, b) => a.length - b.length);
+    const matches = path.includes("/") || ends.length === 1 ? ends : ends.filter((p) => p === path);
     const hit = matches.find((p) => seen.get(p)?.deleted) ?? matches[0];
     const change = seen.get(hit);
     const [sha, date] = change ? change.commit.split(" ") : [];

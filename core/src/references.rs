@@ -172,6 +172,21 @@ fn is_plan(file: &str) -> bool {
     is_prose(file) && path_words(file).iter().any(|w| among(PLAN_WORDS, w))
 }
 
+/// A plan, survey or dated report named otherwise, known by its first lines: a title with a plan's word (`# Layout
+/// move: mapping and move plan`, `# API: target surface`) or a date (`# Browser QA (2026-11-25)`), or `Prepared <date>`
+/// under it.
+fn planned(src: &str) -> bool {
+    src.lines().filter(|l| !l.trim().is_empty()).take(4).any(|l| {
+        let t = l.trim_start_matches(['#', '>', '*', '_', ' ']);
+        t.starts_with("Prepared ")
+            || (l.starts_with('#')
+                && (DATED.is_match(t)
+                    || t.to_ascii_lowercase()
+                        .split(|c: char| !c.is_alphanumeric())
+                        .any(|w| among(PLAN_WORDS, w) || among("mapping survey target", w))))
+    })
+}
+
 /// A record kept on purpose however much of it is gone: a changelog, release notes, or an archive.
 fn kept_on_purpose(file: &str) -> bool {
     let words = path_words(file);
@@ -180,15 +195,15 @@ fn kept_on_purpose(file: &str) -> bool {
         || (has("release") && has("notes"))
 }
 
-/// What sort of plan or record a file is, for its finding.
-fn record_kind(file: &str) -> &'static str {
+/// What sort of plan or record a file is, for its finding; `plan` when its first lines say it is one.
+fn record_kind(file: &str, plan: bool) -> &'static str {
     const REPORTS: &str = "audit audits report reports findings postmortem postmortems retro retros retrospective evidence incidents";
     const LOGS: &str = "log logs ledger execution executions sessions transcripts handoff handoffs journal minutes notes";
     let words = path_words(file);
     let has = |list: &str| words.iter().any(|w| among(list, w));
     if has("decisions decision adr adrs") {
         "a decision record"
-    } else if is_plan(file) {
+    } else if plan || is_plan(file) {
         "a plan"
     } else if has(REPORTS) {
         "an audit or report"
@@ -213,7 +228,7 @@ static CHECKBOX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*(?:[-*+]|\d
 /// decision record in force (`Accepted`, `Implemented`) still guides the code; only one superseded or dropped is over.
 fn finished(file: &str, src: &str) -> Option<String> {
     let head: String = src.lines().take(40).collect::<Vec<_>>().join("\n");
-    let decision = record_kind(file) == "a decision record";
+    let decision = record_kind(file, false) == "a decision record";
     for cap in STATUS.captures_iter(&head) {
         let status = cap[1].to_ascii_lowercase();
         let over = matches!(
@@ -272,7 +287,7 @@ static JOB_AFTER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*(?:job|job
 static JOB_BEFORE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b(?:job|step|workflow)\s*$").unwrap());
 /// A sentence about CI: "job", "step" and "workflow" are also everyday words of the product's own domain.
 static CI_CONTEXT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i-u)\b(?:ci|github|actions|pipeline|pr checks|pr-checks|workflow file)\b|\.ya?ml\b").unwrap());
+    LazyLock::new(|| Regex::new(r"(?i-u)\b(?:ci|github|pipeline|pr checks|pr-checks|workflow file)\b|\.ya?ml\b").unwrap());
 /// An endpoint written like a path: `GET service_areas/geo_json`.
 static ROUTE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s").unwrap());
 /// A sentence that gives a name as an example or a counter-example, or says it is not there.
@@ -552,7 +567,10 @@ fn code_shaped(name: &str, file: &str) -> bool {
     let mut chars = n.chars();
     let (Some(first), Some(second)) = (chars.next(), chars.next()) else { return false };
     let humps = n.chars().skip(1).filter(char::is_ascii_uppercase).count();
-    n.len() >= 6
+    // Digits in three places or more make an id (a file key, a hash), not a name: `rstqrLfXy9hi6oLQX3aFHt`.
+    let digit_runs = n.split(|c: char| !c.is_ascii_digit()).filter(|s| !s.is_empty()).count();
+    digit_runs < 3
+        && n.len() >= 6
         && humps >= 1
         && n.chars().any(|c| c.is_ascii_lowercase())
         && (first.is_ascii_lowercase() || (first.is_ascii_uppercase() && second.is_ascii_lowercase()))
@@ -777,9 +795,11 @@ static DOMAIN: LazyLock<Regex> = LazyLock::new(|| {
 });
 // ponytail: whether a sentence is about the past, the future or an example is read from these words on the
 // reference's own line (and the line it wraps from); said another way, it is judged as a plain assertion.
-/// A sentence about what used to be: a reference that no longer resolves belongs in it.
+/// A sentence about what used to be, or what is elsewhere (on a pull request or branch, in another repository or a
+/// library): a reference that does not resolve here belongs in it. A code span the sentence quotes is read as a
+/// space, so "in the `api` repo" reads as "in the", three spaces and "repo".
 static HISTORY: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i-u)\b(?:was|were|renamed|former|formerly|previously|originally|replaced|replaces|supersedes|superseded|moved|used to|no longer|anymore|deleted|removed|dropped|retired|gone|lived|obsolete|legacy|deprecated|old|had|earlier|ago|instead of)\b").unwrap()
+    Regex::new(r"(?i-u)\b(?:was|were|renamed|former|formerly|previously|originally|replaced|replaces|supersedes|superseded|moved|used to|no longer|anymore|deleted|deletes|deletion|removed|removes|drops|dropped|retired|gone|lived|obsolete|legacy|deprecated|old|had|earlier|ago|instead of|(?:on|in|of|from) the\s+(?:[\w.#-]+\s+){0,3}(?:pr|branch)|in the (?:[\w.-]+ |\s{2,})(?:repo|repository|plugin|package|library|sdk))\b").unwrap()
 });
 /// A sentence about what is to come: what it names may not be built yet.
 static FUTURE: LazyLock<Regex> = LazyLock::new(|| {
@@ -1362,13 +1382,27 @@ impl Judge<'_> {
         let machine = ["/Users/", "/home/", "/tmp/", "/private/", "/var/", "/opt/", "/etc/", "/usr/", "/Volumes/", "/mnt/"]
             .iter()
             .any(|r| path.starts_with(r));
-        if (path.starts_with('/') && !has_extension(&path)) || machine || Self::outside(&path, file) {
+        // In a web app's own pages (a folder above the file holds `public/` or `pages/`), every link from its root is a
+        // route the app serves, `/llms.txt` included.
+        let mut above = parent(file);
+        let mut site = false;
+        while !above.is_empty() && !site {
+            site = ["public", "pages", "src/pages"].iter().any(|d| self.paths.dirs.contains(&join(above, d)));
+            above = parent(above);
+        }
+        if (path.starts_with('/') && (!has_extension(&path) || site)) || machine || Self::outside(&path, file) {
             return Verdict::Fine;
         }
         let resolved = if path.is_empty() {
             Some(file.to_string())
         } else if let Some(top) = path.strip_prefix('/') {
-            normalize(top)
+            // From the repository top, or from a docs site's root: a folder above the file (`/plans/x.mdx` in
+            // `docs/implementation/plans/y.mdx`).
+            let mut roots = vec![parent(file)];
+            while let Some(&dir) = roots.last().filter(|d| !d.is_empty()) {
+                roots.push(parent(dir));
+            }
+            roots.iter().rev().filter_map(|dir| normalize(&join(dir, top))).find(|r| self.paths.has_implied(r)).or_else(|| normalize(top))
         } else {
             normalize(&join(parent(file), &path))
         };
@@ -1496,13 +1530,22 @@ fn wording(sentence: &str) -> String {
     QUOTED.replace_all(sentence, " ").into_owned()
 }
 
-/// The line a reference is on, with the line before it when the reference opens its line: wrapped prose says "never
-/// copy it into" on one line and the path on the next.
+/// The line a reference is on, with the lines before it when the reference opens its line or the line carries on a
+/// wrapped list (it starts with code font): wrapped prose says "never copy it into" or "Release 2a deletes" on one
+/// line and the paths on the next.
 fn sentence_at(src: &str, at: usize) -> &str {
     let start = src[..at].rfind('\n').map_or(0, |i| i + 1);
     let end = src[at..].find('\n').map_or(src.len(), |i| at + i);
-    let opens = src[start..at].chars().all(|c| c.is_whitespace() || "`*_>([-/#".contains(c));
-    let from = if opens && start > 0 { src[..start - 1].rfind('\n').map_or(0, |i| i + 1) } else { start };
+    let carries = |line: usize| src[line..].trim_start().starts_with('`');
+    let mut from = start;
+    // ponytail: a wrapped sentence is followed back three lines at most, not parsed.
+    for _ in 0..3 {
+        let opens = from == start && src[start..at].chars().all(|c| c.is_whitespace() || "`*_>([-/#".contains(c));
+        if from == 0 || !(opens || carries(from)) {
+            break;
+        }
+        from = src[..from - 1].rfind('\n').map_or(0, |i| i + 1);
+    }
     &src[from..end]
 }
 
@@ -1563,14 +1606,16 @@ pub fn run(request: &Request) -> Result<Answer, String> {
             }
             let mentions = if is_prose(f) { markdown(&src) } else { comments(f, &src) };
             let lines = Lines::new(&src);
-            let (record, plan) = (is_record(f), is_plan(f));
+            let (record, plan) = (is_record(f), is_plan(f) || is_prose(f) && planned(&src));
             let mut out = vec![];
             // The code names the file's judged references give, and those the repository lacks.
             let (mut names, mut unknown) = (HashSet::new(), HashSet::new());
+            // How many paths and links it gives are judged.
+            let mut paths = 0;
             for m in &mentions {
                 let line = lines.line(m.at);
                 let judged = whole || request.changed(f, line);
-                if (!judged && record) || (plan && matches!(m.kind, Kind::Name | Kind::Path | Kind::Script)) {
+                if (!judged && record) || (plan && matches!(m.kind, Kind::Name | Kind::Path | Kind::Script | Kind::Job)) {
                     continue;
                 }
                 let place = format!("{f}:{line}");
@@ -1579,7 +1624,9 @@ pub fn run(request: &Request) -> Result<Answer, String> {
                 // A code name is judged on a change only when the change removed it from the code: that is history
                 // saying it was the code's. Every other missing name is listed when judging everything.
                 let message = if judged && (whole || m.kind != Kind::Name) {
-                    match judge.check(f, m, &place) {
+                    let verdict = judge.check(f, m, &place);
+                    paths += usize::from(matches!(m.kind, Kind::Path | Kind::Link));
+                    match verdict {
                         Verdict::Missing(message, path) => {
                             if m.kind == Kind::Name {
                                 unknown.insert(name_of(&m.text).unwrap_or(&m.text).to_string());
@@ -1590,6 +1637,19 @@ pub fn run(request: &Request) -> Result<Answer, String> {
                             if m.kind == Kind::Script
                                 && CD.captures(sentence).is_some_and(|c| judge.paths.find(&c[1], f, &request.prefix).is_none())
                             {
+                                continue;
+                            }
+                            // A table row or a line that maps a name to other code (another library's name to this
+                            // one's, the old to the new, a name to its file) is about one side, and which only the
+                            // reader knows.
+                            let row = line_at(&src, m.at);
+                            let at = m.at - (row.as_ptr() as usize - src.as_ptr() as usize);
+                            let cell = row[..at].matches('|').count();
+                            let mapped = row.trim_start().starts_with('|')
+                                && row.split('|').enumerate().any(|(i, c)| i != cell && c.contains('`'))
+                                || row.contains("` → `")
+                                || row.contains("` -> `");
+                            if m.kind == Kind::Name && mapped {
                                 continue;
                             }
                             let said = wording(sentence);
@@ -1614,13 +1674,18 @@ pub fn run(request: &Request) -> Result<Answer, String> {
                         path,
                         kind: m.kind,
                         soft,
+                        paths: 0,
                     });
                 }
             }
-            // Most of its code names are not this repository's: the file is about something else (a vendor's API,
-            // another project), and its names are not judged one by one.
-            if names.len() >= 8 && unknown.len() * 10 > names.len() * 6 {
+            // Two in five of its code names or more are not this repository's: the file is about something else (a
+            // vendor's API, another project, a naming convention), and its names are not judged one by one.
+            if names.len() >= 8 && unknown.len() * 5 > names.len() * 2 {
                 out.retain(|found| found.kind != Kind::Name);
+            }
+            // How many paths it gives, for the Node side: one whose paths are mostly stale gets one finding.
+            for found in &mut out {
+                found.paths = paths;
             }
             Some(out)
         })
@@ -1640,9 +1705,13 @@ pub fn run(request: &Request) -> Result<Answer, String> {
                     "readme.md" | "readme.mdx" | "index.md" | "index.mdx"
                 )
             })
-            .filter(|f| is_prose(f) && (is_record(f) || is_plan(f)) && !kept_on_purpose(f) && !FIXTURE.is_match(f) && !is_built(f))
+            .filter(|f| is_prose(f) && !kept_on_purpose(f) && !FIXTURE.is_match(f) && !is_built(f))
             .filter_map(|f| {
                 let src = text::read(&request.root, f)?;
+                let planned = planned(&src);
+                if !(is_record(f) || is_plan(f) || planned) {
+                    return None;
+                }
                 let (mut there, mut missing) = (BTreeSet::new(), BTreeSet::new());
                 for m in markdown(&src).iter().filter(|m| matches!(m.kind, Kind::Path | Kind::Link)) {
                     match judge.standing(f, m) {
@@ -1657,15 +1726,18 @@ pub fn run(request: &Request) -> Result<Answer, String> {
                 }
                 let done = finished(f, &src);
                 (done.is_some() || missing.len() >= 3).then(|| {
-                    (f.clone(), serde_json::json!({ "kind": record_kind(f), "there": there.len(), "missing": missing, "done": done }))
+                    (
+                        f.clone(),
+                        serde_json::json!({ "kind": record_kind(f, planned), "there": there.len(), "missing": missing, "done": done }),
+                    )
                 })
             })
             .collect::<Vec<_>>()
             .into_iter()
             .collect()
     };
-    // For the Node side: each reference's count and, for a path, the path git history is asked about and whether the
-    // prose asserts it.
+    // For the Node side: each reference's count and, for a path, the path git history is asked about, whether the
+    // prose asserts it, and how many paths its file gives.
     let mut refs = serde_json::Map::new();
     let mut merged = vec![];
     for f in found {
@@ -1675,6 +1747,7 @@ pub fn run(request: &Request) -> Result<Answer, String> {
             entry["path"] = path.clone().into();
             entry["link"] = (f.kind == Kind::Link).into();
             entry["soft"] = f.soft.into();
+            entry["paths"] = f.paths.into();
         }
         merged.push((f.target, f.finding));
     }
@@ -1693,6 +1766,8 @@ struct Found {
     kind: Kind,
     /// A path the prose does not assert (an example, something to build, a dot folder the repository lacks).
     soft: bool,
+    /// How many paths and links its file gives that were judged.
+    paths: usize,
 }
 
 #[cfg(test)]
@@ -1724,8 +1799,16 @@ mod tests {
 
     #[test]
     fn a_job_is_what_the_sentence_calls_one() {
-        let got = markdown("The `Intersite backend lint and gates` job in pr-checks.yml runs it, and so does job `gate`.\nA customer's `pending` job waits for a Pro.\n");
-        assert_eq!(texts(&got), vec![("Intersite backend lint and gates", Kind::Job), ("gate", Kind::Job), ("pending", Kind::Name)]);
+        let got = markdown("The `Intersite backend lint and gates` job in pr-checks.yml runs it, and so does job `gate`.\nA customer's `pending` job waits for a Pro.\nFailed actions add one `client_error_reported` step to the event.\n");
+        assert_eq!(
+            texts(&got),
+            vec![
+                ("Intersite backend lint and gates", Kind::Job),
+                ("gate", Kind::Job),
+                ("pending", Kind::Name),
+                ("client_error_reported", Kind::Name)
+            ]
+        );
     }
 
     #[test]
@@ -1797,6 +1880,16 @@ mod tests {
             assert!(!is_record(f), "{f}");
         }
         assert!(is_plan("docs/phase-5b/02-web-funnel.md") && is_plan("docs/todo/inbox.md") && !is_plan("docs/architecture.md"));
+        // Named otherwise, a plan, survey or dated report is known by its first lines.
+        for src in [
+            "# Repository layout move: mapping, change list and move plan\n",
+            "# Layout\n\nPrepared 2026-11-24 on branch `shipmas` (read-only survey).\n",
+            "# Lucra API — target surface\n",
+            "# Shipmas browser QA (2026-11-25)\n",
+        ] {
+            assert!(planned(src), "{src}");
+        }
+        assert!(!planned("# Architecture\n\nThe plan below is how requests flow.\n") && !planned("# Icons\n"));
     }
 
     #[test]
@@ -1809,8 +1902,8 @@ mod tests {
         assert_eq!(finished("docs/plans/x.md", "- [x] a\n- [x] b\n1. [X] c\n").as_deref(), Some("all 3 of its checkboxes are ticked"));
         assert_eq!(finished("docs/plans/x.md", "- [x] a\n- [x] b\n- [x] c\n- [ ] d\n"), None);
         assert!(kept_on_purpose("CHANGELOG.md") && kept_on_purpose("docs/archive/2026-01-plan.md") && !kept_on_purpose("docs/audits/x.md"));
-        assert_eq!(record_kind("docs/decisions/005-x.md"), "a decision record");
-        assert_eq!(record_kind("docs/audits/STORE_AUDIT_2026-09-05.md"), "an audit or report");
+        assert_eq!(record_kind("docs/decisions/005-x.md", false), "a decision record");
+        assert_eq!(record_kind("docs/audits/STORE_AUDIT_2026-09-05.md", false), "an audit or report");
     }
 
     #[test]
@@ -1830,6 +1923,21 @@ mod tests {
         assert_eq!(sentence_at(wrapped, wrapped.find('`').unwrap()), wrapped.trim_end());
         assert_eq!(sentence_at("a\nsee `x/y.md` here\n", 6), "see `x/y.md` here");
         assert!(is_instructions("CLAUDE.md") && is_instructions(".cursor/rules/api.mdc") && !is_instructions("docs/guide.md"));
+        // A list wrapped over lines is read from the line its sentence starts on.
+        let list = "Release 2a deletes the schema files: `a.ts`,\n`b.ts`, `c.ts`,\n`d.ts` and `e.ts`.\n";
+        assert!(HISTORY.is_match(&wording(sentence_at(list, list.find("`e.ts`").unwrap()))));
+        // What is elsewhere: on a pull request or branch, in another repository or a library.
+        for said in [
+            "- **`IMPROVE.md` deletion:** merged.",
+            "The register (`docs/decisions.md` on the docs PR) wins.",
+            "First take training out of the docs PR: the page `docs/training.mdx`.",
+            "The wiring plan is `docs/WIRING.md` in the Urbanmount repo.",
+            "It reads `src/x.ts` in the `backend` repo.",
+            "Set `merchantIdentifier` in the Stripe plugin.",
+        ] {
+            assert!(HISTORY.is_match(&wording(said)), "{said}");
+        }
+        assert!(!HISTORY.is_match(&wording("Settings are in the repo root: `config/app.ts`.")));
     }
 
     #[test]
@@ -1841,6 +1949,8 @@ mod tests {
             assert!(!code_shaped(n, "docs/a.md"), "{n}");
         }
         assert!(code_shaped("load_orders", "app/main.py") && !code_shaped("load_orders", "app/main.ts"));
+        // An id is not a name: a Figma file key.
+        assert!(!code_shaped("rstqrLfXy9hi6oLQX3aFHt", "docs/a.md") && code_shaped("Notification01Icon", "docs/a.md"));
     }
 
     #[test]
