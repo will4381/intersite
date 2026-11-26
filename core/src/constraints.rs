@@ -11,8 +11,7 @@ use sqlparser::tokenizer::{Location, Token};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::LazyLock;
 
-use crate::columns;
-use crate::datamodel::Schemas;
+use crate::columns::{self, Schemas};
 use crate::sql;
 
 /// The values a column may hold.

@@ -15,7 +15,7 @@ use regex::Regex;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::LazyLock;
 
-use crate::columns::{self, Column, Table};
+use crate::columns::{self, Column, Schemas, Table};
 use crate::constraints::{self, Allowed, Checks};
 use crate::statistics::{self, Stats};
 use crate::{sql, text, Answer, Finding, Request};
@@ -110,10 +110,12 @@ fn name_words(name: &str) -> Vec<String> {
 // ponytail: a table that only records what happened is known by a word of its name. Such tables leave their links
 // open on purpose (the record must outlive what it names); one named otherwise is asked to say so.
 /// Words that name a table of records: an event log, an audit trail, a queue, a snapshot.
-const RECORD_TABLES: &str = "log logs event events audit audits history snapshot snapshots outbox inbox queue archive backup import imports webhook metric metrics analytics impression impressions tracking";
+const RECORD_TABLES: &str = "log logs event events audit audits history snapshot snapshots outbox inbox queue archive backup import imports webhook metric metrics analytics impression impressions tracking deleted deletion deletions tombstone tombstones";
 /// Words that name an amount of money.
 const MONEY: &str =
     "amount price total subtotal fee fees cost balance payout charge refund tax tip discount revenue earnings salary wage budget cents";
+/// Last words of a name money words are in that say it holds no money: `platform_fee_bps`, `checked_refund_count`.
+const NOT_MONEY: &str = "bps rate rates pct percent percentage count ratio";
 /// Words that name a copy of a table set aside: a backup before a migration, last year's rows.
 const ASIDE: &str = "backup backups bak old tmp temp copy";
 /// Schemas a platform owns: Supabase's auth and storage, Postgres' own.
@@ -124,6 +126,12 @@ const HAPPENED: &str = "read sent paid seen done sold won lost given taken shown
 
 fn among(list: &str, word: &str) -> bool {
     list.split(' ').any(|w| w == word)
+}
+
+/// Whether a column's name says it holds an amount of money.
+fn money(name: &str) -> bool {
+    let words = name_words(name);
+    words.iter().any(|w| among(MONEY, w)) && !words.last().is_some_and(|w| among(NOT_MONEY, w))
 }
 
 /// The schemas' tables with what the checks ask of them.
@@ -184,13 +192,6 @@ fn judged(table: &Table) -> bool {
     !among(PLATFORM_SCHEMAS, &table.schema) && !table.name.starts_with('_') && !table.name.contains("migrations")
 }
 
-/// A schema kept as a record: under docs, an archive or a backup, or in a dated path.
-static COPY: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?i)(?:^|/)(?:docs?|[\w-]*docs|archive[sd]?|backups?|snapshots?|baselines?|validation)/|(?:19|20)\d\d[-_]?[01]\d[-_]?[0-3]\d",
-    )
-    .unwrap()
-});
 /// A statement that makes or alters a table, up to its end: a guarded migration runs one inside `DO $$ … $$`, which
 /// the parser does not read, so foreign keys are also looked for in the text.
 static TABLE_STATEMENT: LazyLock<Regex> = LazyLock::new(|| {
@@ -199,6 +200,14 @@ static TABLE_STATEMENT: LazyLock<Regex> = LazyLock::new(|| {
 static FOREIGN_KEY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?is)\bforeign\s+key\s*\(([^)]*)\)\s*references\b").unwrap());
 static INLINE_REFERENCE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"(?im)^\s*(?:add\s+column\s+(?:if\s+not\s+exists\s+)?)?"?(\w+)"?\s+[^,\n]*?\breferences\b"#).unwrap());
+
+/// A column renamed, which keeps its foreign key.
+static RENAMED: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?i)\balter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?((?:"?\w+"?\.)?"?\w+"?)\s+rename\s+column\s+("?\w+"?)\s+to\s+("?\w+"?)"#,
+    )
+    .unwrap()
+});
 
 static CREATED: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)\bcreate\s+(?:(?:global|local)\s+)?(temp(?:orary)?\s+)?(?:unlogged\s+)?table\s+(?:if\s+not\s+exists\s+)?((?:"?\w+"?\.)?"?\w+"?)"#).unwrap()
@@ -370,10 +379,10 @@ fn twice_told(model: &Model, out: &mut Vec<Flaw>) {
 /// A table no statement gives a primary key.
 fn no_key(model: &Model, out: &mut Vec<Flaw>) {
     for table in model.tables.values().filter(|t| judged(t)) {
-        // ponytail: a Drizzle table's `.primaryKey()` is not read, so a Drizzle table is taken to have one.
-        let keyed = table.source == 1 || table.indexes.iter().any(|i| i.primary) || model.checks.keyed.contains(&table.name);
-        // A copy set aside by a migration (`orders_backup_20260728`) is not a table of the model.
-        let aside = name_words(&table.name).iter().any(|w| among(ASIDE, w));
+        let keyed = table.indexes.iter().any(|i| i.primary) || model.checks.keyed.contains(&table.name);
+        // A copy set aside by a migration (`orders_backup_20260728`, `CREATE TABLE … AS SELECT`) is not a table of the
+        // model, and a Drizzle table with a spread may have its key in it.
+        let aside = !table.complete || name_words(&table.name).iter().any(|w| among(ASIDE, w));
         if !keyed && !aside {
             let message = format!(
                 "{} has no primary key: two rows can be alike in every column, and nothing can point at one of them. Give it a key",
@@ -515,10 +524,8 @@ fn two_types(model: &Model, out: &mut Vec<Flaw>) {
     for table in model.tables.values().filter(|t| judged(t)) {
         for column in &table.columns {
             let (family, array) = model.kind(table, column);
-            let words = name_words(&column.name);
-            let money = words.iter().any(|w| among(MONEY, w));
-            if !array && family != Family::Other && (model.target(&column.name).is_some() || money) {
-                by_name.entry(words.join("_")).or_default().push((table, column, family));
+            if !array && family != Family::Other && (model.target(&column.name).is_some() || money(&column.name)) {
+                by_name.entry(name_words(&column.name).join("_")).or_default().push((table, column, family));
             }
         }
     }
@@ -528,12 +535,19 @@ fn two_types(model: &Model, out: &mut Vec<Flaw>) {
             *count.entry(*family).or_default() += 1;
         }
         let Some((&most, &n)) = count.iter().max_by_key(|(_, n)| **n) else { continue };
-        // The type most tables give it is the name's; one as common as another has no odd one out.
-        if count.len() < 2 || n < 2 || count.values().filter(|c| **c == n).count() > 1 {
-            continue;
-        }
-        let others: Vec<&str> = uses.iter().filter(|(_, _, f)| *f == most).take(2).map(|(t, _, _)| t.name.as_str()).collect();
-        for (table, column, family) in uses.iter().filter(|(_, _, f)| *f != most) {
+        // The type most tables give it is the name's; one as common as another has no odd one out. A number is judged
+        // by its width alone: an integer where others are bigint runs out first, whichever is more common, and an
+        // integer beside a float or a numeric is a choice of what it holds, not a slip.
+        let most = (n >= 2 && count.values().filter(|c| **c == n).count() == 1).then_some(most);
+        let number = |f: Family| matches!(f, Family::Integer | Family::Bigint | Family::Float | Family::Numeric);
+        for (table, column, family) in uses {
+            let want = match most {
+                _ if *family == Family::Integer && count.contains_key(&Family::Bigint) => Family::Bigint,
+                Some(most) if most != *family && !(number(most) && number(*family)) => most,
+                _ => continue,
+            };
+            let n = count[&want];
+            let others: Vec<&str> = uses.iter().filter(|(_, _, f)| *f == want).take(2).map(|(t, _, _)| t.name.as_str()).collect();
             out.push(flaw(
                 &column.file,
                 column.line,
@@ -545,7 +559,7 @@ fn two_types(model: &Model, out: &mut Vec<Flaw>) {
                     column.name,
                     family.name(),
                     column.name,
-                    most.name(),
+                    want.name(),
                     n,
                     others.join(", ")
                 ),
@@ -612,7 +626,7 @@ fn wrong_types(model: &Model, postgres: bool, out: &mut Vec<Flaw>) {
                     zoned + bare
                 ),
             ));
-        } else if *family == Family::Float && name_words(&column.name).iter().any(|w| among(MONEY, w)) {
+        } else if *family == Family::Float && money(&column.name) {
             out.push(flaw(
                 &column.file,
                 column.line,
@@ -696,58 +710,12 @@ fn idle_enums(model: &Model, sources: &[(String, String)], out: &mut Vec<Flaw>) 
     }
 }
 
-/// What a file brings to the model.
-enum Read {
-    Sql(String, String),
-    Prisma(String, String, Vec<Table>),
-    Drizzle(Vec<Table>),
-}
-
-/// What one file declares: SQL, a Prisma schema, or code that makes Drizzle tables. None for any other file.
-fn read_schema(root: &str, file: &str) -> Option<Read> {
-    let src = text::read(root, file)?;
-    match file.rsplit('.').next() {
-        Some("sql") => Some(Read::Sql(file.to_string(), src)),
-        Some("prisma") => {
-            let tables = columns::prisma_model(file, &src);
-            Some(Read::Prisma(file.to_string(), src, tables))
-        }
-        _ => (src.contains("drizzle-orm") && columns::defines_tables(&src)).then(|| Read::Drizzle(columns::drizzle_model(file, &src))),
-    }
-}
-
-/// What a request's files declare: the SQL in the order `columns` applies it, the Prisma schemas, and every table.
-pub(crate) struct Schemas {
-    pub(crate) sql_files: Vec<(String, String)>,
-    pub(crate) prisma_files: Vec<(String, String)>,
-    pub(crate) tables: HashMap<String, Table>,
-}
-
+/// What a request's files declare, as `columns` reads them, less the tables a migration makes only for its session.
 pub(crate) fn schemas(request: &Request) -> Schemas {
-    let mut reads: Vec<Read> = request.files.par_iter().filter_map(|file| read_schema(&request.root, file)).collect();
-    let mut sql_files: Vec<(String, String)> = vec![];
-    let mut prisma_files: Vec<(String, String)> = vec![];
-    let mut ormed: Vec<Table> = vec![];
-    // Where two schemas declare one table, the last read wins: the project's own after another package's, and a
-    // schema in use after a copy kept beside docs or dated (`docs/release-2026-09-18/schema-baseline.prisma`).
-    reads.sort_by_key(|read| match read {
-        Read::Prisma(file, _, _) => (file.starts_with(&request.prefix), !COPY.is_match(file), file.clone()),
-        _ => (false, false, String::new()),
-    });
-    for read in reads {
-        match read {
-            Read::Sql(file, src) => sql_files.push((file, src)),
-            Read::Prisma(file, src, tables) => {
-                prisma_files.push((file, src));
-                ormed.extend(tables);
-            }
-            Read::Drizzle(tables) => ormed.extend(tables),
-        }
-    }
-    let (mut tables, _) = columns::declared(&mut sql_files, ormed);
-    let scratch = scratch_tables(&sql_files);
-    tables.retain(|name, table| table.source != 0 || !scratch.contains(name));
-    Schemas { sql_files, prisma_files, tables }
+    let mut read = columns::schemas(request);
+    let scratch = scratch_tables(&read.sql_files);
+    read.tables.retain(|name, table| table.source != 0 || !scratch.contains(name));
+    read
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -769,7 +737,7 @@ pub fn run(request: &Request) -> Result<Answer, String> {
     let read = schemas(request);
     let checks = constraints::checks(&read.sql_files);
     let allowed = constraints::allowed(&read, &checks);
-    let Schemas { mut sql_files, prisma_files, tables } = read;
+    let Schemas { mut sql_files, prisma_files, tables, .. } = read;
     if tables.is_empty() {
         return Ok(Answer::new(vec![], "no database schema found".into()));
     }
@@ -778,12 +746,17 @@ pub fn run(request: &Request) -> Result<Answer, String> {
     let mut linked: HashSet<(String, String)> =
         foreign_keys.iter().flat_map(|fk| fk.columns.iter().map(|c| (fk.table.clone(), c.clone()))).collect();
     linked.extend(sql_files.iter().flat_map(|(_, src)| text_links(src)));
-    // ponytail: a Drizzle table's `.primaryKey()` and `.references()` are not read. Its keys and foreign keys are
-    // the SQL migrations'; with none in the repository no key is known, and its links are not judged.
+    for renamed in sql_files.iter().flat_map(|(_, src)| RENAMED.captures_iter(src)) {
+        let table = sql::bare(&renamed[1]);
+        if linked.contains(&(table.clone(), sql::bare(&renamed[2]))) {
+            linked.insert((table, sql::bare(&renamed[3])));
+        }
+    }
     let mut primary = inventory.primary.clone();
     for table in tables.values() {
         for (_, _, fields) in &table.relations {
-            // A relation names fields as code does; the database's name for each is what a foreign key holds.
+            // A Prisma relation or a Drizzle `.references()` names fields as code does; the database's name for each is
+            // what a foreign key holds.
             linked.extend(
                 fields.iter().filter_map(|f| table.columns.iter().find(|c| &c.key == f)).map(|c| (table.name.clone(), c.name.clone())),
             );
@@ -880,8 +853,11 @@ mod tests {
 
     #[test]
     fn a_foreign_key_added_in_a_guarded_block_or_a_prisma_relation_holds_the_link_and_records_are_left_open() {
-        let guarded = "create table orders (id uuid primary key, customer_id uuid not null);\nDO $$\nBEGIN\n  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_orders_customer') THEN\n    ALTER TABLE orders\n      ADD CONSTRAINT fk_orders_customer\n      FOREIGN KEY (customer_id) REFERENCES customers (id);\n  END IF;\nEND $$;\ncreate table order_events (id uuid primary key, customer_id uuid not null);\n";
+        let guarded = "create table orders (id uuid primary key, customer_id uuid not null);\nDO $$\nBEGIN\n  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_orders_customer') THEN\n    ALTER TABLE orders\n      ADD CONSTRAINT fk_orders_customer\n      FOREIGN KEY (customer_id) REFERENCES customers (id);\n  END IF;\nEND $$;\ncreate table order_events (id uuid primary key, customer_id uuid not null);\ncreate table deleted_customers (id uuid primary key, customer_id uuid not null);\ncreate table customer_deletion_jobs (id uuid primary key, customer_id uuid not null);\n";
         assert_eq!(targets("guarded", &[("migrations/001.sql", SHOP), ("migrations/002.sql", guarded)], None), Vec::<String>::new());
+        // A column renamed keeps the foreign key it had.
+        let renamed = "create table store_links (id uuid primary key, shop_id uuid references stores (id));\nalter table store_links rename column shop_id to store_id;\n";
+        assert_eq!(targets("renamed", &[("migrations/001.sql", SHOP), ("migrations/002.sql", renamed)], None), Vec::<String>::new());
         let prisma = "model Customer {\n  id     String  @id @db.Uuid\n  orders Order[]\n  @@map(\"customers\")\n}\nmodel Order {\n  id         String   @id @db.Uuid\n  customerId String   @map(\"customer_id\") @db.Uuid\n  storeId    String   @map(\"store_id\") @db.Uuid\n  customer   Customer @relation(fields: [customerId], references: [id])\n  @@map(\"orders\")\n}\nmodel Store {\n  id String @id @db.Uuid\n  @@map(\"stores\")\n}\n";
         assert_eq!(targets("relation", &[("prisma/schema.prisma", prisma)], None), vec!["data-model:open-link:orders.store_id"]);
     }
@@ -923,7 +899,7 @@ mod tests {
         assert!(suggested[1].2.contains("where 4 of the schema's 5 JSON columns say theirs"), "{}", suggested[1].2);
         // A schema that says the shape of one JSON column in five does not make a practice of it, and a copy a
         // migration set aside is not a table of the model.
-        let few = "create table events (id uuid primary key, a jsonb check (jsonb_typeof(a) = 'object'), b jsonb, c jsonb, d jsonb, loose jsonb);\ncreate table events_backup_20260728 (body text);\n";
+        let few = "create table events (id uuid primary key, a jsonb check (jsonb_typeof(a) = 'object'), b jsonb, c jsonb, d jsonb, loose jsonb);\ncreate table events_backup_20260728 (body text);\ncreate table kept_events as select * from events;\n";
         assert_eq!(targets("few", &[("migrations/001.sql", few)], None), Vec::<String>::new());
     }
 
@@ -989,11 +965,24 @@ mod tests {
             targets("two-types", &[("migrations/001.sql", sql)], None),
             vec!["data-model:two-types:notes.amount_cents", "data-model:two-types:notes.user_id"]
         );
+        // An integer is told to widen where another is bigint, however few; a bigint is never told to shrink, and a
+        // whole number beside a float or a numeric is not judged.
+        let numbers = "create table bills (id uuid primary key, amount_cents bigint, fee_bps integer);\ncreate table credits (id uuid primary key, amount_cents integer, fee_bps double precision);\ncreate table refunds (id uuid primary key, amount_cents integer, fee_bps double precision);\ncreate table disputes (id uuid primary key, amount_cents numeric);\n";
+        let [failing, _] = judged_as("numbers", &[("migrations/001.sql", numbers)], None, serde_json::json!({}));
+        assert_eq!(
+            failing.iter().map(|f| f.1.as_str()).collect::<Vec<_>>(),
+            vec!["data-model:two-types:credits.amount_cents", "data-model:two-types:refunds.amount_cents"]
+        );
+        assert!(
+            failing[0].2.contains("credits.amount_cents is integer, and amount_cents is bigint in 1 other tables (bills)"),
+            "{}",
+            failing[0].2
+        );
     }
 
     #[test]
     fn a_timestamp_without_a_zone_is_the_slip_only_where_the_schema_keeps_zones_and_money_is_not_a_float() {
-        let zoned = "create table jobs (\n  id uuid primary key,\n  created_at timestamptz,\n  updated_at timestamptz,\n  started_at timestamptz,\n  ended_at timestamp with time zone,\n  seen_at timestamp,\n  price double precision,\n  weight double precision\n);\n";
+        let zoned = "create table jobs (\n  id uuid primary key,\n  created_at timestamptz,\n  updated_at timestamptz,\n  started_at timestamptz,\n  ended_at timestamp with time zone,\n  seen_at timestamp,\n  price double precision,\n  weight double precision,\n  fee_bps double precision,\n  refund_count double precision\n);\n";
         assert_eq!(
             targets("zoned", &[("migrations/001.sql", zoned)], None),
             vec!["data-model:bare-timestamp:jobs.seen_at", "data-model:float-money:jobs.price"]
@@ -1011,6 +1000,15 @@ mod tests {
         );
         let sql = "create type mood as enum ('happy', 'sad');\ncreate type old_mood as enum ('a');\ncreate type spare as enum ('b');\nalter type old_mood rename to renamed_mood;\ndrop type spare;\ncreate table pets (id uuid primary key, mood mood);\n";
         assert_eq!(targets("enum-sql", &[("migrations/001.sql", sql)], None), vec!["data-model:idle-enum:renamed_mood"]);
+    }
+
+    #[test]
+    fn a_drizzle_tables_keys_and_foreign_keys_are_its_own() {
+        let schema = "import { pgTable, uuid, text, primaryKey, foreignKey } from 'drizzle-orm/pg-core';\nexport const users = pgTable('users', { id: uuid('id').primaryKey() });\nexport const posts = pgTable('posts', {\n  id: uuid('id').primaryKey(),\n  userId: uuid('user_id').references(() => users.id),\n  editorId: uuid('editor_id'),\n});\nexport const editors = pgTable('editors', { id: uuid('id').primaryKey() });\nexport const tags = pgTable('post_tags', { postId: uuid('post_id').notNull(), tag: text('tag') }, (t) => [\n  primaryKey({ columns: [t.postId, t.tag] }),\n  foreignKey({ columns: [t.postId], foreignColumns: [posts.id] }),\n]);\nexport const notes = pgTable('notes', { body: text('body') });\nexport const spread = pgTable('spread', { ...base, body: text('body') });\n";
+        // A test's tables are not the schema's.
+        let fixture = "import { pgTable, text } from 'drizzle-orm/pg-core';\nconst fixture = pgTable('fixture', { body: text('body') });\n";
+        let files = [("src/db/schema.ts", schema), ("src/db/schema.test.ts", fixture)];
+        assert_eq!(targets("drizzle", &files, None), vec!["data-model:open-link:posts.editor_id", "data-model:no-key:notes"]);
     }
 
     #[test]

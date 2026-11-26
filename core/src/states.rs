@@ -28,9 +28,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::ControlFlow;
 use std::sync::LazyLock;
 
-use crate::columns;
+use crate::columns::{self, Schemas};
 use crate::constraints::{self, text_of, unwrapped, Allowed};
-use crate::datamodel::{self, Schemas};
+use crate::datamodel;
 use crate::text::{self, Lines};
 use crate::{js, sql, Answer, Finding, Request};
 
