@@ -17,7 +17,12 @@ pub struct SqlSite {
     pub text: String,
     /// The source of each `${…}`, for `$1` onwards: a Drizzle table interpolated as a table name is `keys`.
     pub params: Vec<String>,
+    /// The line breaks each `${…}` took up in the file, which its `$n` in `text` does not have.
+    pub folds: Vec<u32>,
 }
+
+/// A template's `${…}`: the source of each, and the line breaks each took up.
+type Params = (Vec<String>, Vec<u32>);
 
 pub struct DbInLoop {
     pub line: u32,
@@ -138,15 +143,18 @@ impl<'s> Walker<'s> {
         }
     }
 
-    fn sql(&mut self, offset: u32, text: String, params: Vec<String>) {
+    fn sql(&mut self, offset: u32, text: String, (params, folds): Params) {
         if self.seen_sql.insert(offset) {
             let line = self.line(offset);
-            self.facts.sql.push(SqlSite { line, text, params });
+            self.facts.sql.push(SqlSite { line, text, params, folds });
         }
     }
 
-    fn params(&self, t: &TemplateLiteral) -> Vec<String> {
-        t.expressions.iter().map(|e| self.text(e).to_string()).collect()
+    fn params(&self, t: &TemplateLiteral) -> Params {
+        let sources = t.expressions.iter().map(|e| self.text(e).to_string()).collect();
+        // From the end of the text before a `${…}` to the start of the text after it.
+        let between = |q: &[TemplateElement]| self.src[q[0].span.end as usize..q[1].span.start as usize].matches('\n').count() as u32;
+        (sources, t.quasis.windows(2).map(between).collect())
     }
 
     fn db_call(&mut self, offset: u32, call: &str) {
@@ -277,7 +285,7 @@ impl<'a, 's> Visit<'a> for Walker<'s> {
         {
             if let Some(first) = it.arguments.first().and_then(|a| a.as_expression()) {
                 let text = match first {
-                    Expression::StringLiteral(s) => Some((s.value.as_str().to_string(), vec![])),
+                    Expression::StringLiteral(s) => Some((s.value.as_str().to_string(), Params::default())),
                     Expression::TemplateLiteral(t) => Some((template_sql(t), self.params(t))),
                     _ => None,
                 };
@@ -347,7 +355,7 @@ impl<'a, 's> Visit<'a> for Walker<'s> {
 
     fn visit_string_literal(&mut self, it: &StringLiteral<'a>) {
         if looks_like_sql(it.value.as_str()) {
-            self.sql(it.span.start, it.value.as_str().to_string(), vec![]);
+            self.sql(it.span.start, it.value.as_str().to_string(), Params::default());
         }
     }
 

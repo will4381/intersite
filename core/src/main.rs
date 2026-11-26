@@ -35,6 +35,7 @@ mod secrets;
 mod similar;
 mod special;
 mod sql;
+mod states;
 mod statistics;
 mod stats;
 mod structure;
@@ -217,6 +218,7 @@ fn main() {
         "hook" => tamper::hook(&request),
         "columns" => columns::run(&request),
         "data-model" => datamodel::run(&request),
+        "states" => states::run(&request),
         "secrets" => secrets::run(&request),
         "auth" => auth::run(&request),
         "structure" => structure::run(&request),
