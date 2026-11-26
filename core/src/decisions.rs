@@ -1,6 +1,10 @@
 //! One decision read in many places: the same environment variable read in several files, the same feature flag
 //! checked in several files, or the same `kind`/`type` value branched on in several files. Each copy is a place the
 //! next change has to find; the decision belongs in one module that the rest import.
+//!
+//! One constant declared with one value in several files is the same thing in a smaller coin (a day in milliseconds,
+//! a contract version, the API's address), and it is a suggestion: gathering it is cheap, and the copies are the
+//! owner's to gather.
 
 use oxc_ast::ast::*;
 use oxc_ast_visit::{walk, Visit};
@@ -129,13 +133,119 @@ impl<'a> Visit<'a> for Collector<'_> {
     }
 }
 
-fn sites(path: &str, src: &str) -> Vec<Site> {
+/// A constant a module declares at its top: `export const DAY_MS = 24 * 60 * 60 * 1000`.
+struct Constant {
+    name: String,
+    value: String,
+    line: u32,
+}
+
+/// The number an expression is, when it is literals multiplied, added, subtracted or divided.
+fn number(e: &Expression) -> Option<f64> {
+    match e.get_inner_expression() {
+        Expression::NumericLiteral(n) => Some(n.value),
+        Expression::BinaryExpression(b) => {
+            let (left, right) = (number(&b.left)?, number(&b.right)?);
+            match b.operator {
+                BinaryOperator::Multiplication => Some(left * right),
+                BinaryOperator::Addition => Some(left + right),
+                BinaryOperator::Subtraction => Some(left - right),
+                BinaryOperator::Division => Some(left / right),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// A statement that is a `const` at the top of a module, exported or not.
+fn top_const<'b, 'a>(s: &'b Statement<'a>) -> Option<&'b VariableDeclaration<'a>> {
+    let declaration = match s {
+        Statement::VariableDeclaration(v) => &**v,
+        Statement::ExportNamedDeclaration(e) => match &e.declaration {
+            Some(Declaration::VariableDeclaration(v)) => &**v,
+            _ => return None,
+        },
+        _ => return None,
+    };
+    (declaration.kind == VariableDeclarationKind::Const).then_some(declaration)
+}
+
+/// The top-level constants named in capitals (`MAX_UPLOAD_BYTES`) whose value is a number or one word of text. A
+/// colour or a list of classes is the style checks' to judge.
+fn constants(program: &Program, lines: &Lines) -> Vec<Constant> {
+    let shouted = |name: &str| {
+        name.len() >= 5 && name.contains('_') && name.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+    };
+    let word = |text: &str| {
+        !text.is_empty() && text.len() <= 80 && !text.starts_with('#') && !text.contains(|c: char| c.is_whitespace() || c == '(')
+    };
+    let one = |d: &VariableDeclarator| {
+        let name = d.id.get_binding_identifier().map(|id| id.name.as_str()).filter(|n| shouted(n))?;
+        let init = d.init.as_ref()?;
+        let text = || js::string(init.get_inner_expression(), false).filter(|t| word(t)).map(|t| format!("\"{t}\""));
+        let value = number(init).map(|n| n.to_string()).or_else(text)?;
+        Some(Constant { name: name.to_string(), value, line: lines.line(d.span.start as usize) })
+    };
+    program.body.iter().filter_map(top_const).flat_map(|v| &v.declarations).filter_map(one).collect()
+}
+
+/// What one file holds: its decision sites and the constants it declares.
+type Read = (Vec<Site>, Vec<Constant>);
+
+/// A file's decision sites and constants, in one parse.
+fn read(path: &str, src: &str) -> Read {
     crate::js::parse(path, src, |program| {
         let mut c = Collector { src, lines: Lines::new(src), sites: vec![] };
         c.visit_program(program);
-        c.sites
+        let constants = constants(program, &c.lines);
+        (c.sites, constants)
     })
     .unwrap_or_default()
+}
+
+#[cfg(test)]
+fn sites(path: &str, src: &str) -> Vec<Site> {
+    read(path, src).0
+}
+
+/// A constant's places: its file and line.
+type Places<'a> = Vec<(&'a String, u32)>;
+
+/// One constant declared with one value in several files of the repository.
+fn copied_constants(request: &Request, all: &[(String, Constant)]) -> Vec<Finding> {
+    // name -> value -> where it is declared so
+    let mut by_name: BTreeMap<&str, BTreeMap<&str, Places>> = BTreeMap::new();
+    for (file, constant) in all {
+        by_name.entry(&constant.name).or_default().entry(&constant.value).or_default().push((file, constant.line));
+    }
+    let mut out = vec![];
+    let files_of = |places: &Places| places.iter().map(|p| p.0).collect::<BTreeSet<_>>().len();
+    for (name, values) in &by_name {
+        // A name with two values each in several files (`STALE_TIME` per hook) is two rules that share a name.
+        if values.values().filter(|places| files_of(places) >= MIN_FILES).count() != 1 {
+            continue;
+        }
+        for (value, places) in values {
+            let files = files_of(places);
+            let Some(&(file, line)) = places.iter().find(|(f, l)| request.changed(f, *l)).filter(|_| files >= MIN_FILES) else { continue };
+            let mut others: Vec<String> = places.iter().filter(|p| **p != (file, line)).map(|(f, l)| format!("{f}:{l}")).collect();
+            let more = others.len().saturating_sub(3);
+            others.truncate(3);
+            let also = format!("{}{}", others.join(", "), if more > 0 { format!(" and {more} more") } else { String::new() });
+            // The same name with another value: one rule that drifted, or two rules that share a name.
+            let odd = values.iter().find(|(other, _)| other != &value).map_or(String::new(), |(other, at)| {
+                format!(" {}:{} declares it as {other}: if that is the same rule, one of the two is wrong.", at[0].0, at[0].1)
+            });
+            out.push(Finding {
+                file: file.clone(),
+                line,
+                target: format!("decisions:constant:{name}"),
+                message: format!("{file}:{line} the constant {name} is declared as {value} in {files} files (also {also}): one value kept in {files} places, each free to change alone. Declare it once and import it.{odd}"),
+            });
+        }
+    }
+    out
 }
 
 /// A file and one site in it.
@@ -144,12 +254,14 @@ type Located = (String, Site);
 type MergeKey<'a> = (String, Kind, String, Vec<&'a str>);
 
 pub fn run(request: &Request) -> Result<Answer, String> {
-    let all: Vec<(String, Site)> = request
-        .files
-        .par_iter()
-        .filter_map(|file| Some(sites(file, &text::read(&request.root, file)?).into_iter().map(|s| (file.clone(), s)).collect::<Vec<_>>()))
-        .flatten()
-        .collect();
+    let read: Vec<(&String, Read)> =
+        request.files.par_iter().filter_map(|file| Some((file, read(file, &text::read(&request.root, file)?)))).collect();
+    let mut all: Vec<(String, Site)> = vec![];
+    let mut declared: Vec<(String, Constant)> = vec![];
+    for (file, (sites, constants)) in read {
+        all.extend(sites.into_iter().map(|s| (file.clone(), s)));
+        declared.extend(constants.into_iter().map(|c| (file.clone(), c)));
+    }
     let mut packages = std::collections::HashMap::new();
     let mut groups: BTreeMap<(String, Kind, String), Vec<&Located>> = BTreeMap::new();
     for s in &all {
@@ -215,12 +327,42 @@ pub fn run(request: &Request) -> Result<Answer, String> {
             message: format!("{file}:{} {what} (also {elsewhere}): {fix}", site.line),
         });
     }
-    Ok(Answer::new(findings, format!("{} environment reads, flag checks and variant branches in {} files", all.len(), request.files.len())))
+    let summary = format!("{} environment reads, flag checks and variant branches in {} files", all.len(), request.files.len());
+    Ok(Answer::new(findings, summary).suggesting(copied_constants(request, &declared)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_constant_declared_with_one_value_in_three_files_is_suggested_and_the_file_that_differs_is_named() {
+        let files = [
+            ("src/a.ts", "export const DAY_MS = 24 * 60 * 60 * 1000;\nexport const API_VERSION = \"orders.v2\";\nconst BRAND_BLUE = \"#1773B0\";\n"),
+            ("src/b.ts", "const DAY_MS = 86_400_000;\nconst API_VERSION = \"orders.v2\";\nconst BRAND_BLUE = \"#1773B0\";\n"),
+            ("src/c.ts", "const DAY_MS = 86400000;\nfunction f() {\n  const API_VERSION = \"orders.v2\";\n  return API_VERSION;\n}\nconst BRAND_BLUE = \"#1773B0\";\n"),
+            ("src/d.ts", "const DAY_MS = 1000;\nconst dayMs = 86400000;\n"),
+        ];
+        let request = Request {
+            command: "decisions".into(),
+            root: text::temp_tree("decisions-constants", &files),
+            files: files.iter().map(|(p, _)| p.to_string()).collect(),
+            added: None,
+            prefix: String::new(),
+            database_url: None,
+            options: serde_json::json!({}),
+        };
+        let answer = run(&request).unwrap();
+        assert_eq!(answer.findings.len(), 0, "a copied constant fails nothing");
+        // A version in two files and inside a function is not three declarations; a colour is the style checks'.
+        let suggested = answer.data.unwrap()["suggestions"].clone();
+        assert_eq!(suggested.as_array().map(Vec::len), Some(1));
+        assert_eq!(suggested[0]["target"], "decisions:constant:DAY_MS");
+        assert_eq!(
+            suggested[0]["message"],
+            "src/a.ts:1 the constant DAY_MS is declared as 86400000 in 3 files (also src/b.ts:1, src/c.ts:1): one value kept in 3 places, each free to change alone. Declare it once and import it. src/d.ts:1 declares it as 1000: if that is the same rule, one of the two is wrong."
+        );
+    }
 
     #[test]
     fn finds_env_reads_flags_and_variant_branches() {

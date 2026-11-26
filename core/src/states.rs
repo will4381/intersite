@@ -6,6 +6,9 @@
 //! the next state has to be added to each. One change of state written in four or more functions across three or more
 //! files: one step of the workflow, each copy free to forget what the others do with it.
 //!
+//! The list is also read in plain code, where no table is named: `job.status === "a" || job.status === "b"` and
+//! `["a", "b"].includes(job.status)` are the same rule as an IN list.
+//!
 //! The first is the code and the schema disagreeing, which is a fact. The other two count copies, after the finding
 //! that inconsistent changes to copied code are where its faults come from (Juergens et al., "Do code clones
 //! matter?", ICSE 2009).
@@ -131,6 +134,8 @@ struct Seen {
     lists: Vec<Listed>,
     /// Each named function's first line, last line and name.
     functions: Vec<(u32, u32, String)>,
+    /// A state tested against several values in plain code: the property, the values, the line.
+    tests: Vec<(String, BTreeSet<String>, u32)>,
 }
 
 impl Seen {
@@ -164,8 +169,40 @@ const PRISMA_CALLS: [&str; 17] = [
 
 struct Walker<'m> {
     shape: &'m Shape,
+    src: &'m str,
     lines: Lines,
     seen: Seen,
+    /// The `||` and `&&` chains already read as part of a longer one, by their span.
+    chained: HashSet<(u32, u32)>,
+}
+
+/// Words a property that holds the state of a thing ends in: `status`, `lifecycle_state`, `bookingStage`.
+const STATE_WORDS: [&str; 4] = ["status", "state", "stage", "phase"];
+
+/// The property an expression reads, when it names a state: `order.status`, `job?.Status`.
+fn state_read<'b>(e: &'b Expression) -> Option<&'b str> {
+    let property = match e.get_inner_expression() {
+        Expression::StaticMemberExpression(m) => m.property.name.as_str(),
+        Expression::ChainExpression(c) => match &c.expression {
+            ChainElement::StaticMemberExpression(m) => m.property.name.as_str(),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let lower = property.to_lowercase();
+    STATE_WORDS.iter().any(|w| lower.ends_with(w)).then_some(property)
+}
+
+/// The leaves of a chain of one logical operator, with the spans of the chains inside it.
+fn leaves<'b, 'a>(e: &'b Expression<'a>, operator: LogicalOperator, out: &mut Vec<&'b Expression<'a>>, inner: &mut Vec<(u32, u32)>) {
+    match e.get_inner_expression() {
+        Expression::LogicalExpression(l) if l.operator == operator => {
+            inner.push((l.span.start, l.span.end));
+            leaves(&l.left, operator, out, inner);
+            leaves(&l.right, operator, out, inner);
+        }
+        other => out.push(other),
+    }
 }
 
 /// An object literal's properties by their static names.
@@ -275,6 +312,64 @@ impl Walker<'_> {
         }
     }
 
+    fn text(&self, e: &Expression) -> &'_ str {
+        let span = e.span();
+        &self.src[span.start as usize..span.end as usize]
+    }
+
+    /// `x.status === "a" || x.status === "b"`, and `x.status !== "a" && x.status !== "b"`, which is the same list.
+    fn chain(&mut self, it: &LogicalExpression) {
+        if self.chained.remove(&(it.span.start, it.span.end)) {
+            return;
+        }
+        let wanted: &[BinaryOperator] = match it.operator {
+            LogicalOperator::Or => &[BinaryOperator::StrictEquality, BinaryOperator::Equality],
+            LogicalOperator::And => &[BinaryOperator::StrictInequality, BinaryOperator::Inequality],
+            LogicalOperator::Coalesce => return,
+        };
+        let (mut found, mut inner) = (vec![], vec![]);
+        leaves(&it.left, it.operator, &mut found, &mut inner);
+        leaves(&it.right, it.operator, &mut found, &mut inner);
+        self.chained.extend(inner);
+        // Every leaf compares the one read with a string.
+        let read = |leaf: &Expression| match leaf {
+            Expression::BinaryExpression(b) if wanted.contains(&b.operator) => Some((
+                state_read(&b.left)?.to_string(),
+                self.text(&b.left).replace("?.", "."),
+                js::string(b.right.get_inner_expression(), false)?.to_string(),
+            )),
+            _ => None,
+        };
+        let Some(tests) = found.iter().map(|leaf| read(leaf)).collect::<Option<Vec<_>>>() else { return };
+        let values: BTreeSet<String> = tests.iter().map(|t| t.2.clone()).collect();
+        if values.len() >= 2 && tests.iter().all(|t| t.1 == tests[0].1) {
+            let line = self.line(it.span.start);
+            self.seen.tests.push((tests[0].0.clone(), values, line));
+        }
+    }
+
+    /// `["a", "b"].includes(x.status)`.
+    fn included(&mut self, call: &CallExpression) {
+        let Some(member) =
+            call.callee.get_inner_expression().as_member_expression().filter(|m| m.static_property_name() == Some("includes"))
+        else {
+            return;
+        };
+        let Expression::ArrayExpression(array) = member.object().get_inner_expression() else { return };
+        let Some(property) = call.arguments.first().and_then(|a| a.as_expression()).and_then(state_read) else { return };
+        let values: BTreeSet<String> = array
+            .elements
+            .iter()
+            .filter_map(|e| e.as_expression())
+            .filter_map(|e| js::string(e.get_inner_expression(), false))
+            .map(str::to_string)
+            .collect();
+        if values.len() >= 2 && values.len() == array.elements.len() {
+            let line = self.line(call.span.start);
+            self.seen.tests.push((property.to_string(), values, line));
+        }
+    }
+
     /// `prisma.order.update({ where, data })`, `tx.order.findMany({ where })`.
     fn prisma(&mut self, call: &CallExpression) {
         let Some(member) = call.callee.get_inner_expression().as_member_expression() else { return };
@@ -336,7 +431,13 @@ impl<'a> Visit<'a> for Walker<'_> {
 
     fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
         self.prisma(it);
+        self.included(it);
         walk::walk_call_expression(self, it);
+    }
+
+    fn visit_logical_expression(&mut self, it: &LogicalExpression<'a>) {
+        self.chain(it);
+        walk::walk_logical_expression(self, it);
     }
 }
 
@@ -558,18 +659,22 @@ fn sql_uses(site: &js::SqlSite, shape: &Shape, seen: &mut Seen) {
 static QUERIES: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\.(?:find|create|update|upsert|delete|count|aggregate|groupBy)\w*\(|(?i)\b(?:select|insert|update|delete)\s").unwrap()
 });
+/// Text a file has when it may test a state against values: a state compared with a string, or an `includes`.
+static TESTS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?i)(?:status|state|stage|phase)\s*[!=]==?\s*['"]|\]\.includes\("#).unwrap());
 
 fn read_code(root: &str, file: &str, shape: &Shape) -> Option<Seen> {
-    let src = text::read(root, file).filter(|src| QUERIES.is_match(src))?;
+    let src = text::read(root, file).filter(|src| QUERIES.is_match(src) || TESTS.is_match(src))?;
     let mut seen = js::parse(file, &src, |program| {
-        let mut walker = Walker { shape, lines: Lines::new(&src), seen: Seen { file: file.to_string(), ..Default::default() } };
+        let seen = Seen { file: file.to_string(), ..Default::default() };
+        let mut walker = Walker { shape, src: &src, lines: Lines::new(&src), seen, chained: HashSet::new() };
         walker.visit_program(program);
         walker.seen
     })?;
     for site in js::facts(file, &src).map(|f| f.sql).unwrap_or_default() {
         sql_uses(&site, shape, &mut seen);
     }
-    (!seen.uses.is_empty()).then_some(seen)
+    (!seen.uses.is_empty() || !seen.tests.is_empty()).then_some(seen)
 }
 
 fn is_code(file: &str) -> bool {
@@ -621,8 +726,9 @@ fn unknown(request: &Request, shape: &Shape, seen: &[Seen], out: &mut Vec<Findin
 
 /// A place in the code: its file and line.
 type Site<'s> = (&'s String, u32);
-/// (package, table, column, the stored values of one list) -> where it is written.
-type Lists<'s> = BTreeMap<(&'s str, &'s str, &'s str, BTreeSet<String>), Vec<Site<'s>>>;
+/// (package, what is tested, the values of one list) -> where it is written. What is tested is a column
+/// (`orders.status`) where the table is known, and a property (`.status`) in plain code.
+type Lists<'s> = BTreeMap<(&'s str, String, BTreeSet<String>), Vec<Site<'s>>>;
 /// (package, table, column, a stored value) -> where it is set, and the functions those places are in.
 type Steps<'s> = BTreeMap<(&'s str, &'s str, &'s str, String), (Vec<Site<'s>>, BTreeSet<(&'s String, String)>)>;
 
@@ -649,23 +755,27 @@ fn repeated_lists(request: &Request, shape: &Shape, seen: &[Seen], out: &mut Vec
             continue;
         };
         if values.len() >= 2 {
-            groups.entry((&file.package, &list.table, &list.column, values)).or_default().push((&file.file, list.line));
+            groups.entry((&file.package, format!("{}.{}", list.table, list.column), values)).or_default().push((&file.file, list.line));
         }
     }
+    // The same rule in plain code, where no table is named: `job.status === "a" || job.status === "b"`.
+    for (file, (property, values, line)) in seen.iter().filter(|s| s.product).flat_map(|s| s.tests.iter().map(move |t| (s, t))) {
+        groups.entry((&file.package, format!(".{property}"), values.clone())).or_default().push((&file.file, *line));
+    }
     groups.values_mut().for_each(|sites| sites.sort());
-    for ((package, table, column, values), sites) in &groups {
+    for ((package, subject, values), sites) in &groups {
         let files = files_of(sites);
         let Some(&at) = sites.iter().find(|(file, line)| request.changed(file, *line)).filter(|_| files >= LIST_FILES) else { continue };
         // The same list one value longer or shorter, where it is written most: the two may be one rule that drifted.
         let variant = groups
             .iter()
-            .filter(|((p, t, c, other), _)| {
-                (p, t, c) == (package, table, column)
+            .filter(|((p, s, other), _)| {
+                (p, s) == (package, subject)
                     && other.len().abs_diff(values.len()) == 1
                     && (other.is_subset(values) || values.is_subset(other))
             })
             .max_by_key(|(_, sites)| files_of(sites));
-        let note = variant.map_or(String::new(), |((_, _, _, other), sites)| {
+        let note = variant.map_or(String::new(), |((_, _, other), sites)| {
             let odd = other.symmetric_difference(values).next().map_or("", String::as_str);
             let how = if other.len() > values.len() { format!("with '{odd}' added") } else { format!("without '{odd}'") };
             let n = files_of(sites);
@@ -681,9 +791,9 @@ fn repeated_lists(request: &Request, shape: &Shape, seen: &[Seen], out: &mut Vec
         out.push(Finding {
             file: at.0.clone(),
             line: at.1,
-            target: format!("states:list:{table}.{column}:{}", values.iter().map(String::as_str).collect::<Vec<_>>().join(",")),
+            target: format!("states:list:{subject}:{}", values.iter().map(String::as_str).collect::<Vec<_>>().join(",")),
             message: format!(
-                "{}:{} {table}.{column} is tested against ({list}) in {files} files ({}): one rule, which values count, written {files} times, and the next value has to be added to each. Name the list once and use that.{note}",
+                "{}:{} {subject} is tested against ({list}) in {files} files ({}): one rule, which values count, written {files} times, and the next value has to be added to each. Name the list once and use that.{note}",
                 at.0,
                 at.1,
                 elsewhere(sites, at)
@@ -734,9 +844,6 @@ struct Options {
 pub fn run(request: &Request) -> Result<Answer, String> {
     let options: Options = request.options()?;
     let shape = shape(&datamodel::schemas(request));
-    if shape.sets.is_empty() {
-        return Ok(Answer::new(vec![], "no column with a closed set of values".into()));
-    }
     let mut seen: Vec<Seen> = request.files.par_iter().filter(|f| is_code(f)).filter_map(|f| read_code(&request.root, f, &shape)).collect();
     let mut packages = HashMap::new();
     for file in &mut seen {
@@ -867,6 +974,23 @@ mod tests {
         assert_eq!(
             targets("sure", &[("migrations/001.sql", sql), ("src/a.ts", sure)]),
             vec!["states:unknown:jobs.status=nope", "states:unknown:runs.status=good", "states:unknown:runs.status=worse"]
+        );
+    }
+
+    #[test]
+    fn a_state_tested_against_the_same_values_in_plain_code_in_three_files_is_one_rule_too() {
+        let a = "export const open = (t) => t.status === \"open\" || t.status === \"held\";\nexport const key = (e) => e.key === \"Enter\" || e.key === \"Tab\";\n";
+        let b = "export const shut = (ticket) => ticket?.status !== \"held\" && ticket?.status !== \"open\";\n";
+        let c = "export const waits = (t) => [\"open\", \"held\"].includes(t.status);\nexport const mixed = (t, u) => t.status === \"open\" || u.status === \"held\";\n";
+        let got = found("plain", &[("src/a.ts", a), ("src/b.ts", b), ("src/c.ts", c)], None, None);
+        // A key press is not a state, and two things' states compared in one line are not one list.
+        assert_eq!(got.iter().map(|f| (f.line, f.target.as_str())).collect::<Vec<_>>(), vec![(1, "states:list:.status:held,open")]);
+        assert!(
+            got[0]
+                .message
+                .starts_with("src/a.ts:1 .status is tested against (held, open) in 3 files (also src/b.ts:1, src/c.ts:1): one rule"),
+            "{}",
+            got[0].message
         );
     }
 
