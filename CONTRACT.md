@@ -8,7 +8,7 @@ What every part of this package agrees on. Change it here first, then in code.
 | --- | --- | --- |
 | `lint/`, `cli/lint.mjs` | Node, inside oxlint | Slop rules, mostly declared in JSON; baseline that only shrinks |
 | `gates/`, `cli/gate.mjs` | Node, local or CI | Each gate's git work (the diff, the files, the config's globs) and its output; the judging is in `core/` |
-| `core/` | Rust, built by cargo the first time a check needs it (and again when its source changes) | The analysis engine, called with one JSON request per check: similar (lexer, k-grams, Aroma features), duplicates, unused, naming, style-drift, value-drift, sql (with planning against a database), columns, regex, artifacts, test-integrity, new-deps, tamper (and the edit hook), special-case, complexity, coverage, stats, mutation's choice of mutants, routes, env, structure, test-run outcomes, search, twins, trace reports |
+| `core/` | Rust, built by cargo the first time a check needs it (and again when its source changes) | The analysis engine, called with one JSON request per check: similar (lexer, k-grams, Aroma features), duplicates, unused, naming, style-drift, value-drift, sql (with planning against a database), columns, regex, artifacts, test-integrity, new-deps, tamper (and the edit hook), special-case, complexity, coverage, stats, mutation's choice of mutants, routes, env, structure, references, test-run outcomes, search, twins, trace reports |
 | `cli/search.mjs`, `cli/twins.mjs`, `cli/trace.mjs` | Node | `search`, `twins` and `trace`: arguments, processes (servers, inspectors, Chrome) and output |
 | `track/` | The browser | Names user actions and stamps them on the requests they cause |
 | `capture/` | The project's server or browser (any `fetch` runtime) | Samples, scrubs and sends cases to the collector |
@@ -64,7 +64,7 @@ Agents read this output, and every line costs them context.
 
 One optional file at the project root, described by `intersite.schema.json`, loaded with `loadConfig(cwd)` from
 `shared/config.mjs`, which fills defaults. With no file every default applies and the project is named after its
-package, so each command works in a fresh checkout. `intersite.json` is still read, since JSON is valid YAML.
+package, so each command works in a fresh checkout. A project's old `intersite.json` is still read, since JSON is valid YAML.
 Commands other than `init` use the nearest folder at or above the working directory that holds the config, no
 higher than the repository top. `captureOptions(cwd)` returns `{ project, ...capture }` for `createCapture`. Secrets are never in it; it names the environment variables that hold
 them, and `collectorTokens(config)` reads them, falling back to `local-read` and `local-ingest`, the tokens the
