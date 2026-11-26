@@ -2,7 +2,7 @@
 import { defineRule } from "@oxlint/plugins";
 
 import { isHookCall } from "../react/hooks.mjs";
-import { FUNCTIONS, mentions, unwrap, walk } from "../shared.mjs";
+import { FUNCTIONS, calleeName, mentions, unwrap, walk } from "../shared.mjs";
 
 const NEEDS = /useAnimatedStyle/;
 /**
@@ -12,9 +12,18 @@ const NEEDS = /useAnimatedStyle/;
  */
 const LAYOUT = /^(?:width|height|(?:min|max)(?:Width|Height)|top|bottom|left|right|start|end|inset\w*|margin\w*|padding\w*|flex|flexBasis|flexGrow|flexShrink|gap|rowGap|columnGap|fontSize|lineHeight|letterSpacing|border\w*Width|aspectRatio)$/;
 
-/** A value that is the same on every frame: a literal, `undefined`, or a template with nothing in it. @param {any} node */
-const constant = (node) =>
-  node.type === "Literal" || (node.type === "Identifier" && node.name === "undefined") || (node.type === "TemplateLiteral" && !node.expressions.length) || (node.type === "UnaryExpression" && node.argument.type === "Literal");
+/**
+ * Whether a value changes from frame to frame: it reads a shared value (`.value`) or calls an animation (`withTiming`,
+ * `withSpring`…) or `interpolate`. A constant, a prop or a value from render is the same on every frame.
+ * @param {any} node
+ */
+function moves(node) {
+  let found = false;
+  walk(node, (n) => {
+    found ||= (n.type === "MemberExpression" && !n.computed && n.property.name === "value") || /^(?:with[A-Z]\w*|interpolate)$/.test(calleeName(n));
+  });
+  return found;
+}
 
 /** The objects an expression can evaluate to: through casts, both sides of `?:`, and `&&`/`||`/`??`. @param {any} node @param {any[]} out */
 function objects(node, out = []) {
@@ -54,7 +63,7 @@ export const rule = defineRule({
         const worklet = node.arguments[0];
         if (!isHookCall(node, /^useAnimatedStyle$/) || !FUNCTIONS.has(worklet?.type)) return;
         for (const style of returns(worklet)) {
-          const moving = style.properties.filter((/** @type {any} */ p) => p.type === "Property" && !p.computed && LAYOUT.test(p.key.name ?? p.key.value ?? "") && !constant(unwrap(p.value)));
+          const moving = style.properties.filter((/** @type {any} */ p) => p.type === "Property" && !p.computed && LAYOUT.test(p.key.name ?? p.key.value ?? "") && moves(p.value));
           const keys = moving.map((/** @type {any} */ p) => `\`${p.key.name ?? p.key.value}\``);
           if (moving.length) context.report({ node: moving[0], messageId: "layout", data: { keys: keys.length > 1 ? `${keys.slice(0, -1).join(", ")} and ${keys.at(-1)}` : keys[0], verb: keys.length > 1 ? "change" : "changes" } });
         }
@@ -76,6 +85,9 @@ export const good = [
   "export const useTint = (color: { value: string }) => useAnimatedStyle(() => ({ backgroundColor: color.value, borderRadius: 12 }));",
   // The same on every frame: only the opacity moves.
   "export const useFade = (progress: { value: number }) => useAnimatedStyle(() => ({ height: 40, marginTop: undefined, opacity: progress.value }));",
+  "export const useHeader = (y: { value: number }) => useAnimatedStyle(() => ({ height: HEADER, transform: [{ translateY: y.value }] }));",
+  "export const useDrawer = (open: boolean, y: { value: number }) => useAnimatedStyle(() => ({ height: open ? 200 : 0, opacity: y.value }), [open]);",
+  "export const useCell = (w: number, y: { value: number }) => useAnimatedStyle(() => ({ width: w, opacity: y.value }));",
   // A style that is not animated may set any key.
   "export const card = { height: 200, marginTop: 8 };",
   // A nested function's object is not the style.
