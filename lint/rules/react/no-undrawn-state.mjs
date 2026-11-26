@@ -5,7 +5,7 @@ import { mentions } from "../shared.mjs";
 import { functionName, isComponentOrHook, isHookCall } from "./hooks.mjs";
 
 const NEEDS = /useState/;
-/** Effects run after render. A dependency list is read during render, so what it names is drawn from. */
+/** Effects run after render. An effect's dependency list is read during render, so what it names is drawn from. */
 const EFFECTS = /^use(?:Layout|Insertion)?Effect$/;
 const FUNCTION = /^(?:FunctionExpression|ArrowFunctionExpression)$/;
 
@@ -37,11 +37,14 @@ function runsLater(fn, component, sourceCode, depth) {
 }
 
 /**
- * Whether a read happens after render: some function between it and the component runs only later.
+ * Whether a read happens after render: some function between it and the component runs only later. A read in the
+ * dependency list of useCallback or useMemo is judged as a read inside its callback: only an effect's list is drawn.
  * @param {any} node @param {any} component @param {any} sourceCode @param {number} [depth]
  */
 function readLater(node, component, sourceCode, depth = 0) {
-  for (let n = node.parent; n && n !== component; n = n.parent) if (FUNCTION.test(n.type) && runsLater(n, component, sourceCode, depth)) return true;
+  let start = node.parent;
+  if (start?.type === "ArrayExpression" && start.parent?.arguments?.[1] === start && isHookCall(start.parent, /^use(?:Callback|Memo)$/)) start = start.parent.arguments[0];
+  for (let n = start; n && n !== component; n = n.parent) if (FUNCTION.test(n.type) && runsLater(n, component, sourceCode, depth)) return true;
   return false;
 }
 
@@ -80,7 +83,8 @@ export const bad = [
   // A view kept for measuring later renders the screen a second time as it mounts.
   "export function Tour() {\n  const [target, setTarget] = useState<View | null>(null);\n  return <View ref={setTarget} onTouchEnd={() => target?.measure(show)} />;\n}",
   "export function Sheet({ onOpen }: { onOpen: (h: number) => void }) {\n  const [height, setHeight] = useState(0);\n  const open = () => onOpen(height);\n  return <View onLayout={(e) => setHeight(e.nativeEvent.layout.height)}><Button onPress={open} /></View>;\n}",
-  "export function Form() {\n  const [sending, setSending] = useState(false);\n  const submit = useCallback(async () => {\n    if (sending) return;\n    setSending(true);\n    await save();\n    setSending(false);\n  }, []);\n  return <button onClick={submit}>Save</button>;\n}",
+  "export function Form() {\n  const [sending, setSending] = useState(false);\n  const submit = useCallback(async () => {\n    if (sending) return;\n    setSending(true);\n    await save();\n    setSending(false);\n  }, [sending]);\n  return <button onClick={submit}>Save</button>;\n}",
+  "export function Form() {\n  const [sending, setSending] = useState(false);\n  const submit = async () => {\n    if (sending) return;\n    setSending(true);\n    await save();\n    setSending(false);\n  };\n  return <button onClick={submit}>Save</button>;\n}",
   "export const usePoll = () => {\n  const [timer, setTimer] = React.useState<number>();\n  useEffect(() => {\n    setTimer(window.setInterval(tick, 1000));\n    return () => clearInterval(timer);\n  }, []);\n};",
 ];
 
