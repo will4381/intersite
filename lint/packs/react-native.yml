@@ -7,7 +7,7 @@ rules:
     # react-native-web has no native driver, so a web file may turn it off.
     ignore: ["**/*.web.*"]
     selector: "Property[key.name='useNativeDriver'][value.value=false]"
-    message: "useNativeDriver: false runs this animation on the JavaScript thread, one frame at a time, so it stutters whenever JavaScript is busy (a reply arriving, a screen rendering). Animate transform or opacity with useNativeDriver: true, or move it to Reanimated. If it animates what the native driver cannot (a colour, a border), say why on the line above."
+    message: "useNativeDriver: false runs this animation on the JavaScript thread, one frame at a time, so it stutters whenever JavaScript is busy (a reply arriving, a screen rendering). Animate transform or opacity with useNativeDriver: true, or move it to Reanimated. If it animates what the native driver cannot (a colour, a border), mark the line above with `// oxlint-disable-next-line intersite/no-js-thread-animation -- <why>`."
     bad:
       - "Animated.timing(height, { toValue: 1, duration: 200, useNativeDriver: false }).start();"
       - "export const spring = (v: Animated.Value) => Animated.spring(v, { toValue: 0, useNativeDriver: false });"
