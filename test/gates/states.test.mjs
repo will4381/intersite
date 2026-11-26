@@ -23,6 +23,21 @@ test("a status the change writes that the column's check does not allow is repor
   assert.match(second.out[0], /^ok gate states: 1 values in code checked against 1 closed sets of values, 0 not allowed and 0 suggestions$/);
 });
 
+test("a fixture, a mock or an end-to-end helper may make a status up, and a script may not", async () => {
+  const r = repo({
+    "supabase/migrations/001_init.sql": orders,
+    "lint/__fixtures__/bad.ts": setStatus("canceled"),
+    "src/orders.mock.ts": setStatus("canceled"),
+    "e2e/support/api.ts": setStatus("canceled"),
+    "scripts/repair.ts": setStatus("canceled"),
+  });
+  const { code, out } = await run(r.cwd, ["states", "--all"]);
+  assert.equal(code, 1);
+  assert.deepEqual(lines(out), [
+    "scripts/repair.ts:1 writes 'canceled' to orders.status, which the check on orders.status does not allow (new, paid, refunded): the database refuses the write.",
+  ]);
+});
+
 test("judging everything suggests naming a list of statuses tested in three files and a step written in four functions, in product code", async () => {
   const prisma = ["enum Status {", "  open", "  held", "  closed", "}", "", "model Ticket {", "  id     String @id", "  status Status", "}", ""].join("\n");
   const waiting = (/** @type {string} */ name) => `export const ${name} = (db) => db.ticket.findMany({ where: { status: { in: ["open", "held"] } } });\n`;

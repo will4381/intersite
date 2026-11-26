@@ -625,7 +625,9 @@ fn sql_uses(site: &js::SqlSite, shape: &Shape, seen: &mut Seen) {
             let mut scope = Scope::default();
             let _ = SqlVisit::visit(statement, &mut scope);
             scope.settle();
-            for found in sql_writes(statement).into_iter().chain(sql_tests(statement, &scope)) {
+            for mut found in sql_writes(statement).into_iter().chain(sql_tests(statement, &scope)) {
+                // `status = '${next}'` is `'$1'` in the text: a value the code passes, not one it names.
+                found.values.retain(|(v, _)| !v.strip_prefix('$').is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())));
                 if !shape.sets.contains_key(&found.at) || found.values.is_empty() {
                     continue;
                 }
@@ -941,6 +943,12 @@ mod tests {
         assert_eq!(
             targets("filters", &[("prisma/schema.prisma", JOBS), ("migrations/001.sql", JOBS_SQL), ("src/jobs.ts", code)]),
             vec!["states:unknown:jobs.status=gone", "states:unknown:jobs.status=lost", "states:unknown:jobs.status=new"]
+        );
+        // A `${…}` inside quotes is a value the code passes, not the literal `$1`.
+        let passed = "export const move = (db, id, next, prev) => db.$executeRaw`UPDATE jobs SET status = '${next}' WHERE id = ${id} AND status IN ('${prev}', 'done')`;\n";
+        assert_eq!(
+            targets("passed", &[("prisma/schema.prisma", JOBS), ("migrations/001.sql", JOBS_SQL), ("src/jobs.ts", passed)]),
+            Vec::<String>::new()
         );
     }
 

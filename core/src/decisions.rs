@@ -18,6 +18,9 @@ use crate::{js, Answer, Finding, Request};
 
 /// A copy this many files wide is a decision made in several places.
 const MIN_FILES: usize = 3;
+/// A constant with a name any module might choose for its own (`PAGE_SIZE`, `MAX_RETRIES`, `UPLOAD_LIMIT`) is one
+/// rule only from this many files, and only while no module gives it another value.
+const GENERIC_FILES: usize = 4;
 /// Properties that name which variant a value is: branching on them in many files is a union nobody owns.
 const DISCRIMINANTS: [&str; 6] = ["kind", "type", "variant", "mode", "tier", "plan"];
 /// Calls that ask whether a feature flag is on.
@@ -214,21 +217,27 @@ type Places<'a> = Vec<(&'a String, u32)>;
 
 /// One constant declared with one value in several files of the repository.
 fn copied_constants(request: &Request, all: &[(String, Constant)]) -> Vec<Finding> {
-    // name -> value -> where it is declared so
-    let mut by_name: BTreeMap<&str, BTreeMap<&str, Places>> = BTreeMap::new();
+    // (package, name) -> value -> where it is declared so. Packages of a monorepo are separate programs, which may
+    // not import each other: each keeps its own.
+    let mut packages = std::collections::HashMap::new();
+    let mut by_name: BTreeMap<(String, &str), BTreeMap<&str, Places>> = BTreeMap::new();
     for (file, constant) in all {
-        by_name.entry(&constant.name).or_default().entry(&constant.value).or_default().push((file, constant.line));
+        let package = crate::graph::package_of(&request.root, file, &mut packages);
+        by_name.entry((package, &constant.name)).or_default().entry(&constant.value).or_default().push((file, constant.line));
     }
     let mut out = vec![];
     let files_of = |places: &Places| places.iter().map(|p| p.0).collect::<BTreeSet<_>>().len();
-    for (name, values) in &by_name {
-        // A name with two values each in several files (`STALE_TIME` per hook) is two rules that share a name.
-        if values.values().filter(|places| files_of(places) >= MIN_FILES).count() != 1 {
+    for ((_, name), values) in &by_name {
+        let generic = *name == "PAGE_SIZE" || name.starts_with("MAX_") || name.ends_with("_LIMIT") || name.ends_with("_BATCH");
+        let need = if generic { GENERIC_FILES } else { MIN_FILES };
+        // A name with two values each in several files (`STALE_TIME` per hook) is two rules that share a name, and a
+        // generic one with two values at all (`MAX_PAGES` per API) is each module's own.
+        if values.values().filter(|places| files_of(places) >= need).count() != 1 || generic && values.len() > 1 {
             continue;
         }
         for (value, places) in values {
             let files = files_of(places);
-            let Some(&(file, line)) = places.iter().find(|(f, l)| request.changed(f, *l)).filter(|_| files >= MIN_FILES) else { continue };
+            let Some(&(file, line)) = places.iter().find(|(f, l)| request.changed(f, *l)).filter(|_| files >= need) else { continue };
             let mut others: Vec<String> = places.iter().filter(|p| **p != (file, line)).map(|(f, l)| format!("{f}:{l}")).collect();
             let more = others.len().saturating_sub(3);
             others.truncate(3);
@@ -362,6 +371,38 @@ mod tests {
             suggested[0]["message"],
             "src/a.ts:1 the constant DAY_MS is declared as 86400000 in 3 files (also src/b.ts:1, src/c.ts:1): one value kept in 3 places, each free to change alone. Declare it once and import it. src/d.ts:1 declares it as 1000: if that is the same rule, one of the two is wrong."
         );
+    }
+
+    #[test]
+    fn a_constant_is_one_rule_within_a_package_and_a_generic_name_needs_four_files() {
+        let day = "const DAY_MS = 86400000;\n";
+        let page = "const PAGE_SIZE = 50;\n";
+        let files = [
+            ("apps/web/package.json", "{}"),
+            ("apps/web/a.ts", day),
+            ("apps/web/b.ts", day),
+            ("apps/api/package.json", "{}"),
+            ("apps/api/c.ts", day),
+            ("apps/api/p1.ts", page),
+            ("apps/api/p2.ts", page),
+            ("apps/api/p3.ts", page),
+        ];
+        let request = |files: &[(&str, &str)], name: &str| Request {
+            command: "decisions".into(),
+            root: text::temp_tree(name, files),
+            files: files.iter().map(|(p, _)| p.to_string()).collect(),
+            added: None,
+            prefix: String::new(),
+            database_url: None,
+            options: serde_json::json!({}),
+        };
+        let suggested = |r: &Request| run(r).unwrap().data.and_then(|d| d["suggestions"].as_array().cloned()).unwrap_or_default();
+        assert_eq!(suggested(&request(&files, "decisions-packages")).len(), 0);
+        let more = [&files[..], &[("apps/api/p4.ts", page)]].concat();
+        let found = suggested(&request(&more, "decisions-generic"));
+        assert_eq!(found.iter().map(|f| f["target"].as_str().unwrap_or("")).collect::<Vec<_>>(), vec!["decisions:constant:PAGE_SIZE"]);
+        let own = [&more[..], &[("apps/api/p5.ts", "const PAGE_SIZE = 20;\n")]].concat();
+        assert_eq!(suggested(&request(&own, "decisions-own")).len(), 0);
     }
 
     #[test]

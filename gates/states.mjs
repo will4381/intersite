@@ -7,14 +7,18 @@
 import { fromEngine, runCore } from "./core.mjs";
 import { JS_FILE, NOT_PRODUCT, SKIP, changeOf, listFiles, matches } from "./lib.mjs";
 
+/** Fixtures, mocks and end-to-end helpers, which make values up on purpose: a lint rule's bad example, a test's API. */
+const MADE_UP = /(?:^|\/)(?:fixtures?|__fixtures__|mocks?|__mocks__|e2e)\/|(?:^|[/.-])(?:fixtures?|mocks?)\.[cm]?[jt]sx?$/;
+
 /** @param {import("./lib.mjs").GateOptions} options @returns {Promise<import("./lib.mjs").GateResult>} */
 export async function states({ cwd, base, testPaths }) {
   const { whole, top, prefix, added } = changeOf(cwd, base);
   if (!whole && !added.size) return { findings: [], summary: "no added lines" };
   // The whole repository is read: a schema package's columns are written and tested by the apps beside it. A test
-  // may write a value to see it refused, so tests are left out. A script or a seed is held to the values a column
-  // allows, but it is not the product's workflow: only product code counts towards a rule written many times.
-  const files = listFiles(top).filter((f) => !SKIP.test(f) && !matches(f, testPaths) && (/\.(?:sql|prisma)$/.test(f) || JS_FILE.test(f)));
+  // may write a value to see it refused, so tests are left out, and so are fixtures, mocks and end-to-end helpers. A
+  // script or a seed is held to the values a column allows, but it is not the product's workflow: only product code
+  // counts towards a rule written many times.
+  const files = listFiles(top).filter((f) => !SKIP.test(f) && !MADE_UP.test(f) && !matches(f, testPaths) && (/\.(?:sql|prisma)$/.test(f) || JS_FILE.test(f)));
   const product = files.filter((f) => JS_FILE.test(f) && !NOT_PRODUCT.test(f));
   const answer = runCore({ command: "states", root: top, files, added: whole ? undefined : Object.fromEntries(added), prefix, options: { product } });
   return { findings: fromEngine(answer.findings, prefix), suggestions: fromEngine(answer.data?.suggestions ?? [], prefix), summary: answer.summary };
