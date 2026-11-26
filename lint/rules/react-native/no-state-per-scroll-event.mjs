@@ -1,14 +1,16 @@
 // @ts-check
 import { defineRule } from "@oxlint/plugins";
 
-import { isHookCall } from "../react/hooks.mjs";
-import { FUNCTIONS, calleeName, constInit, mentions, resolveVariable, unwrap } from "../shared.mjs";
+import { isHookCall, stateSetters } from "../react/hooks.mjs";
+import { FUNCTIONS, calleeName, constInit, mentions, resolveVariable, returned, unwrap } from "../shared.mjs";
 
 const NEEDS = /onScroll|useAnimatedScrollHandler/;
 /** A React Native file: on the web a scroll handler has neither shared values nor useAnimatedScrollHandler. */
 const NATIVE = /react-native|reanimated|flash-list/;
 /** Statements and expressions that run what is under them only some of the time. */
 const BRANCHES = new Set(["IfStatement", "ConditionalExpression", "LogicalExpression", "SwitchStatement"]);
+/** React Native's scrolling components, whose `onScroll` gets a scroll event (`Animated.ScrollView` too). */
+const SCROLLERS = /(?:ScrollView|FlatList|SectionList|FlashList|VirtualizedList)$/;
 
 /** The function a handler expression is: inline, a `const` holding one or `useCallback(fn)`, or a function declaration. @param {any} node @param {any} sourceCode */
 function handlerFunction(node, sourceCode) {
@@ -22,11 +24,15 @@ function handlerFunction(node, sourceCode) {
   return declared?.type === "FunctionDeclaration" ? declared : undefined;
 }
 
-/** Whether an identifier names the setter of a `useState` or `useReducer` (`const [v, setV] = useState()`). @param {any} node @param {any} sourceCode */
+/**
+ * Whether an identifier names the setter of a `useState` (`const [v, setV] = useState()`). A reducer's `dispatch` is
+ * not one: the reducer decides what changes, and handing back the same state skips the render.
+ * @param {any} node @param {any} sourceCode
+ */
 function isStateSetter(node, sourceCode) {
   if (node?.type !== "Identifier") return false;
-  const decl = resolveVariable(node, sourceCode)?.defs[0]?.node;
-  return decl?.type === "VariableDeclarator" && decl.id.type === "ArrayPattern" && decl.id.elements[1]?.name === node.name && isHookCall(decl.init, /^use(?:State|Reducer)$/);
+  const fn = resolveVariable(node, sourceCode)?.defs[0]?.node?.parent?.parent?.parent;
+  return FUNCTIONS.has(fn?.type) && stateSetters(fn).has(node.name);
 }
 
 /**
@@ -42,13 +48,15 @@ function setterOf(call) {
 
 /**
  * Whether a value changes only at a threshold, so most events set what is already there and React skips the render:
- * a comparison, a negation, a literal, an index (`Math.round(x / width)`), a predicate's answer (`isNear(...)`), a
- * choice between such values, or an updater function, which may hand back the current value.
+ * a comparison, a negation, a literal, a `Boolean(...)`, an index (`Math.round(x / width)`), a predicate's answer
+ * (`isNear(...)`), a choice between such values, or an updater function that returns one.
  * @param {any} node @param {any} sourceCode @param {number} [depth] @returns {boolean}
  */
 function discrete(node, sourceCode, depth = 0) {
   node = unwrap(node);
-  if (!node || FUNCTIONS.has(node.type) || node.type === "Literal") return true;
+  if (!node || node.type === "Literal") return true;
+  // ponytail: an updater with more than a `return` in its body is left alone; walking its returns would judge it.
+  if (FUNCTIONS.has(node.type)) return discrete(returned(node), sourceCode, depth);
   if (node.type === "TemplateLiteral") return !node.expressions.length;
   if (node.type === "BinaryExpression") return /^(?:[<>]=?|[!=]==?|in|instanceof)$/.test(node.operator);
   if (node.type === "UnaryExpression") return node.operator === "!";
@@ -61,7 +69,7 @@ function discrete(node, sourceCode, depth = 0) {
       return arg?.type === "BinaryExpression" && arg.operator === "/";
     }
     // ponytail: a predicate is known by its name; type-aware lint could ask whether the call returns a boolean.
-    return /^(?:is|has|should|can)[A-Z]/.test(name);
+    return /^(?:is|has|should|can)[A-Z]/.test(name) || (node.callee.type === "Identifier" && name === "Boolean");
   }
   if (node.type !== "Identifier" || depth > 1) return false;
   const init = constInit(node, sourceCode);
@@ -118,10 +126,14 @@ export const rule = defineRule({
       for (const call of unconditionalSets(handler.body, false, [], context.sourceCode)) context.report({ node: call, messageId: "scroll" });
     };
     return {
-      before: () => mentions(context, NEEDS) && mentions(context, NATIVE),
+      // react-native-web renders a .web file in the browser, where a scroll is the page's.
+      before: () => !/\.web\.[cm]?[jt]sx?$/.test(context.filename) && mentions(context, NEEDS) && mentions(context, NATIVE),
       JSXAttribute(/** @type {any} */ node) {
         if (node.name.name !== "onScroll" || node.value?.type !== "JSXExpressionContainer") return;
-        judge(handlerFunction(node.value.expression, context.sourceCode));
+        const handler = handlerFunction(node.value.expression, context.sourceCode);
+        // Another component's `onScroll` may hand over anything (a carousel's index): only a scroll event is this rule's.
+        const element = context.sourceCode.getText(node.parent.name);
+        if (handler && (SCROLLERS.test(element) || /\b(?:nativeEvent|contentOffset)\b/.test(context.sourceCode.getText(handler)))) judge(handler);
       },
       CallExpression(/** @type {any} */ node) {
         if (!isHookCall(node, /^useAnimatedScrollHandler$/)) return;
@@ -139,6 +151,10 @@ export const bad = [
   "import { ScrollView } from 'react-native';\nexport function Header() {\n  const [y, setY] = React.useState(0);\n  const onScroll = useAnimatedScrollHandler({\n    onScroll: (e) => {\n      runOnJS(setY)(e.contentOffset.y);\n    },\n  });\n  return <Animated.ScrollView onScroll={onScroll} />;\n}",
   "import { ScrollView } from 'react-native';\nexport function List({ height }: { height: number }) {\n  const [progress, setProgress] = useState(0);\n  const handleScroll = useCallback((e) => {\n    setProgress(e.nativeEvent.contentOffset.y / height);\n  }, [height]);\n  return <FlatList onScroll={handleScroll} data={[]} renderItem={() => null} />;\n}",
   "import { ScrollView } from 'react-native';\nexport function Pager() {\n  const [x, setX] = useState(0);\n  const handler = useAnimatedScrollHandler((e) => {\n    scheduleOnRN(setX, e.contentOffset.x);\n  });\n  return <Animated.FlatList onScroll={handler} />;\n}",
+  // An updater is judged by what it returns.
+  "import { ScrollView } from 'react-native';\nexport function Feed() {\n  const [y, setY] = useState(0);\n  return <ScrollView onScroll={(e) => setY(() => e.nativeEvent.contentOffset.y)} />;\n}",
+  // A component of the app's own that forwards the scroll event.
+  "import { View } from 'react-native';\nexport function Feed() {\n  const [y, setY] = useState(0);\n  return <Timeline onScroll={(e) => setY(e.nativeEvent.contentOffset.y)} />;\n}",
 ];
 
 export const good = [
@@ -152,9 +168,15 @@ export const good = [
   // A boolean or an index set on every event: while it stays the same, React skips the render.
   "import { ScrollView } from 'react-native';\nexport function Drawer() {\n  const [compact, setCompact] = useState(false);\n  return <ScrollView onScroll={(e) => setCompact(e.nativeEvent.contentOffset.y > 80)} />;\n}",
   "import { ScrollView } from 'react-native';\nexport function Pager() {\n  const [page, setPage] = useState(0);\n  const handler = useAnimatedScrollHandler((e) => {\n    scheduleOnRN(setPage, Math.round(e.contentOffset.x / 320));\n  });\n  return <Animated.FlatList onScroll={handler} />;\n}",
+  "import { ScrollView } from 'react-native';\nexport function Top() {\n  const [shown, setShown] = useState(false);\n  return <ScrollView onScroll={(e) => setShown(Boolean(e.nativeEvent.contentOffset.y))} />;\n}",
+  "import { ScrollView } from 'react-native';\nexport function Top() {\n  const [moved, setMoved] = useState(false);\n  return <ScrollView onScroll={(e) => setMoved(!!e.nativeEvent.contentOffset.y)} />;\n}",
   "import { ScrollView } from 'react-native';\nexport function Days({ width }: { width: number }) {\n  const [near, setNear] = useState(0);\n  return <ScrollView horizontal onScroll={(e) => setNear((now) => Math.round(e.nativeEvent.contentOffset.x / width))} />;\n}",
   // On the web a scroll handler is not this pack's.
   "export function Feed() {\n  const [top, setTop] = useState(0);\n  return <div onScroll={(e) => setTop(e.currentTarget.scrollTop)} />;\n}",
+  // Another component's onScroll that hands over no scroll event.
+  "import { View } from 'react-native';\nexport function Gallery() {\n  const [i, setI] = useState(0);\n  return <Carousel onScroll={(index: number) => setI(index)} />;\n}",
+  // A reducer decides what changes: dispatch is not a state setter here.
+  "import { ScrollView } from 'react-native';\nexport function Feed() {\n  const [state, dispatch] = useReducer(reduce, { y: 0 });\n  return <ScrollView onScroll={(e) => dispatch({ type: 'scroll', y: e.nativeEvent.contentOffset.y })} />;\n}",
   // A callback the parent passed in is not this component's state.
   "import { ScrollView } from 'react-native';\nexport function Feed({ setOffset }: { setOffset: (y: number) => void }) {\n  return <ScrollView onScroll={(e) => setOffset(e.nativeEvent.contentOffset.y)} />;\n}",
 ];
