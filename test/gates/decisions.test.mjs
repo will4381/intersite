@@ -30,3 +30,14 @@ test("a dispatch over the same variants repeated in a third file is reported; on
     "src/c.ts:1 `.kind` is branched on for \"charge\", \"refund\" in the same 3 files (also src/a.ts:1, src/b.ts:1): a new variant has to be added in each of them: keep the per-variant behaviour in one module, a switch over the union with a never default, or a table keyed by the variant",
   ]);
 });
+
+test("a constant the change declares, already declared with that value in two other files, is suggested and fails nothing", async () => {
+  const day = "export const DAY_MS = 24 * 60 * 60 * 1000;\n";
+  const r = repo({ "src/a.ts": day, "src/b.ts": "const DAY_MS = 86_400_000;\nexport const week = 7 * DAY_MS;\n" });
+  r.write({ "src/c.ts": "const DAY_MS = 86400000;\nexport const soon = Date.now() + DAY_MS;\n" });
+  const result = await gates.decisions({ cwd: r.cwd, base: "base", testPaths: TEST_PATHS, testCmd: "", setup: "", duplicateLines: 6, mutants: 0, timeout: 0, entryPaths: [], artifacts: [], protected: [] });
+  assert.deepEqual(result.findings, []);
+  assert.deepEqual(result.suggestions?.map((s) => s.message), [
+    "src/c.ts:1 the constant DAY_MS is declared as 86400000 in 3 files (also src/a.ts:1, src/b.ts:1): one value kept in 3 places, each free to change alone. Declare it once and import it.",
+  ]);
+});

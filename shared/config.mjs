@@ -111,7 +111,7 @@ export const defaults = {
   },
   gates: {
     base: DEFAULT_BASE,
-    run: ["test-integrity","duplicates","similar","new-deps","artifacts","unused","naming","style-drift","value-drift","sql","regex","decisions","renames","references","schema-drift","imports","boundaries","tamper","special-case","complexity","columns","data-model","routes","env","secrets","auth","structure"],
+    run: ["test-integrity","duplicates","similar","new-deps","artifacts","unused","naming","style-drift","value-drift","sql","regex","decisions","renames","references","schema-drift","imports","boundaries","tamper","special-case","complexity","columns","data-model","states","routes","env","secrets","auth","structure"],
     testPaths: TEST_PATHS,
     testCmd: "",
     setup: "",

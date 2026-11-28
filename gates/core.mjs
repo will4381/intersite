@@ -61,7 +61,7 @@ export function productCodeGate(command, { cwd, base, testPaths }, everyFile = f
   const product = listed.filter((f) => JS_FILE.test(f) && !NOT_PRODUCT.test(f) && !matches(f, testPaths));
   const files = everyFile ? listed : product;
   const answer = runCore({ command, root: top, files, added: whole ? undefined : Object.fromEntries(added), prefix, ...(everyFile && { options: { product } }) });
-  return { findings: fromEngine(answer.findings, prefix), summary: answer.summary };
+  return { findings: fromEngine(answer.findings, prefix), suggestions: fromEngine(answer.data?.suggestions ?? [], prefix), summary: answer.summary };
 }
 
 /**

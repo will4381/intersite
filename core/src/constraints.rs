@@ -19,6 +19,11 @@ use crate::sql;
 pub(crate) struct Allowed {
     /// As the database stores them.
     pub(crate) stored: BTreeSet<String>,
+    /// Prisma's name for each, for an enum (`@map` gives a member another stored value). Empty where Prisma code
+    /// writes the stored value itself: a text column under a CHECK.
+    pub(crate) names: HashMap<String, String>,
+    /// What declares the set: "the enum OrderStatus", "the check on orders.status".
+    pub(crate) by: String,
 }
 
 static PRISMA_MAP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"@map\("([^"]*)"\)"#).unwrap());
@@ -274,16 +279,24 @@ pub(crate) fn allowed(schemas: &Schemas, checks: &Checks) -> HashMap<(String, St
     for table in schemas.tables.values() {
         for column in &table.columns {
             let at = (table.name.clone(), column.name.clone());
-            let stored = match column.kind.strip_prefix("enum ") {
+            let allowed = match column.kind.strip_prefix("enum ") {
                 Some(name) => enums.get(name).map(|e| {
                     let mut stored: BTreeSet<String> = e.members.iter().map(|m| m.1.clone()).collect();
                     // A value a migration added that the Prisma schema has not caught up with is one SQL may hold.
                     stored.extend(typed.get(&e.stored_as).into_iter().flatten().cloned());
-                    stored
+                    Allowed { stored, names: e.members.iter().cloned().collect(), by: format!("the enum {}", e.name) }
                 }),
-                None => typed.get(&sql::bare(&column.kind)).filter(|_| table.source == 0).or_else(|| checks.lists.get(&at)).cloned(),
+                None => {
+                    let by_type = typed.get(&sql::bare(&column.kind)).filter(|_| table.source == 0);
+                    let by = if by_type.is_some() {
+                        format!("the enum {}", sql::bare(&column.kind))
+                    } else {
+                        format!("the check on {}.{}", table.name, column.name)
+                    };
+                    by_type.or_else(|| checks.lists.get(&at)).map(|values| Allowed { stored: values.clone(), names: HashMap::new(), by })
+                }
             };
-            out.extend(stored.map(|stored| (at, Allowed { stored })));
+            out.extend(allowed.map(|allowed| (at, allowed)));
         }
     }
     out

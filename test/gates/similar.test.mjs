@@ -296,3 +296,24 @@ test("a helper moved inside the function that used it is not a copy", async () =
   r.write({ "src/billing/sync.js": syncInvoices });
   assert.equal((await run(r.cwd, ["similar"])).code, 0);
 });
+
+test("a change that edits one of two identical functions is told of the copy it leaves as it was, and fails nothing", async () => {
+  const total = (/** @type {string} */ name, /** @type {string} */ rate) =>
+    `export function ${name}(order) {\n  let sum = 0;\n  for (const line of order.lines) {\n    if (line.cancelled) continue;\n    sum += line.price * line.quantity;\n  }\n  const tax = Math.round(sum * ${rate});\n  return { sum, tax, total: sum + tax };\n}\n`;
+  const r = repo({ "src/invoice.ts": total("invoiceTotal", "0.2"), "src/receipt.ts": total("receiptTotal", "0.2") });
+  r.write({ "src/invoice.ts": total("invoiceTotal", "0.2").replace("if (line.cancelled) continue;", "if (line.cancelled || line.refunded) continue;") });
+  const first = await run(r.cwd, ["similar"]);
+  assert.equal(first.code, 0, first.out.join("\n"));
+  assert.deepEqual(first.out.map((line) => line.split(" | ")[0]).slice(1), [
+    "suggestion: src/invoice.ts:4 this change edits invoiceTotal, and src/receipt.ts:1 receiptTotal was the same code before it and is left as it was: if the change belongs there too, make it in both, or have one call the other",
+  ]);
+  // A renamed local says nothing new: the copy is not behind.
+  r.write({ "src/invoice.ts": total("invoiceTotal", "0.2").replace(/\bline\b/g, "row") });
+  assert.equal((await run(r.cwd, ["similar"])).out.length, 1);
+  r.write({ "src/invoice.ts": total("invoiceTotal", "0.2").replace("if (line.cancelled) continue;", "if (line.cancelled || line.refunded) continue;") });
+  // Edited the same way in the same change, the two are still one: nothing to say.
+  r.write({ "src/receipt.ts": total("receiptTotal", "0.2").replace("if (line.cancelled) continue;", "if (line.cancelled || line.refunded) continue;") });
+  const both = await run(r.cwd, ["similar"]);
+  assert.equal(both.code, 0);
+  assert.equal(both.out.length, 1, both.out.join("\n"));
+});

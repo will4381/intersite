@@ -25,6 +25,7 @@ import { renames } from "../gates/renames.mjs";
 import { schemaDrift } from "../gates/schema-drift.mjs";
 import { secrets } from "../gates/secrets.mjs";
 import { sql } from "../gates/sql.mjs";
+import { states } from "../gates/states.mjs";
 import { tamper } from "../gates/tamper.mjs";
 import { styleDrift } from "../gates/style-drift.mjs";
 import { testIntegrity } from "../gates/test-integrity.mjs";
@@ -38,7 +39,7 @@ export const gates = {
   decisions: (options) => productCodeGate("decisions", options),
   renames, references, "schema-drift": schemaDrift, "fails-on-base": failsOnBase, mutation, protected: protectedPaths, imports,
   boundaries: (options) => graphGate("boundaries", options, { entryPaths: options.entryPaths, layers: options.layers, features: options.features }),
-  tamper, "special-case": specialCase, complexity, coverage, columns, "data-model": dataModel,
+  tamper, "special-case": specialCase, complexity, coverage, columns, "data-model": dataModel, states,
   routes: (options) => productCodeGate("routes", options, true),
   env: (options) => productCodeGate("env", options, true),
   secrets,
@@ -47,7 +48,7 @@ export const gates = {
 };
 
 /** Gates that can judge the whole repository (`--all`): the rest only mean something for a change. */
-export const WHOLE = new Set(["duplicates", "similar", "unused", "naming", "style-drift", "value-drift", "sql", "regex", "decisions", "schema-drift", "artifacts", "imports", "boundaries", "complexity", "columns", "routes", "env", "secrets", "auth", "structure", "references", "data-model"]);
+export const WHOLE = new Set(["duplicates", "similar", "unused", "naming", "style-drift", "value-drift", "sql", "regex", "decisions", "schema-drift", "artifacts", "imports", "boundaries", "complexity", "columns", "routes", "env", "secrets", "auth", "structure", "references", "data-model", "states"]);
 
 const usage = `usage: intersite gate <${Object.keys(gates).join("|")}> [--base <ref>] [--json] [--cmd "<test command>"] [--paths <glob>]... [--setup "<command>"] [--max <n>] [--timeout <seconds>] [--all [--write]]`;
 

@@ -580,10 +580,77 @@ struct Options {
     lines: usize,
     /// Judging the whole repository.
     whole: bool,
+    /// The files the change edits, as they were before it.
+    #[serde(default)]
+    before: HashMap<String, String>,
+}
+
+/// A unit's shape as one number, to find the units of the same shape.
+fn shape(norm: &[String]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    norm.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// What a unit says, apart from how it is written: its shape, with each literal and each of the module's own names
+/// as written. A formatter's commas, parentheses and quotes are left out, and so is what a local is called, so
+/// neither a reformat nor a renamed variable reads as a change.
+fn words(u: &Unit) -> Vec<&str> {
+    let quote = |c: char| c == '"' || c == '\'' || c == '`';
+    let said = |i: usize| match u.raw_kind[i].as_str() {
+        "str" | "num" | "regex" | "text" | "mod" => u.raw[i].trim_matches(quote),
+        _ => u.norm[i].as_str(),
+    };
+    (0..u.raw.len()).filter(|&i| !matches!(u.raw[i].as_str(), "," | "(" | ")")).map(said).collect()
+}
+
+/// Functions the change edits whose copy elsewhere it leaves as it was. Two functions that were the same code, one
+/// of them now changed: where copied code goes wrong is in changes made to one copy and not the other (Juergens,
+/// Deissenboeck, Hummel and Wagner, "Do code clones matter?", ICSE 2009). Whether this change belongs in both is its
+/// author's to say, so it is a suggestion.
+fn left_behind(all: &[Entry], added: &HashMap<String, HashSet<u32>>, before: &HashMap<String, String>) -> Vec<Finding> {
+    let code = |e: &Entry| family(&e.unit) == "code" && big(&e.unit) && !KIT.is_match(&e.file);
+    let mut by_shape: HashMap<u64, Vec<&Entry>> = HashMap::new();
+    for entry in all.iter().filter(|e| code(e)) {
+        by_shape.entry(shape(&entry.unit.norm)).or_default().push(entry);
+    }
+    let was: HashMap<&String, Vec<Unit>> = before.iter().map(|(file, text)| (file, units::units(text, file))).collect();
+    // The unit of this name as the file had it before the change.
+    let earlier = |e: &Entry| was.get(&e.file)?.iter().find(|u| u.name == e.unit.name && u.kind == e.unit.kind);
+    let mut out = Vec::new();
+    for edited in all.iter().filter(|e| code(e)) {
+        // Edited in what it says, not in how it is written.
+        let Some(old) = earlier(edited).filter(|old| words(old) != words(&edited.unit) && big(old)) else { continue };
+        // A copy: what the function said, in a function this change neither adds nor edits. Two functions of one
+        // shape that already differed by a string or a helper are not held to each other's changes.
+        let untouched = |twin: &&&Entry| {
+            let same_place = twin.file == edited.file && twin.unit.name == edited.unit.name;
+            let new = added.get(twin.file.as_str()).is_some_and(|lines| lines.contains(&twin.unit.line));
+            !same_place && !new && words(&twin.unit) == words(old) && earlier(twin).is_none_or(|t| words(t) == words(&twin.unit))
+        };
+        let twins: Vec<&&Entry> = by_shape.get(&shape(&old.norm)).into_iter().flatten().filter(untouched).collect();
+        let Some(first) = twins.first() else { continue };
+        let lines = added.get(edited.file.as_str());
+        let line =
+            (edited.unit.line..=edited.unit.end_line).find(|l| lines.is_some_and(|added| added.contains(l))).unwrap_or(edited.unit.line);
+        let more = if twins.len() > 1 { format!(" (and {} more of the same)", twins.len() - 1) } else { String::new() };
+        out.push(Finding {
+            file: edited.file.clone(),
+            line,
+            target: format!("{}:{}:copy", edited.file, edited.unit.name),
+            message: format!(
+                "{}:{line} this change edits {}, and {}:{} {} was the same code before it and is left as it was{more}: if the change belongs there too, make it in both, or have one call the other",
+                edited.file, edited.unit.name, first.file, first.unit.line, first.unit.name
+            ),
+        });
+    }
+    out.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+    out
 }
 
 pub fn run(request: &Request) -> Result<Answer, String> {
-    let Options { lines: n, whole } = request.options()?;
+    let Options { lines: n, whole, before } = request.options()?;
     let added = request.added.clone().unwrap_or_default();
     let files = &request.files;
     // Every unit in the repository's source files, and which ones the change added (its first line is an added line).
@@ -644,5 +711,6 @@ pub fn run(request: &Request) -> Result<Answer, String> {
         });
     }
     findings.extend(partial_copies(request, files, &added, whole, n, &reported, &mut cache));
-    Ok(Answer::new(findings, format!("{} added units checked against {} units", fresh.len(), all.len())))
+    let summary = format!("{} added units checked against {} units", fresh.len(), all.len());
+    Ok(Answer::new(findings, summary).suggesting(left_behind(&all, &added, &before)))
 }
