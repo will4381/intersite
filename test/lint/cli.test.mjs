@@ -177,3 +177,10 @@ test("inline styles are reported in a file with no className, unless an image, e
   });
   assert.deepEqual(rulesHit((await runLint(cwd, ["--json"])).out), ["src/box.tsx intersite/no-hardcoded-color"]);
 });
+
+test("a react-native web file (*.web.*) is left alone by the scroll rule", async () => {
+  const feed = "import { ScrollView } from 'react-native';\nexport function Feed() {\n  const [y, setY] = useState(0);\n  return <ScrollView onScroll={(e) => setY(e.nativeEvent.contentOffset.y)} />;\n}\n";
+  const cwd = fixture({ "intersite.json": { project: "rn", lint: { packs: ["react-native"] } }, "src/Feed.tsx": feed, "src/Feed.web.tsx": feed });
+  const hits = rulesHit((await runLint(cwd, ["--json"])).out).filter((hit) => hit.endsWith("intersite/no-state-per-scroll-event"));
+  assert.deepEqual(hits, ["src/Feed.tsx intersite/no-state-per-scroll-event"]);
+});
