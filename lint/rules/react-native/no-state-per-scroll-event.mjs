@@ -49,19 +49,22 @@ function setterOf(call) {
 /**
  * Whether a value changes only at a threshold, so most events set what is already there and React skips the render:
  * a comparison, a negation, a literal, a `Boolean(...)`, an index (`Math.round(x / width)`), a predicate's answer
- * (`isNear(...)`), a choice between such values, or an updater function that returns one.
- * @param {any} node @param {any} sourceCode @param {number} [depth] @returns {boolean}
+ * (`isNear(...)`), a choice between such values, or an updater function that returns one or the state it was given
+ * (`(now) => (now === at ? now : at)`: handing back the same state skips the render).
+ * @param {any} node @param {any} sourceCode @param {number} [depth] @param {string} [previous] an updater's parameter
+ * @returns {boolean}
  */
-function discrete(node, sourceCode, depth = 0) {
+function discrete(node, sourceCode, depth = 0, previous = undefined) {
   node = unwrap(node);
   if (!node || node.type === "Literal") return true;
   // ponytail: an updater with more than a `return` in its body is left alone; walking its returns would judge it.
-  if (FUNCTIONS.has(node.type)) return discrete(returned(node), sourceCode, depth);
+  if (FUNCTIONS.has(node.type)) return discrete(returned(node), sourceCode, depth, node.params[0]?.type === "Identifier" ? node.params[0].name : undefined);
+  if (node.type === "Identifier" && node.name === previous) return true;
   if (node.type === "TemplateLiteral") return !node.expressions.length;
   if (node.type === "BinaryExpression") return /^(?:[<>]=?|[!=]==?|in|instanceof)$/.test(node.operator);
   if (node.type === "UnaryExpression") return node.operator === "!";
-  if (node.type === "LogicalExpression") return discrete(node.left, sourceCode, depth) && discrete(node.right, sourceCode, depth);
-  if (node.type === "ConditionalExpression") return discrete(node.consequent, sourceCode, depth) && discrete(node.alternate, sourceCode, depth);
+  if (node.type === "LogicalExpression") return discrete(node.left, sourceCode, depth, previous) && discrete(node.right, sourceCode, depth, previous);
+  if (node.type === "ConditionalExpression") return discrete(node.consequent, sourceCode, depth, previous) && discrete(node.alternate, sourceCode, depth, previous);
   if (node.type === "CallExpression") {
     const name = calleeName(node);
     if (/^(?:round|floor|ceil|trunc)$/.test(name) && node.callee.object?.name === "Math") {
@@ -171,6 +174,8 @@ export const good = [
   "import { ScrollView } from 'react-native';\nexport function Top() {\n  const [shown, setShown] = useState(false);\n  return <ScrollView onScroll={(e) => setShown(Boolean(e.nativeEvent.contentOffset.y))} />;\n}",
   "import { ScrollView } from 'react-native';\nexport function Top() {\n  const [moved, setMoved] = useState(false);\n  return <ScrollView onScroll={(e) => setMoved(!!e.nativeEvent.contentOffset.y)} />;\n}",
   "import { ScrollView } from 'react-native';\nexport function Days({ width }: { width: number }) {\n  const [near, setNear] = useState(0);\n  return <ScrollView horizontal onScroll={(e) => setNear((now) => Math.round(e.nativeEvent.contentOffset.x / width))} />;\n}",
+  // An updater that hands back the state it was given while the page is the same.
+  "import { ScrollView } from 'react-native';\nexport function Days({ width }: { width: number }) {\n  const [near, setNear] = useState(0);\n  const moved = (event) => {\n    const at = Math.round(event.nativeEvent.contentOffset.x / width);\n    setNear((current) => (current === at ? current : at));\n  };\n  return <ScrollView horizontal onScroll={moved} />;\n}",
   // On the web a scroll handler is not this pack's.
   "export function Feed() {\n  const [top, setTop] = useState(0);\n  return <div onScroll={(e) => setTop(e.currentTarget.scrollTop)} />;\n}",
   // Another component's onScroll that hands over no scroll event.
