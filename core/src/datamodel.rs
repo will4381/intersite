@@ -532,9 +532,12 @@ fn id_lists(model: &Model, out: &mut Vec<Flaw>) {
     }
 }
 
+/// The columns of one name in one package, each with its table and type.
+type Named<'m> = BTreeMap<(&'m str, String), Vec<(&'m Table, &'m Column, Family)>>;
+
 /// One name with two types across tables, for names that link tables or hold money.
 fn two_types(model: &Model, out: &mut Vec<Flaw>) {
-    let mut by_name: BTreeMap<(&str, String), Vec<(&Table, &Column, Family)>> = BTreeMap::new();
+    let mut by_name: Named = BTreeMap::new();
     for table in model.tables.values().filter(|t| judged(t)) {
         for column in &table.columns {
             let (family, array) = model.kind(table, column);
