@@ -733,6 +733,7 @@ pub(crate) fn schemas(request: &Request) -> Schemas {
 }
 
 #[derive(serde::Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 struct Options {
     /// The planner's statistics, handed over instead of read from a database.
     #[serde(default)]
