@@ -23,6 +23,7 @@ mod imports;
 mod js;
 mod naming;
 mod outcome;
+mod references;
 mod regex;
 mod registry;
 mod renames;
@@ -196,6 +197,7 @@ fn main() {
         "twins" => twins::run(&request),
         "decisions" => decisions::run(&request),
         "renames" => renames::run(&request),
+        "references" => references::run(&request),
         "routes" => routes::run(&request),
         "env" => env::run(&request),
         "schema-drift" => schemas::run(&request),
