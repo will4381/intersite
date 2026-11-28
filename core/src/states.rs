@@ -1,8 +1,8 @@
 //! The states check: the values a workflow's columns may hold, and the code that writes and tests them. A column's
 //! values are a closed set where the schema says so: a Prisma enum, a Postgres enum, or a CHECK that lists them. Code is
 //! read where the table is certain: a Prisma call on the model, and SQL in a string that names the table. Three things
-//! are reported. A value written or tested that the set does not have: the database refuses the write, the test is
-//! never true. One list of values tested in three or more files: the rule "which states count" written many times, so
+//! are reported. A value written or tested that the set does not have: the database refuses the write, and no row
+//! holds what is tested. One list of values tested in three or more files: the rule "which states count" written many times, so
 //! the next state has to be added to each. One change of state written in four or more functions across three or more
 //! files: one step of the workflow, each copy free to forget what the others do with it.
 //!
@@ -714,7 +714,10 @@ fn unknown(request: &Request, shape: &Shape, seen: &[Seen], out: &mut Vec<Findin
             _ => nearest(&used.value, &spelled).map_or(String::new(), |n| format!(" Did you mean '{n}'?")),
         };
         let (does, so) = match used.how {
-            How::Test => (format!("tests {}.{} against '{}'", used.table, used.column, used.value), "the test is never true"),
+            How::Test => (
+                format!("tests {}.{} against '{}'", used.table, used.column, used.value),
+                "no row holds it, so the test comes out the same for every row",
+            ),
             _ => (format!("writes '{}' to {}.{}", used.value, used.table, used.column), "the database refuses the write"),
         };
         out.push(Finding {
@@ -837,6 +840,7 @@ fn scattered_steps(request: &Request, shape: &Shape, seen: &[Seen], out: &mut Ve
 }
 
 #[derive(serde::Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 struct Options {
     /// The files that are product code; absent, every file is.
     #[serde(default)]
@@ -930,7 +934,7 @@ mod tests {
             "src/jobs.ts:2 writes 'finished' to jobs.status, which the check on jobs.status does not allow (done, pending): the database refuses the write."
         );
         assert!(
-            got[1].message.ends_with("the test is never true. 'send_email' is Prisma's name for the value; SQL holds 'send.email'."),
+            got[1].message.ends_with("no row holds it, so the test comes out the same for every row. 'send_email' is Prisma's name for the value; SQL holds 'send.email'."),
             "{}",
             got[1].message
         );
