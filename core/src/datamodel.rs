@@ -152,9 +152,16 @@ struct Model {
     prisma: HashMap<String, Vec<String>>,
     /// The planner's statistics, when a database was given.
     stats: Option<Stats>,
+    /// Each table's package (the folder of the nearest package.json): two packages are two databases, as far as the
+    /// schema can tell, so a name is compared and a link is followed only within one.
+    package: HashMap<String, String>,
 }
 
 impl Model {
+    fn package(&self, table: &Table) -> &str {
+        self.package.get(&table.name).map_or("", String::as_str)
+    }
+
     fn kind(&self, table: &Table, column: &Column) -> (Family, bool) {
         let declared = if table.source == 0 {
             self.retyped.get(&(table.name.clone(), column.name.clone())).unwrap_or(&column.kind)
@@ -279,7 +286,14 @@ fn open_links(model: &Model, out: &mut Vec<Flaw>) {
             kind_name.push("type".into());
             let polymorphic = table.columns.iter().any(|c| name_words(&c.name) == kind_name);
             let (family, array) = model.kind(table, column);
-            if held || own_key || polymorphic || array || !judged(parent) || !model.key_family(parent).is_some_and(|key| family.holds(key))
+            let elsewhere = model.package(parent) != model.package(table);
+            if held
+                || own_key
+                || polymorphic
+                || array
+                || elsewhere
+                || !judged(parent)
+                || !model.key_family(parent).is_some_and(|key| family.holds(key))
             {
                 continue;
             }
@@ -520,12 +534,12 @@ fn id_lists(model: &Model, out: &mut Vec<Flaw>) {
 
 /// One name with two types across tables, for names that link tables or hold money.
 fn two_types(model: &Model, out: &mut Vec<Flaw>) {
-    let mut by_name: BTreeMap<String, Vec<(&Table, &Column, Family)>> = BTreeMap::new();
+    let mut by_name: BTreeMap<(&str, String), Vec<(&Table, &Column, Family)>> = BTreeMap::new();
     for table in model.tables.values().filter(|t| judged(t)) {
         for column in &table.columns {
             let (family, array) = model.kind(table, column);
             if !array && family != Family::Other && (model.target(&column.name).is_some() || money(&column.name)) {
-                by_name.entry(name_words(&column.name).join("_")).or_default().push((table, column, family));
+                by_name.entry((model.package(table), name_words(&column.name).join("_"))).or_default().push((table, column, family));
             }
         }
     }
@@ -770,9 +784,21 @@ pub fn run(request: &Request) -> Result<Answer, String> {
         .flat_map(|t| [(name_words(&t.name).concat(), t.name.clone()), (t.model.to_lowercase(), t.name.clone())])
         .filter(|(stem, _)| !stem.is_empty())
         .collect();
+    let mut packages = HashMap::new();
+    let package = tables.values().map(|t| (t.name.clone(), crate::graph::package_of(&request.root, &t.file, &mut packages))).collect();
     let prisma = prisma_files.iter().map(|(file, src)| (file.clone(), src.lines().map(str::to_string).collect())).collect();
-    let model =
-        Model { tables: tables.into_iter().collect(), linked, primary, retyped: inventory.types, by_stem, allowed, checks, prisma, stats };
+    let model = Model {
+        tables: tables.into_iter().collect(),
+        linked,
+        primary,
+        retyped: inventory.types,
+        by_stem,
+        allowed,
+        checks,
+        prisma,
+        stats,
+        package,
+    };
 
     let mut flaws = vec![];
     open_links(&model, &mut flaws);
@@ -956,6 +982,21 @@ mod tests {
             "{}",
             suggested[3].2
         );
+    }
+
+    #[test]
+    fn two_packages_are_two_databases() {
+        let api = "create table users (id integer primary key);\ncreate table jobs (id integer primary key, user_id integer references users (id), session_id text);\n";
+        let shop = "create table sessions (id text primary key, user_id bigint);\n";
+        let apart =
+            [("api/package.json", "{}"), ("api/migrations/001.sql", api), ("shop/package.json", "{}"), ("shop/migrations/001.sql", shop)];
+        let found = [targets("two-types", &apart, None), targets("open-link", &apart, None)].concat();
+        assert!(!found.iter().any(|t| t.contains("jobs.")), "{found:?}");
+        // The same tables in one package are one database, where both are flaws.
+        let together = [("migrations/001.sql", api), ("migrations/002.sql", shop)];
+        let found = [targets("two-types", &together, None), targets("open-link", &together, None)].concat();
+        assert!(found.contains(&"data-model:two-types:jobs.user_id".to_string()), "{found:?}");
+        assert!(found.contains(&"data-model:open-link:jobs.session_id".to_string()), "{found:?}");
     }
 
     #[test]
