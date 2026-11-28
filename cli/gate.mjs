@@ -20,6 +20,7 @@ import { newDeps } from "../gates/new-deps.mjs";
 import { protectedPaths } from "../gates/protected.mjs";
 import { similar } from "../gates/similar.mjs";
 import { specialCase } from "../gates/special-case.mjs";
+import { references } from "../gates/references.mjs";
 import { renames } from "../gates/renames.mjs";
 import { schemaDrift } from "../gates/schema-drift.mjs";
 import { secrets } from "../gates/secrets.mjs";
@@ -36,7 +37,7 @@ export const gates = {
   "test-integrity": testIntegrity, duplicates, "new-deps": newDeps, artifacts, unused, similar, naming, "style-drift": styleDrift, "value-drift": valueDrift, sql,
   regex: (options) => productCodeGate("regex", options),
   decisions: (options) => productCodeGate("decisions", options),
-  renames, "schema-drift": schemaDrift, "fails-on-base": failsOnBase, mutation, protected: protectedPaths, imports,
+  renames, references, "schema-drift": schemaDrift, "fails-on-base": failsOnBase, mutation, protected: protectedPaths, imports,
   boundaries: (options) => graphGate("boundaries", options, { entryPaths: options.entryPaths, layers: options.layers, features: options.features }),
   tamper, "special-case": specialCase, complexity, coverage, columns, "data-model": dataModel, states,
   routes: (options) => productCodeGate("routes", options, true),
@@ -47,7 +48,7 @@ export const gates = {
 };
 
 /** Gates that can judge the whole repository (`--all`): the rest only mean something for a change. */
-export const WHOLE = new Set(["duplicates", "similar", "unused", "naming", "style-drift", "value-drift", "sql", "regex", "decisions", "schema-drift", "artifacts", "imports", "boundaries", "complexity", "columns", "routes", "env", "secrets", "auth", "structure", "data-model", "states"]);
+export const WHOLE = new Set(["duplicates", "similar", "unused", "naming", "style-drift", "value-drift", "sql", "regex", "decisions", "schema-drift", "artifacts", "imports", "boundaries", "complexity", "columns", "routes", "env", "secrets", "auth", "structure", "references", "data-model", "states"]);
 
 const usage = `usage: intersite gate <${Object.keys(gates).join("|")}> [--base <ref>] [--json] [--cmd "<test command>"] [--paths <glob>]... [--setup "<command>"] [--max <n>] [--timeout <seconds>] [--all [--write]]`;
 

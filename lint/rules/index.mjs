@@ -25,6 +25,7 @@ import asyncRules from "./async/index.mjs";
 import frameworkRules from "./frameworks/index.mjs";
 import namingRules from "./naming/index.mjs";
 import reactRules from "./react/index.mjs";
+import reactNativeRules from "./react-native/index.mjs";
 import structureRules from "./structure/index.mjs";
 import uiRules from "./ui/index.mjs";
 import validationRules from "./validation/index.mjs";
@@ -56,6 +57,7 @@ export default [
   ...frameworkRules,
   ...namingRules,
   ...reactRules,
+  ...reactNativeRules,
   ...structureRules,
   ...uiRules,
   ...validationRules,

@@ -117,6 +117,11 @@ fn renames(patch: &str, prefix: &str) -> BTreeMap<String, (String, String, u32)>
     found
 }
 
+/// The old names a change renamed in code, for gates that leave renamed names to this one.
+pub(crate) fn renamed(patch: &str) -> std::collections::HashSet<String> {
+    renames(patch, "").into_keys().collect()
+}
+
 /// One old name found in a file: its index, whether it is still in the code, and the lines it is written on.
 type Hit = (usize, bool, Vec<u32>);
 

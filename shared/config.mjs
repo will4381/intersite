@@ -100,7 +100,7 @@ export const defaults = {
     dailyCap: { ok: 5000, other: 5000 },
   },
   lint: {
-    packs: ["tests","slop","security","state","async","perf","react","next","design","types","validation","naming","globals","ui","orm","query","workers","supabase","server","start","effect","payments","auth","swift"],
+    packs: ["tests","slop","security","state","async","perf","react","react-native","next","design","types","validation","naming","globals","ui","orm","query","workers","supabase","server","start","effect","payments","auth","swift"],
     /** @type {Record<string, string | unknown[]>} */
     rules: {},
     /** @type {import("../lint/catalog.mjs").JsonRule[]} */
@@ -111,7 +111,7 @@ export const defaults = {
   },
   gates: {
     base: DEFAULT_BASE,
-    run: ["test-integrity","duplicates","similar","new-deps","artifacts","unused","naming","style-drift","value-drift","sql","regex","decisions","renames","schema-drift","imports","boundaries","tamper","special-case","complexity","columns","data-model","states","routes","env","secrets","auth","structure"],
+    run: ["test-integrity","duplicates","similar","new-deps","artifacts","unused","naming","style-drift","value-drift","sql","regex","decisions","renames","references","schema-drift","imports","boundaries","tamper","special-case","complexity","columns","data-model","states","routes","env","secrets","auth","structure"],
     testPaths: TEST_PATHS,
     testCmd: "",
     setup: "",
