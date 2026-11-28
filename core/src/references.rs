@@ -343,7 +343,7 @@ fn words(line: &str) -> Vec<(usize, &str)> {
 const SHELL_TOOLS: &str = "ls cat rm cp mv mkdir touch grep rg find git gh open code echo curl tail head less source chmod export docker make cargo go pip pip3 brew sudo fly flyctl supabase vercel netlify eas expo xcrun kubectl terraform direnv tsc eslint vitest jest prisma psql sed";
 
 /// pnpm and yarn commands that are not scripts.
-const PM_COMMANDS: [&str; 24] = [
+const PM_COMMANDS: [&str; 34] = [
     "add",
     "install",
     "i",
@@ -368,6 +368,16 @@ const PM_COMMANDS: [&str; 24] = [
     "outdated",
     "audit",
     "config",
+    "dedupe",
+    "cache",
+    "store",
+    "rebuild",
+    "prune",
+    "import",
+    "set",
+    "version",
+    "info",
+    "global",
 ];
 
 /// The references in one shell command: the script `npm run x` names, the file `bash x.sh` or `node x.mjs` runs, the
@@ -1090,24 +1100,42 @@ fn anchors(src: &str) -> HashSet<String> {
     static ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?:\bid|\bname)\s*=\s*["']([^"']+)["']|\{#([\w-]+)\}"#).unwrap());
     let mut out = HashSet::new();
     let mut seen: HashMap<String, usize> = HashMap::new();
+    // A line under a paragraph line that is all `=` or all `-` makes that line a heading (setext).
+    static UNDERLINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s{0,3}(?:=+|-+)\s*$").unwrap());
+    static NOT_PARAGRAPH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*(?:[-*+>|#]|\d+[.)]\s|<)").unwrap());
     let mut fence = false;
+    let mut previous = "";
     for line in src.lines() {
         let t = line.trim_start();
         if t.starts_with("```") || t.starts_with("~~~") {
             fence = !fence;
+            previous = "";
             continue;
         }
         if fence {
             continue;
         }
+        let above = std::mem::replace(&mut previous, line);
         for cap in ID.captures_iter(line) {
             if let Some(m) = cap.get(1).or_else(|| cap.get(2)) {
                 out.insert(m.as_str().to_string());
             }
         }
-        let Some(cap) = HEADING.captures(line) else { continue };
-        let text = LINKED.replace_all(&cap[1], "$1");
-        let text = TAG.replace_all(&text, "");
+        let heading = match HEADING.captures(line) {
+            Some(cap) => cap.get(1).map_or("", |m| m.as_str()),
+            None if UNDERLINE.is_match(line) && !above.trim().is_empty() && !NOT_PARAGRAPH.is_match(above) => {
+                previous = "";
+                above.trim()
+            }
+            None => continue,
+        };
+        let text = LINKED.replace_all(heading, "$1");
+        // GitHub drops HTML tags from a heading, but not what a code span shows: `Option<T>` is `optiont`.
+        let text: String = text
+            .split('`')
+            .enumerate()
+            .map(|(i, part)| if i % 2 == 0 { TAG.replace_all(part, "").into_owned() } else { part.to_string() })
+            .collect();
         let slug: String = text
             .trim()
             .to_lowercase()
@@ -1343,7 +1371,14 @@ impl Judge<'_> {
                 let near = self.names.near(name);
                 Verdict::Missing(format!("{place} names `{}`, which no code or config file in the repository contains{}: a name that was removed or renamed, a typo, or another project's; name what the code calls it now, or drop it", m.text, near.map_or(String::new(), |n| format!(" (did you mean `{n}`?)"))), None)
             }
-            Kind::Script if self.declared.scripts.contains(&m.text) => Verdict::Fine,
+            // pnpm and yarn also run a dependency's binary: `pnpm prisma generate`, `yarn tsc`.
+            Kind::Script
+                if self.declared.scripts.contains(&m.text)
+                    || among(SHELL_TOOLS, &m.text)
+                    || self.declared.packages.iter().any(|p| p.rsplit('/').next() == Some(m.text.as_str())) =>
+            {
+                Verdict::Fine
+            }
             Kind::Script => {
                 let near = nearest(&m.text, self.declared.scripts.iter());
                 Verdict::Missing(format!("{place} says to run the `{}` npm script, but no package.json in the repository has one{}: name a script that exists", m.text, near.map_or(String::new(), |n| format!(" (did you mean `{n}`?)"))), None)
@@ -1856,8 +1891,9 @@ mod tests {
 
     #[test]
     fn anchors_are_github_slugs() {
-        let a = anchors("# Getting `started`\n## The [API](x.md) & more\n## Setup\n## Setup\n<a name=\"custom\"></a>\n");
-        for s in ["getting-started", "the-api--more", "setup", "setup-1", "custom"] {
+        let a = anchors("# Getting `started`\n## The [API](x.md) & more\n## Setup\n## Setup\n<a name=\"custom\"></a>\n\nOverview\n========\n\nUsage <b>now</b>\n---\n\n## `Option<T>`\n\n- a list\n---\n");
+        assert!(!a.contains("a-list") && !a.contains("-a-list"), "{a:?}");
+        for s in ["getting-started", "the-api--more", "setup", "setup-1", "custom", "overview", "usage-now", "optiont"] {
             assert!(a.contains(s), "{s}: {a:?}");
         }
     }

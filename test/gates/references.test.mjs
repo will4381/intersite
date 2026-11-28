@@ -56,6 +56,14 @@ test("a line the change adds is reported for the path, link, anchor, script and 
   ]);
 });
 
+test("pnpm and yarn run a dependency's binary or one of their own commands, which is no npm script", async () => {
+  const r = repo({ ...BASE, "package.json": JSON.stringify({ name: "t", scripts: { build: "tsc" }, devDependencies: { prisma: "6", "@biomejs/biome": "2" } }) });
+  r.write({ "docs/new.md": "# New\n\nRun `pnpm prisma generate`, `yarn tsc --noEmit`, `pnpm biome check`, `pnpm dedupe` and `pnpm biuld`.\n" });
+  assert.deepEqual(await check(r.cwd), [
+    "docs/new.md:3 says to run the `biuld` npm script, but no package.json in the repository has one (did you mean `build`?): name a script that exists",
+  ]);
+});
+
 test("what the prose does not assert of this repository is left alone", async () => {
   const r = repo(BASE);
   r.write({
