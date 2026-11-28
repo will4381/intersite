@@ -6,7 +6,7 @@ user sessions into tests nobody has to write.
 ## Quickstart
 
 ```bash
-npm i -D github:will4381/intersite#v1.0.0-rc.24 oxlint @oxlint/plugins
+npm i -D github:will4381/intersite#v1.0.0-rc.25 oxlint @oxlint/plugins
 ```
 
 ```bash
@@ -55,6 +55,7 @@ In a monorepo, install `intersite`, `oxlint` and `@oxlint/plugins` once at the r
 | `regex` | A regular expression whose backtracking can hang the process on a crafted input, and an email, phone, UUID or URL validator written differently in two places | git |
 | `decisions` | One decision made in several files: an environment variable read in three or more files outside the env module, a feature flag checked in three or more, or a dispatch over the same `kind`/`type` values repeated in three or more (per package) | git |
 | `renames` | An identifier renamed in code whose old name is still written in strings, comments or docs | git |
+| `references` | A doc, an agent rule or a code comment that names a file, folder, npm script, CI job, heading or code name the repository does not have: a path deleted or moved (with the commit that did it), a broken link or anchor, a name removed from the code. With `--all`, also a plan, audit, decision record or log whose work is over | git |
 | `schema-drift` | An interface or object type that restates the keys of a zod, valibot, yup or TypeBox schema or a Drizzle table by hand, with the derived type to write instead | git |
 | `routes` | A link, navigation or API call to a path no page or route of the app answers (`/auth/signup` when the page is `/signup`), or a call with a method the route does not handle (`POST` to a route that exports only `GET`). Reads Next.js, React Router and Remix, SvelteKit, Nuxt and Astro routes, and Express, Hono and Fastify handlers | git |
 | `env` | A read of an environment variable the project's `.env.example` (or env schema) does not list: a typo (`STRIPE_WEBHOOK_SECRT`, with the name it probably meant) or a variable the deploy will not know to set | git |
@@ -123,7 +124,7 @@ A change that touches `paths` fails unless it also changes a file under `needs` 
 
 ### The whole repository, not only the change
 
-`duplicates`, `similar`, `unused`, `naming`, `style-drift`, `value-drift`, `sql`, `regex`, `decisions`, `schema-drift`, `artifacts`, `imports`, `boundaries`, `columns`, `data-model`, `complexity`, `routes`, `env`, `secrets` and `auth` judge a change. `--all` points them at
+`duplicates`, `similar`, `unused`, `naming`, `style-drift`, `value-drift`, `sql`, `regex`, `decisions`, `references`, `schema-drift`, `artifacts`, `imports`, `boundaries`, `columns`, `data-model`, `complexity`, `routes`, `env`, `secrets` and `auth` judge a change. `--all` points them at
 every file; record what is there today and only new findings fail, as with lint:
 
 ```bash
@@ -250,7 +251,8 @@ rule out. It needs the
 | `design` | on | Over-engineering and tangles: two statements on one line (a jump after one is fine), a short helper called once (write it where it is used), a module exporting eight or more functions that average under two statements (a wide interface over little work), import cycles, a module importing itself, nesting past 4 levels, functions over 80 statements, more than 5 parameters, `if` chains that are a lookup table written as code, the same few statements repeated with new names a few lines apart, runs of 20+ statements over 40+ lines with no blank line, boolean-flag arguments, tangled ternaries, pass-through functions and components, one-implementation interfaces, classes that should be functions |
 | `async` | on | Async callbacks nobody awaits, `fetch` without a status check, rethrows that drop the original error (or its `cause`), a promise that resolves twice, fixed sleeps, success returned from a catch, exponential backoff (`2 ** attempt`) written outside the project's retry helper |
 | `perf` | on | Everywhere: spreading or copying the accumulator in `reduce` (`Object.assign({}, acc)`, `acc.concat`, `new Set(acc)`: quadratic). In files named `*.hot.ts` or `*.hot.tsx` (code that runs on every request): regular expressions built inside functions, dynamic `import()`, deep copies (`structuredClone`, JSON round trips), work at module scope. A project with no `.hot.` files is unaffected |
-| `react` | on | `target="_blank"` links without `rel`, `javascript:` URLs, effects that only derive state, racy fetches in effects, pointless memoisation, components defined inside components, twelve or more states in one component, needless `"use client"`, hook dependency mistakes, impure render (random values or the clock read in render, refs read during render, mutated props or state) |
+| `react` | on | `target="_blank"` links without `rel`, `javascript:` URLs, effects that only derive state, racy fetches in effects, pointless memoisation, components defined inside components, twelve or more states in one component, state that render never reads (only effects and event handlers do: a ref), needless `"use client"`, hook dependency mistakes, impure render (random values or the clock read in render, refs read during render, mutated props or state) |
+| `react-native` | on | React Native work that drops frames, each measured on a phone first: a size or position key (`height`, `top`, `margin`, `fontSize`…) moving in a Reanimated animated style instead of `transform` and `opacity`, `useNativeDriver: false`, React state set to a new value on every scroll event (a boolean or an index is fine: React skips the render while it stays the same) |
 | `security` | on | Live credentials, default secrets, secrets behind public env prefixes or in logs, SQL and shell commands built from strings, request bodies written straight to the database, `Math.random` tokens, disabled TLS checks, open redirects, unverified Stripe webhooks, a recursive delete at a path built from an environment variable or a request |
 | `next` | on | Server-only env read in a client file, server actions that write with no auth check |
 | `state` | on | Implicit state machines: three or more boolean flags doing one state's job |

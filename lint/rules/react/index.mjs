@@ -10,7 +10,8 @@ import * as noRacyEffectFetch from "./no-racy-effect-fetch.mjs";
 import * as noReadOnlyInput from "./no-read-only-input.mjs";
 import * as noReloadingFormSubmit from "./no-reloading-form-submit.mjs";
 import * as noStateSprawl from "./no-state-sprawl.mjs";
+import * as noUndrawnState from "./no-undrawn-state.mjs";
 import * as noUnstableDefaultDependency from "./no-unstable-default-dependency.mjs";
 
 /** @type {{ id: string, pack: string, rule: unknown, bad: string[], good: string[], ext?: string }[]} */
-export default [noAccidentalSubmit, noDerivedStateEffect, noIndexKeyOnChangingList, noNeedlessUseClient, noNestedComponent, noPointlessMemo, noRacyEffectFetch, noReadOnlyInput, noReloadingFormSubmit, noStateSprawl, noUnstableDefaultDependency];
+export default [noAccidentalSubmit, noDerivedStateEffect, noIndexKeyOnChangingList, noNeedlessUseClient, noNestedComponent, noPointlessMemo, noRacyEffectFetch, noReadOnlyInput, noReloadingFormSubmit, noStateSprawl, noUndrawnState, noUnstableDefaultDependency];
