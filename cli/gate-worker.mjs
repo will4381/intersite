@@ -14,8 +14,8 @@ parentPort?.on("message", async (/** @type {{ argv: string[], cwd: string, silen
   /** @type {string[]} */ const err = [];
   console.log = (line) => out.push(String(line));
   console.error = (line) => err.push(String(line));
-  /** @type {{ findings: unknown[], accepted: unknown[] }} */
-  let found = { findings: [], accepted: [] };
+  /** @type {{ findings: unknown[], accepted: unknown[], suggestions: unknown[] }} */
+  let found = { findings: [], accepted: [], suggestions: [] };
   let code;
   try {
     code = await gate(argv, { cwd, quiet: true, silent, collect: (result) => (found = result) });

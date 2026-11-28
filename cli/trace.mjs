@@ -16,7 +16,7 @@ import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
 import { runCore } from "../gates/core.mjs";
-import { GateError, killGroup, projectPrefix, resolveBase, topLevel, withWorktree } from "../gates/lib.mjs";
+import { GateError, databaseUrl, killGroup, projectPrefix, resolveBase, topLevel, withWorktree } from "../gates/lib.mjs";
 import { collectorOf } from "../replay/collector.mjs";
 import { loadConfig } from "../shared/config.mjs";
 
@@ -171,7 +171,7 @@ function print({ title, report, findings, runs, queries = [], flags, extra = [] 
 
 /** pg_stat_statements before a run, when INTERSITE_DATABASE_URL is set and the extension is there. */
 async function sqlSnapshot() {
-  const url = process.env.INTERSITE_DATABASE_URL;
+  const url = databaseUrl();
   if (!url) return undefined;
   try {
     return runCore({ command: "pg-stats", databaseUrl: url }).data;
@@ -187,7 +187,7 @@ async function sqlSnapshot() {
  */
 async function sqlSince(before) {
   if (!before) return [];
-  const url = process.env.INTERSITE_DATABASE_URL;
+  const url = databaseUrl();
   const answer = runCore({ command: "pg-stats", databaseUrl: url, options: { before } });
   return answer.data.since ?? [];
 }

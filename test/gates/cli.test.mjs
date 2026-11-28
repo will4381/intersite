@@ -99,5 +99,5 @@ test("--all judges the whole repository, and --write records today's findings so
   assert.equal(after.code, 1);
   assert.ok(after.out.every((line) => line.startsWith("src/c.mjs")), after.out.join("\n"));
 
-  assert.deepEqual((await run(r.cwd, ["new-deps", "--all"])).err, ["intersite gate: new-deps only judges a change, so --all does not apply; it works for duplicates, similar, unused, naming, style-drift, value-drift, sql, regex, decisions, schema-drift, artifacts, imports, boundaries, complexity, columns, routes, env, secrets, auth, structure, references"]);
+  assert.deepEqual((await run(r.cwd, ["new-deps", "--all"])).err, ["intersite gate: new-deps only judges a change, so --all does not apply; it works for duplicates, similar, unused, naming, style-drift, value-drift, sql, regex, decisions, schema-drift, artifacts, imports, boundaries, complexity, columns, routes, env, secrets, auth, structure, references, data-model"]);
 });

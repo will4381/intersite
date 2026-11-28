@@ -51,6 +51,7 @@ In a monorepo, install `intersite`, `oxlint` and `@oxlint/plugins` once at the r
 | `value-drift` | Copy, an API description or a comment that states a fee, rate or price ("1.5% + $0.30 per payment") the constant of the same name no longer holds, or one money rate set to two values in two files | git |
 | `sql` | SQL that locks or breaks a live table (`NOT NULL` with no default, an index built without `CONCURRENTLY`, a dropped column), a foreign key with no index or of a different type than the key it points at, UUIDs stored as text (SQL and Prisma), slow or wrong queries (`LIKE '%x'`, `OFFSET` paging, `NOT IN` a subquery, `UPDATE` with no `WHERE`), and queries run once per loop item. Data deletion: `TRUNCATE`, a Supabase `.delete()` with no filter, `DELETE` without `WHERE` in a migration, and `prisma migrate reset`, `db push --accept-data-loss` or `DROP DATABASE` added to a build, start or deploy script, a Dockerfile or CI. On Supabase, a public table without row level security and a policy that lets anyone change every row. With `INTERSITE_DATABASE_URL`, new queries are planned against that database and a scan of a big table names the index to add | git |
 | `columns` | A column the change adds that no code writes (it stays NULL), a table nothing uses, a table or column the code names that the schema does not have (raw SQL, Supabase strings, Prisma and Drizzle keys: "did you mean name?"), and removing the last write of a column. With `--all`, every nullable column nothing writes and every table nothing uses, for cleanup | git |
+| `data-model` | A flaw in the data model the schemas declare, of the kind that gets dearer with every row. Fails on: a column that names another table with no foreign key, one name with two types across tables, an index another already covers, a timestamp without its zone, money in a float, a table with no primary key. Suggests, and fails nothing: a flag beside the time it was set or beside the status that says the same (one fact, two columns), a list of ids in one column, two tables with the same columns, an enum no column has, a JSON column with no declared shape where the schema declares others. With `INTERSITE_DATABASE_URL` and `--all` it also reads the planner's statistics (never a row) and suggests: a column nothing has ever filled, a column with one value in every row, a text column with a handful of values that an enum or a CHECK would hold | git |
 | `regex` | A regular expression whose backtracking can hang the process on a crafted input, and an email, phone, UUID or URL validator written differently in two places | git |
 | `decisions` | One decision made in several files: an environment variable read in three or more files outside the env module, a feature flag checked in three or more, or a dispatch over the same `kind`/`type` values repeated in three or more (per package) | git |
 | `renames` | An identifier renamed in code whose old name is still written in strings, comments or docs | git |
@@ -123,7 +124,7 @@ A change that touches `paths` fails unless it also changes a file under `needs` 
 
 ### The whole repository, not only the change
 
-`duplicates`, `similar`, `unused`, `naming`, `style-drift`, `value-drift`, `sql`, `regex`, `decisions`, `references`, `schema-drift`, `artifacts`, `imports`, `boundaries`, `columns`, `complexity`, `routes`, `env`, `secrets` and `auth` judge a change. `--all` points them at
+`duplicates`, `similar`, `unused`, `naming`, `style-drift`, `value-drift`, `sql`, `regex`, `decisions`, `references`, `schema-drift`, `artifacts`, `imports`, `boundaries`, `columns`, `data-model`, `complexity`, `routes`, `env`, `secrets` and `auth` judge a change. `--all` points them at
 every file; record what is there today and only new findings fail, as with lint:
 
 ```bash
@@ -202,6 +203,10 @@ replay:
   crossTenantIgnore:
     - { route: "GET /v1/programs/:id", why: "network programs are public by design" }
 ```
+
+Some gates also make suggestions: a line that starts `suggestion:`, printed after the findings. A suggestion is worth
+doing and is the owner's call (a matter of design, a tidying, a reading of the data), so it never fails a check; on a
+pull request it is a notice. Acknowledge one to stop seeing it.
 
 A deliberate exception is always written down where a reviewer sees it: `gates.acknowledged` for a gate, an
 `Intersite-Ack: <gate>: <why>` commit trailer for a gate in one change only, or

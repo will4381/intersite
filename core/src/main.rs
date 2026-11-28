@@ -8,8 +8,10 @@ mod boundaries;
 mod cdp;
 mod columns;
 mod complexity;
+mod constraints;
 mod contract;
 mod coverage;
+mod datamodel;
 mod decisions;
 mod drift;
 mod dup;
@@ -34,6 +36,7 @@ mod secrets;
 mod similar;
 mod special;
 mod sql;
+mod statistics;
 mod stats;
 mod structure;
 mod style;
@@ -90,6 +93,14 @@ pub struct Answer {
 impl Answer {
     pub fn new(findings: Vec<Finding>, summary: String) -> Self {
         Answer { findings, summary, data: None }
+    }
+
+    /// With what the check suggests and does not fail on: worth doing, and the owner's call.
+    pub fn suggesting(mut self, suggestions: Vec<Finding>) -> Self {
+        if !suggestions.is_empty() {
+            self.data = Some(serde_json::json!({ "suggestions": suggestions }));
+        }
+        self
     }
 }
 
@@ -207,6 +218,7 @@ fn main() {
         "special-case" => special::run(&request),
         "hook" => tamper::hook(&request),
         "columns" => columns::run(&request),
+        "data-model" => datamodel::run(&request),
         "secrets" => secrets::run(&request),
         "auth" => auth::run(&request),
         "structure" => structure::run(&request),

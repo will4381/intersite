@@ -8,6 +8,7 @@ import { artifacts } from "../gates/artifacts.mjs";
 import { complexity } from "../gates/complexity.mjs";
 import { coverage } from "../gates/coverage.mjs";
 import { columns } from "../gates/columns.mjs";
+import { dataModel } from "../gates/data-model.mjs";
 import { duplicates } from "../gates/duplicates.mjs";
 import { productCodeGate } from "../gates/core.mjs";
 import { graphGate, imports } from "../gates/imports.mjs";
@@ -37,7 +38,7 @@ export const gates = {
   decisions: (options) => productCodeGate("decisions", options),
   renames, references, "schema-drift": schemaDrift, "fails-on-base": failsOnBase, mutation, protected: protectedPaths, imports,
   boundaries: (options) => graphGate("boundaries", options, { entryPaths: options.entryPaths, layers: options.layers, features: options.features }),
-  tamper, "special-case": specialCase, complexity, coverage, columns,
+  tamper, "special-case": specialCase, complexity, coverage, columns, "data-model": dataModel,
   routes: (options) => productCodeGate("routes", options, true),
   env: (options) => productCodeGate("env", options, true),
   secrets,
@@ -46,7 +47,7 @@ export const gates = {
 };
 
 /** Gates that can judge the whole repository (`--all`): the rest only mean something for a change. */
-export const WHOLE = new Set(["duplicates", "similar", "unused", "naming", "style-drift", "value-drift", "sql", "regex", "decisions", "schema-drift", "artifacts", "imports", "boundaries", "complexity", "columns", "routes", "env", "secrets", "auth", "structure", "references"]);
+export const WHOLE = new Set(["duplicates", "similar", "unused", "naming", "style-drift", "value-drift", "sql", "regex", "decisions", "schema-drift", "artifacts", "imports", "boundaries", "complexity", "columns", "routes", "env", "secrets", "auth", "structure", "references", "data-model"]);
 
 const usage = `usage: intersite gate <${Object.keys(gates).join("|")}> [--base <ref>] [--json] [--cmd "<test command>"] [--paths <glob>]... [--setup "<command>"] [--max <n>] [--timeout <seconds>] [--all [--write]]`;
 
@@ -57,8 +58,8 @@ const usage = `usage: intersite gate <${Object.keys(gates).join("|")}> [--base <
  * @param {string} name
  * @param {{ cwd: string, config: import("../shared/config.mjs").Config, flags?: Partial<import("../gates/lib.mjs").GateOptions>, all?: boolean, fresh?: boolean }} options
  *   `fresh`: count recorded findings too, to record them again
- * @returns {Promise<import("../gates/lib.mjs").GateResult & { accepted: import("../gates/lib.mjs").Finding[] }>}
- *   `accepted`: findings an acknowledgment let through, which `stats` counts
+ * @returns {Promise<import("../gates/lib.mjs").GateResult & { accepted: import("../gates/lib.mjs").Finding[], suggestions: import("../gates/lib.mjs").Finding[] }>}
+ *   `accepted`: findings an acknowledgment let through, which `stats` counts; `suggestions`: those still to be read
  */
 export async function runGate(name, { cwd, config, flags = {}, all = false, fresh = false }) {
   const { base, testPaths, testCmd, setup, duplicateLines, mutants, entryPaths, acknowledged } = config.gates;
@@ -70,9 +71,11 @@ export async function runGate(name, { cwd, config, flags = {}, all = false, fres
   const fresher = result.findings.filter((f) => !recorded.has(f.target));
   const isAcknowledged = (/** @type {import("../gates/lib.mjs").Finding} */ f) => acknowledged.some((a) => a.gate === name && a.target === f.target);
   const findings = fresher.filter((f) => !isAcknowledged(f));
+  // A suggestion is dropped the same two ways a finding is: recorded in the baseline, or acknowledged.
+  const suggestions = (result.suggestions ?? []).filter((f) => !recorded.has(f.target) && !isAcknowledged(f));
   const why = findings.length && !all ? acknowledgedInCommits(cwd, flags.base ?? base, name) : "";
-  if (why) return { findings: [], summary: `${result.summary}; ${findings.length} acknowledged for this change: ${why}`, accepted: fresher };
-  return { findings, summary: result.summary, accepted: fresher.filter(isAcknowledged) };
+  if (why) return { findings: [], suggestions, summary: `${result.summary}; ${findings.length} acknowledged for this change: ${why}`, accepted: fresher };
+  return { findings, suggestions, summary: result.summary, accepted: fresher.filter(isAcknowledged) };
 }
 
 /**
@@ -190,8 +193,8 @@ function gateFlags(name, values) {
  */
 async function recordGate(name, cwd, config, flags) {
   const baseline = readBaseline(cwd);
-  const { findings } = await runGate(name, { cwd, config, flags, all: true, fresh: true });
-  baseline[name] = [...new Set(findings.map((f) => f.target))].sort();
+  const { findings, suggestions } = await runGate(name, { cwd, config, flags, all: true, fresh: true });
+  baseline[name] = [...new Set([...findings, ...suggestions].map((f) => f.target))].sort();
   const sorted = Object.fromEntries(Object.entries(baseline).sort(([a], [b]) => a.localeCompare(b)));
   writeBaseline(cwd, "gates", sorted);
   console.log(`ok gate ${name}: ${baseline[name].length} findings recorded in ${BASELINE}; only new ones fail from here`);
@@ -203,15 +206,17 @@ async function recordGate(name, cwd, config, flags) {
  * @param {string} name @param {import("../gates/lib.mjs").GateResult} result
  * @param {{ json?: boolean, all?: boolean, quiet: boolean, cwd: string }} how
  */
-function show(name, { findings, summary }, { json, all, quiet, cwd }) {
-  if (json) return console.log(JSON.stringify({ gate: name, ok: !findings.length, summary, findings }));
-  if (!findings.length) {
-    if (!quiet) console.log(`ok gate ${name}: ${summary}`);
-    return;
-  }
+function show(name, { findings, summary, suggestions = [] }, { json, all, quiet, cwd }) {
+  if (json) return console.log(JSON.stringify({ gate: name, ok: !findings.length, summary, findings, ...(suggestions.length && { suggestions }) }));
+  if (!findings.length && !quiet) console.log(`ok gate ${name}: ${summary}`);
   const prefix = inGitHubActions() ? projectPrefix(cwd) : "";
   for (const f of findings) {
     const text = `${f.message} | to accept: add { "gate": "${name}", "target": "${f.target}", "why": "…" } to gates.acknowledged in intersite.yml${all ? `, or record today's with \`intersite gate ${name} --all --write\`` : `, or for this change only a commit trailer \`Intersite-Ack: ${name}: <why>\``}`;
     console.log(inGitHubActions() ? annotation(prefix, `intersite ${name}`, f, text) : text);
+  }
+  // A suggestion is printed after what fails, says that it is one, and is a notice on a pull request.
+  for (const f of suggestions) {
+    const text = `suggestion: ${f.message} | it fails nothing; to stop seeing it: add { "gate": "${name}", "target": "${f.target}", "why": "…" } to gates.acknowledged in intersite.yml${all ? `, or record today's with \`intersite gate ${name} --all --write\`` : ""}`;
+    console.log(inGitHubActions() ? annotation(prefix, `intersite ${name}`, f, text, "notice") : text);
   }
 }

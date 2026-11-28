@@ -29,35 +29,55 @@ use crate::{js, Answer, Finding, Request};
 type Named = Vec<(String, u32)>;
 
 #[derive(Clone, Debug)]
-struct Column {
+pub(crate) struct Column {
     /// The database name (lowercase for SQL, which folds unquoted names).
-    name: String,
+    pub(crate) name: String,
     /// The name code uses: a Prisma field or Drizzle key (the database name for SQL).
-    key: String,
-    nullable: bool,
+    pub(crate) key: String,
+    pub(crate) nullable: bool,
     /// Filled without code: a default, generated, identity, serial or `@updatedAt`.
     filled: bool,
-    file: String,
-    line: u32,
+    /// The declared type, lowercase, as SQL writes it (`timestamp with time zone`, `integer[]`); for Prisma, the SQL
+    /// type its scalar and native type map to; for Drizzle, the builder's name. Empty when unknown.
+    pub(crate) kind: String,
+    pub(crate) file: String,
+    pub(crate) line: u32,
+}
+
+/// An index a Prisma model declares (`@id`, `@unique`, `@@index`…), or a Drizzle table's primary key, by the fields'
+/// names in code.
+#[derive(Clone, Debug)]
+pub(crate) struct Index {
+    pub(crate) fields: Vec<String>,
+    pub(crate) unique: bool,
+    pub(crate) primary: bool,
+    /// A b-tree over whole columns in the default order: no `type:`, `sort:`, `ops:`, `length:` or `where:`.
+    pub(crate) plain: bool,
+    pub(crate) line: u32,
 }
 
 #[derive(Clone, Debug, Default)]
-struct Table {
+pub(crate) struct Table {
     /// The database name, lowercase.
-    name: String,
+    pub(crate) name: String,
     /// The Prisma model or Drizzle variable naming it in code; empty for SQL.
-    model: String,
+    pub(crate) model: String,
     /// 0 SQL, 1 Drizzle, 2 Prisma: a schema the ORM generates SQL from wins over that SQL.
-    source: u8,
-    columns: Vec<Column>,
+    pub(crate) source: u8,
+    pub(crate) columns: Vec<Column>,
     /// Every column is known: no spread in a Drizzle table, no `CREATE TABLE … AS`.
-    complete: bool,
-    file: String,
-    line: u32,
-    /// Prisma relation fields: (field, target model, foreign key fields this side holds).
-    relations: Vec<(String, String, Vec<String>)>,
+    pub(crate) complete: bool,
+    pub(crate) file: String,
+    pub(crate) line: u32,
+    /// Prisma relation fields: (field, target model, foreign key fields this side holds). A Drizzle foreign key is
+    /// one with no target model.
+    pub(crate) relations: Vec<(String, String, Vec<String>)>,
     /// Prisma compound unique names usable in `where`: `userId_postId`.
     compound: Vec<String>,
+    /// The indexes a Prisma model declares, its primary key among them; a Drizzle table's primary key.
+    pub(crate) indexes: Vec<Index>,
+    /// The Postgres schema a Prisma model is in (`@@schema("auth")`); empty for the default.
+    pub(crate) schema: String,
 }
 
 impl Table {
@@ -104,6 +124,7 @@ fn sql_column(def: &sqlparser::ast::ColumnDef, file: &str, line: u32) -> Column 
         name,
         nullable: !opts.contains("NOT NULL") && !opts.contains("PRIMARY KEY"),
         filled: opts.contains("DEFAULT") || opts.contains("GENERATED") || opts.contains("IDENTITY") || ty.contains("serial"),
+        kind: ty,
         file: file.to_string(),
         line,
     }
@@ -211,6 +232,24 @@ fn sql_model(files: &[(String, String)]) -> (HashMap<String, Table>, HashSet<Str
     (tables, known, views)
 }
 
+/// The tables the schemas leave behind, and every name ever created as a table or view. Migrations are applied first,
+/// in order, and other SQL (schema dumps, seeds) after, so a stale dump does not undo them; a schema an ORM generates
+/// SQL from wins over that SQL.
+fn declared(sql_files: &mut [(String, String)], mut ormed: Vec<Table>) -> (HashMap<String, Table>, HashSet<String>) {
+    sql_files.sort_by(|a, b| (!a.0.contains("migrations/"), &a.0).cmp(&(!b.0.contains("migrations/"), &b.0)));
+    let (mut tables, mut known, _views) = sql_model(sql_files);
+    // Prisma's implicit many-to-many tables (`_PostToTag`) are its own to write.
+    if ormed.iter().any(|t| t.source == 2) {
+        tables.retain(|name, _| !name.starts_with('_'));
+    }
+    ormed.sort_by_key(|t| t.source);
+    for t in ormed {
+        known.insert(t.name.clone());
+        tables.insert(t.name.clone(), t);
+    }
+    (tables, known)
+}
+
 /// The words of a Prisma attribute's bracketed list: `fields: [authorId, orgId]` is authorId, orgId.
 fn bracket_list(text: &str, after: &str) -> Vec<String> {
     let Some(at) = text.find(after) else { return vec![] };
@@ -228,7 +267,7 @@ fn attr_string(text: &str, attr: &str) -> Option<String> {
     Some(rest[open + 1..open + 1 + close].to_string())
 }
 
-fn lower_first(name: &str) -> String {
+pub(crate) fn lower_first(name: &str) -> String {
     let mut chars = name.chars();
     chars.next().map(|c| c.to_lowercase().chain(chars).collect()).unwrap_or_default()
 }
@@ -242,6 +281,7 @@ fn prisma_model(file: &str, src: &str) -> Vec<Table> {
             .map(|r| r.split_whitespace().next().unwrap_or("").trim_end_matches('{').to_string())
     };
     let models: HashSet<String> = src.lines().filter_map(|l| block(l, "model ")).collect();
+    let enums: HashSet<String> = src.lines().filter_map(|l| block(l, "enum ")).collect();
     let mut out = Vec::new();
     let mut current: Option<Table> = None;
     let mut ignored = false;
@@ -279,9 +319,19 @@ fn prisma_model(file: &str, src: &str) -> Vec<Table> {
             ignored = true;
             continue;
         }
+        if line.starts_with("@@schema") {
+            t.schema = attr_string(line, "@@schema").unwrap_or_default();
+            continue;
+        }
+        let plain = !["type:", "sort:", "ops:", "length:", "where:"].iter().any(|o| line.contains(o));
         if line.starts_with("@@unique") || line.starts_with("@@id") {
             let fields = bracket_list(line, "(");
             t.compound.push(attr_string(line, "name:").unwrap_or_else(|| fields.join("_")));
+            t.indexes.push(Index { fields, unique: true, primary: line.starts_with("@@id"), plain, line: n });
+            continue;
+        }
+        if line.starts_with("@@index") {
+            t.indexes.push(Index { fields: bracket_list(line, "("), unique: false, primary: false, plain, line: n });
             continue;
         }
         let mut words = line.split_whitespace();
@@ -296,16 +346,48 @@ fn prisma_model(file: &str, src: &str) -> Vec<Table> {
             continue;
         }
         let name = attr_string(line, "@map(").unwrap_or_else(|| field.to_string());
+        let attrs: Vec<&str> = words.collect();
+        if attrs.iter().any(|a| *a == "@id" || a.starts_with("@id(") || *a == "@unique" || a.starts_with("@unique(")) {
+            let primary = attrs.iter().any(|a| *a == "@id" || a.starts_with("@id("));
+            t.indexes.push(Index { fields: vec![field.to_string()], unique: true, primary, plain, line: n });
+        }
         t.columns.push(Column {
             name,
             key: field.to_string(),
             nullable: ty.ends_with('?'),
             filled: line.contains("@default") || line.contains("@updatedAt") || ty.ends_with("[]"),
+            kind: prisma_kind(base, ty.ends_with("[]"), line, enums.contains(base)),
             file: file.to_string(),
             line: n,
         });
     }
     out
+}
+
+/// The SQL type a Prisma field declares on Postgres: its scalar's default, or the native type `@db.` names.
+fn prisma_kind(base: &str, list: bool, line: &str, is_enum: bool) -> String {
+    let native = line.split("@db.").nth(1).map(|n| n.split(['(', ' ']).next().unwrap_or("").to_lowercase());
+    let kind = match (native.as_deref(), base) {
+        (_, _) if is_enum => format!("enum {}", base.to_lowercase()),
+        (Some("timestamptz"), _) => "timestamp with time zone".to_string(),
+        (Some("timestamp"), _) => "timestamp".to_string(),
+        (Some(native), _) => native.to_string(),
+        (None, "String") => "text".to_string(),
+        (None, "Int") => "integer".to_string(),
+        (None, "BigInt") => "bigint".to_string(),
+        (None, "Float") => "double precision".to_string(),
+        (None, "Decimal") => "numeric".to_string(),
+        (None, "Boolean") => "boolean".to_string(),
+        (None, "DateTime") => "timestamp".to_string(),
+        (None, "Json") => "jsonb".to_string(),
+        (None, "Bytes") => "bytea".to_string(),
+        (None, _) => String::new(),
+    };
+    if list && !kind.is_empty() {
+        format!("{kind}[]")
+    } else {
+        kind
+    }
 }
 
 /// Drizzle's column modifiers that fill a value without code.
@@ -355,6 +437,11 @@ const DRIZZLE_TYPES: [&str; 30] = [
     "inet",
     "citext",
 ];
+
+/// A key a Drizzle table's third argument declares: its kind, and the columns as `t.a, t.b` in either of two forms.
+static TABLE_KEY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b(primaryKey|foreignKey)\(\s*(?:\{[^}]*?\bcolumns:\s*\[([^\]]*)\]|(\w+\.\w+(?:\s*,\s*\w+\.\w+)*)\s*\))").unwrap()
+});
 
 struct DrizzleTables<'s> {
     src: &'s str,
@@ -435,14 +522,40 @@ impl<'a> Visit<'a> for DrizzleTables<'_> {
                     // A helper of the project's own (`createdAt()`) hides what it builds: count it as filled.
                     let helper = !DRIZZLE_TYPES.contains(&base_name.as_str()) && base.arguments.is_empty();
                     let name = string_arg(&base.arguments, 0).unwrap_or(&key).to_string();
+                    let line = self.lines.line(p.span.start as usize);
+                    // ponytail: a helper building `id` is taken to make it the key, as such helpers do; one that builds
+                    // a key under another name is not seen, and its table is named as having none.
+                    if methods.contains(&"primaryKey") || helper && key == "id" {
+                        table.indexes.push(Index { fields: vec![key.to_string()], unique: true, primary: true, plain: true, line });
+                    }
+                    if methods.contains(&"references") {
+                        table.relations.push((key.to_string(), String::new(), vec![key.to_string()]));
+                    }
                     table.columns.push(Column {
                         name,
                         key: key.to_string(),
                         nullable: !methods.iter().any(|m| *m == "notNull" || *m == "primaryKey"),
                         filled: helper || methods.iter().any(|m| DRIZZLE_FILLED.contains(m)) || base_name.contains("serial"),
+                        // A timestamp's zone is an option of the call, not read here: its kind stays unknown.
+                        kind: if helper || base_name == "timestamp" { String::new() } else { base_name.to_lowercase() },
                         file: self.file.to_string(),
-                        line: self.lines.line(p.span.start as usize),
+                        line,
                     });
+                }
+                // The table's own keys: `(t) => [primaryKey({ columns: [t.a, t.b] }), foreignKey({ columns: [t.c], … })]`.
+                if let Some(extra) = it.arguments.get(2) {
+                    let start = extra.span().start as usize;
+                    for key in TABLE_KEY.captures_iter(&self.src[start..extra.span().end as usize]) {
+                        let listed = key.get(2).or(key.get(3)).map_or("", |m| m.as_str());
+                        let fields: Vec<String> =
+                            listed.split(',').filter_map(|f| f.trim().rsplit('.').next()).map(str::to_string).collect();
+                        let line = self.lines.line(start + key.get(0).map_or(0, |m| m.start()));
+                        if &key[1] == "primaryKey" {
+                            table.indexes.push(Index { fields, unique: true, primary: true, plain: true, line });
+                        } else {
+                            table.relations.push((fields[0].clone(), String::new(), fields));
+                        }
+                    }
                 }
                 self.out.push(table);
             }
@@ -945,7 +1058,7 @@ static TYPED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\w+):\s*\{\s*Row:
 static REST: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/rest/v1/(\w+)").unwrap());
 
 /// A column as Postgres reads it: a quoted name keeps its case (`"Status"`), an unquoted one folds to lowercase.
-fn ident(name: &str) -> String {
+pub(crate) fn ident(name: &str) -> String {
     let last = name.rsplit('.').next().unwrap_or(name);
     match last.strip_prefix('"').and_then(|l| l.strip_suffix('"')) {
         Some(quoted) => quoted.to_string(),
@@ -1277,10 +1390,86 @@ const AUTH_TABLES: [&str; 12] = [
 
 enum Read {
     Sql(String, String),
-    Prisma(String, String),
+    Prisma(String, String, Vec<Table>),
     /// A code file: its uses, its Drizzle tables, and whether it uses an auth library that writes its own tables.
     Code(String, Box<Uses>, Vec<Table>, bool),
     Other(HashSet<String>),
+}
+
+/// What one file brings: SQL, a Prisma schema, code with its Drizzle tables, or another language's words. The one
+/// reading of which file is what for every check of the schema; only this one asks for code's uses and the words.
+fn read(root: &str, file: &str, with_uses: bool) -> Option<Read> {
+    let src = text::read(root, file)?;
+    if file.ends_with(".sql") {
+        return Some(Read::Sql(file.to_string(), src));
+    }
+    if file.ends_with(".prisma") {
+        let tables = prisma_model(file, &src);
+        return Some(Read::Prisma(file.to_string(), src, tables));
+    }
+    if OTHER.is_match(file) {
+        let words = || src.split(|c: char| !c.is_alphanumeric() && c != '_').filter(|w| w.len() > 2).map(str::to_lowercase).collect();
+        return with_uses.then(|| Read::Other(words()));
+    }
+    if !CODE.is_match(file) || TEST.is_match(file) {
+        return None;
+    }
+    let tables = if defines_tables(&src) { drizzle_model(file, &src) } else { vec![] };
+    if !with_uses {
+        return (!tables.is_empty()).then(|| Read::Code(file.to_string(), Box::default(), tables, false));
+    }
+    let auth = AUTH_LIBRARIES.iter().any(|l| src.contains(l));
+    if !hint(&src) {
+        return auth.then(|| Read::Code(file.to_string(), Box::default(), vec![], true));
+    }
+    Some(Read::Code(file.to_string(), Box::new(uses(file, &src)), tables, auth))
+}
+
+/// A schema kept as a record: under docs, an archive or a backup, or in a dated path.
+static KEPT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)(?:^|/)(?:docs?|[\w-]*docs|archive[sd]?|backups?|snapshots?|baselines?|validation)/|(?:19|20)\d\d[-_]?[01]\d[-_]?[0-3]\d",
+    )
+    .unwrap()
+});
+
+/// What a request's files declare: the SQL in the order `declared` applies it, the Prisma schemas, every table, and
+/// every name ever created as a table or view.
+pub(crate) struct Schemas {
+    pub(crate) sql_files: Vec<(String, String)>,
+    pub(crate) prisma_files: Vec<(String, String)>,
+    pub(crate) tables: HashMap<String, Table>,
+    known: HashSet<String>,
+}
+
+fn schemas_of(request: &Request, reads: &[Read]) -> Schemas {
+    let mut sql_files = vec![];
+    let mut prisma = vec![];
+    let mut ormed = vec![];
+    for r in reads {
+        match r {
+            Read::Sql(f, s) => sql_files.push((f.clone(), s.clone())),
+            Read::Prisma(f, s, t) => prisma.push((f, s, t)),
+            Read::Code(_, _, t, _) => ormed.extend(t.iter().cloned()),
+            Read::Other(_) => {}
+        }
+    }
+    // Where two schemas declare one table, the last read wins: the project's own after another package's, and a
+    // schema in use after a copy kept beside docs or dated (`docs/release-2026-09-18/schema-baseline.prisma`).
+    prisma.sort_by_key(|(file, _, _)| (file.starts_with(&request.prefix), !KEPT.is_match(file), file.to_string()));
+    let mut prisma_files = vec![];
+    for (f, s, t) in prisma {
+        prisma_files.push((f.clone(), s.clone()));
+        ormed.extend(t.iter().cloned());
+    }
+    let (tables, known) = declared(&mut sql_files, ormed);
+    Schemas { sql_files, prisma_files, tables, known }
+}
+
+/// What a request's files declare, as every check of the schema reads it.
+pub(crate) fn schemas(request: &Request) -> Schemas {
+    let reads: Vec<Read> = request.files.par_iter().filter_map(|file| read(&request.root, file, false)).collect();
+    schemas_of(request, &reads)
 }
 
 /// Whether a file may define Drizzle tables: `pgTable(`, `createTable(`, or a named schema's `appSchema.table(`.
@@ -1423,61 +1612,20 @@ struct Options {
 
 pub fn run(request: &Request) -> Result<Answer, String> {
     let Options { before } = request.options()?;
-    let reads: Vec<Read> = request
-        .files
-        .par_iter()
-        .filter_map(|file| {
-            let src = text::read(&request.root, file)?;
-            if file.ends_with(".sql") {
-                return Some(Read::Sql(file.clone(), src));
-            }
-            if file.ends_with(".prisma") {
-                return Some(Read::Prisma(file.clone(), src));
-            }
-            if OTHER.is_match(file) {
-                return Some(Read::Other(
-                    src.split(|c: char| !c.is_alphanumeric() && c != '_').filter(|w| w.len() > 2).map(str::to_lowercase).collect(),
-                ));
-            }
-            if !CODE.is_match(file) || TEST.is_match(file) {
-                return None;
-            }
-            let auth = AUTH_LIBRARIES.iter().any(|l| src.contains(l));
-            if !hint(&src) {
-                return auth.then(|| Read::Code(file.clone(), Box::default(), vec![], true));
-            }
-            let tables = if defines_tables(&src) { drizzle_model(file, &src) } else { vec![] };
-            Some(Read::Code(file.clone(), Box::new(uses(file, &src)), tables, auth))
-        })
-        .collect();
-    let mut sql_files: Vec<(String, String)> = Vec::new();
+    let reads: Vec<Read> = request.files.par_iter().filter_map(|file| read(&request.root, file, true)).collect();
+    let Schemas { sql_files, tables, mut known, .. } = schemas_of(request, &reads);
     let mut code: Vec<(&str, &Uses)> = Vec::new();
     let mut words: HashSet<&str> = HashSet::new();
-    let mut ormed = Vec::new();
     let mut auth_library = false;
     for r in &reads {
         match r {
-            Read::Sql(f, s) => sql_files.push((f.clone(), s.clone())),
-            Read::Prisma(f, s) => ormed.extend(prisma_model(f, s)),
-            Read::Code(f, u, t, auth) => {
+            Read::Code(f, u, _, auth) => {
                 code.push((f.as_str(), u));
-                ormed.extend(t.iter().cloned());
                 auth_library |= auth;
             }
             Read::Other(w) => words.extend(w.iter().map(String::as_str)),
+            Read::Sql(..) | Read::Prisma(..) => {}
         }
-    }
-    // Migrations first, in order; other SQL (schema dumps, seeds) after, so a stale dump does not undo them.
-    sql_files.sort_by(|a, b| (!a.0.contains("migrations/"), &a.0).cmp(&(!b.0.contains("migrations/"), &b.0)));
-    let (mut tables, mut known, _views) = sql_model(&sql_files);
-    // Prisma's implicit many-to-many tables (`_PostToTag`) are its own to write.
-    if ormed.iter().any(|t| t.source == 2) {
-        tables.retain(|name, _| !name.starts_with('_'));
-    }
-    ormed.sort_by_key(|t| t.source);
-    for t in ormed {
-        known.insert(t.name.clone());
-        tables.insert(t.name.clone(), t);
     }
     if tables.is_empty() {
         return Ok(Answer::new(vec![], "no database schema found".into()));

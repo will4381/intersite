@@ -136,15 +136,15 @@ fn column_list(text: &str) -> Vec<String> {
 }
 
 #[derive(Default)]
-struct Inventory {
+pub(crate) struct Inventory {
     /// Index leading columns per table, from indexes, primary keys and unique constraints.
     indexes: HashMap<String, Vec<Vec<String>>>,
     /// Expression indexes per table, as text: `lower(email)`.
     expressions: HashMap<String, HashSet<String>>,
     /// Each column's type, as `kind` names it, latest declaration winning.
-    types: HashMap<(String, String), String>,
+    pub(crate) types: HashMap<(String, String), String>,
     /// Each table's single-column primary key, which a bare `REFERENCES parent` points at.
-    primary: HashMap<String, String>,
+    pub(crate) primary: HashMap<String, String>,
 }
 
 /// A column type reduced to what a comparison sees: `varchar(36)` and `text` are both text, `serial` is integer.
@@ -185,18 +185,18 @@ impl Inventory {
 }
 
 /// A foreign key: the child table and columns, where it was declared.
-struct ForeignKey {
+pub(crate) struct ForeignKey {
     file: String,
     line: u32,
-    table: String,
-    columns: Vec<String>,
-    parent: String,
+    pub(crate) table: String,
+    pub(crate) columns: Vec<String>,
+    pub(crate) parent: String,
     /// The parent columns named after `REFERENCES parent`; empty means its primary key.
     parent_columns: Vec<String>,
 }
 
 /// What the migrations declare: indexes, and foreign keys.
-fn inventory(all: &[Stmt]) -> (Inventory, Vec<ForeignKey>) {
+pub(crate) fn inventory(all: &[Stmt]) -> (Inventory, Vec<ForeignKey>) {
     let mut inv = Inventory::default();
     let mut fks = Vec::new();
     let mut fk = |s: &Stmt, table: &str, columns: Vec<String>, text: &str| {
@@ -958,6 +958,11 @@ pub fn run(request: &Request) -> Result<Answer, String> {
     Ok(Answer::new(findings, summary))
 }
 
+/// A connection to the project's database, with TLS unless it is local.
+pub(crate) fn connect(url: &str) -> Result<postgres::Client, String> {
+    explain::connect(url)
+}
+
 mod explain {
     //! The planner's verdict on a query, without running it: PREPARE, then EXPLAIN the generic plan, all in a
     //! read-only transaction that is rolled back. A sequential scan with a filter on a large table is an index to add.
@@ -965,7 +970,7 @@ mod explain {
     use super::{bare, Finding, Stmt};
     use postgres::{Client, NoTls};
 
-    fn connect(url: &str) -> Result<Client, String> {
+    pub(super) fn connect(url: &str) -> Result<Client, String> {
         if url.contains("sslmode=disable") || url.contains("localhost") || url.contains("127.0.0.1") {
             return Client::connect(url, NoTls).map_err(|e| format!("cannot connect to the database: {e}"));
         }
